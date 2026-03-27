@@ -513,44 +513,81 @@ class Scanner:
 
         return result
 
-    async def _collect_kream_popular(self) -> list[dict]:
-        """크림 인기상품 여러 소스에서 수집 후 병합/중복 제거."""
+    async def _collect_kream_popular(
+        self, categories: list[str] | None = None,
+    ) -> list[dict]:
+        """크림 인기상품 여러 카테고리/소스에서 수집 후 병합/중복 제거.
+
+        Args:
+            categories: 수집할 카테고리 목록. None이면 기본 카테고리 사용.
+                지원 카테고리: sneakers, clothing, bags, accessories
+        """
+        if categories is None:
+            categories = ["sneakers", "clothing", "bags", "accessories"]
+
         all_products: list[dict] = []
         seen_ids: set[str] = set()
 
-        def add_products(items: list[dict]):
+        def add_products(items: list[dict], category_tag: str = ""):
             for item in items:
                 pid = item.get("product_id", "")
                 if pid and pid not in seen_ids:
                     seen_ids.add(pid)
+                    if category_tag:
+                        item["_category"] = category_tag
                     all_products.append(item)
 
-        # 인기순 (Most Popular)
-        try:
-            popular = await kream_crawler.get_popular_products(
-                category="sneakers", sort="popular", limit=50,
-            )
-            add_products(popular)
-        except Exception as e:
-            logger.error("인기 상품 수집 실패: %s", e)
+        # 카테고리별 수집 비중 (전체 대비)
+        category_weights = {
+            "sneakers": 0.4,
+            "clothing": 0.25,
+            "bags": 0.15,
+            "accessories": 0.2,  # 모자 포함
+        }
 
-        # 거래 많은 순
-        try:
-            sales = await kream_crawler.get_popular_products(
-                category="sneakers", sort="sales", limit=40,
-            )
-            add_products(sales)
-        except Exception as e:
-            logger.error("거래량순 상품 수집 실패: %s", e)
+        for cat in categories:
+            weight = category_weights.get(cat, 0.2)
+            popular_limit = max(int(50 * weight), 5)
+            sales_limit = max(int(40 * weight), 5)
 
-        # 급상승 상품
+            # 인기순
+            try:
+                popular = await kream_crawler.get_popular_products(
+                    category=cat, sort="popular", limit=popular_limit,
+                )
+                add_products(popular, cat)
+                logger.info("크림 인기순(%s) %d건 수집", cat, len(popular))
+            except Exception as e:
+                logger.error("인기 상품 수집 실패 (%s): %s", cat, e)
+
+            # 거래 많은 순
+            try:
+                sales = await kream_crawler.get_popular_products(
+                    category=cat, sort="sales", limit=sales_limit,
+                )
+                add_products(sales, cat)
+                logger.info("크림 거래량순(%s) %d건 수집", cat, len(sales))
+            except Exception as e:
+                logger.error("거래량순 상품 수집 실패 (%s): %s", cat, e)
+
+        # 급상승 상품 (카테고리 무관)
         try:
             trending = await kream_crawler.get_trending_products(limit=30)
-            add_products(trending)
+            add_products(trending, "trending")
         except Exception as e:
             logger.error("급상승 상품 수집 실패: %s", e)
 
-        logger.info("크림 인기상품 총 %d건 수집 (중복 제거 후)", len(all_products))
+        # 카테고리별 통계 로그
+        cat_counts: dict[str, int] = {}
+        for item in all_products:
+            cat = item.get("_category", "unknown")
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        cat_summary = ", ".join(f"{k}={v}" for k, v in sorted(cat_counts.items()))
+
+        logger.info(
+            "크림 인기상품 총 %d건 수집 (중복 제거 후) [%s]",
+            len(all_products), cat_summary,
+        )
         return all_products
 
     async def _get_kream_with_cache(self, product_id: str) -> KreamProduct | None:
