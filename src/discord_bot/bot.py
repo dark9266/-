@@ -53,6 +53,7 @@ class KreamBot(commands.Bot):
         """봇 시작 시 초기화."""
         await self.db.connect()
         self.scanner = Scanner(self.db)
+        self.scanner._match_review_callback = self.send_match_review
         self.scheduler = Scheduler(self)
         logger.info("봇 초기화 완료")
 
@@ -75,6 +76,18 @@ class KreamBot(commands.Bot):
             channel = self.get_channel(settings.channel_log)
             if channel:
                 await channel.send(f"📝 {message}")
+
+    async def send_match_review(self, message: str) -> None:
+        """매칭 검토 채널(#수정)에 매칭 애매한 건 기록."""
+        if not settings.channel_match_review:
+            return
+        channel = self.get_channel(settings.channel_match_review)
+        if channel:
+            # 2000자 제한 대비 자르기
+            content = f"🔍 **매칭 검토 필요**\n\n{message}"
+            if len(content) > 2000:
+                content = content[:1997] + "..."
+            await channel.send(content)
 
     async def send_profit_alert(self, opportunity) -> None:
         """수익 알림 채널에 알림 전송 (중복 방지 강화)."""

@@ -109,6 +109,8 @@ class Scanner:
         self.price_tracker = PriceTracker(db)
         # 자동스캔 캐시: {model_number: (timestamp, KreamProduct)}
         self._auto_scan_cache: dict[str, tuple[datetime, KreamProduct]] = {}
+        # 매칭 검토 채널 콜백 (봇에서 설정)
+        self._match_review_callback = None
 
     async def scan_keyword(self, keyword: str) -> ScanResult:
         """단일 키워드로 전체 파이프라인 실행.
@@ -415,7 +417,8 @@ class Scanner:
                     # 무신사 검색
                     result.musinsa_searched += 1
                     musinsa_result = await self._search_musinsa_for_model(
-                        model_number, kream_product.name
+                        model_number, kream_product.name,
+                        kream_brand=kream_product.brand or "",
                     )
                     if not musinsa_result:
                         return None
@@ -525,7 +528,7 @@ class Scanner:
         # 인기순 (Most Popular)
         try:
             popular = await kream_crawler.get_popular_products(
-                category="sneakers", sort="popular", limit=30,
+                category="sneakers", sort="popular", limit=50,
             )
             add_products(popular)
         except Exception as e:
@@ -534,7 +537,7 @@ class Scanner:
         # 거래 많은 순
         try:
             sales = await kream_crawler.get_popular_products(
-                category="sneakers", sort="sales", limit=20,
+                category="sneakers", sort="sales", limit=40,
             )
             add_products(sales)
         except Exception as e:
@@ -542,7 +545,7 @@ class Scanner:
 
         # 급상승 상품
         try:
-            trending = await kream_crawler.get_trending_products(limit=20)
+            trending = await kream_crawler.get_trending_products(limit=30)
             add_products(trending)
         except Exception as e:
             logger.error("급상승 상품 수집 실패: %s", e)
@@ -570,8 +573,19 @@ class Scanner:
 
     async def _search_musinsa_for_model(
         self, model_number: str, kream_name: str = "",
+        kream_brand: str = "",
     ) -> tuple[dict[str, tuple[int, bool]], str, str, str] | None:
         """모델번호로 무신사에서 검색하여 사이즈별 가격 반환.
+
+        3단계 검색 전략:
+        1차: 모델번호 직접 검색 (복합 모델번호 분리 포함)
+        2차: 크림 상품명(한글/영문)으로 검색
+        3차: 브랜드 + 상품명 조합으로 검색
+
+        매칭 규칙:
+        - 모델번호 정확 일치만 인정 (부분 일치 절대 불허)
+        - 검색 결과 여러 개면 가격이 가장 낮은 상품 선택
+        - 매칭 애매한 경우 검토 채널에 기록
 
         Returns:
             (sizes_dict, url, name, product_id) or None
@@ -580,48 +594,72 @@ class Scanner:
         from src.profit_calculator import _normalize_size
         import re
 
-        # 모델번호 검색 전략 (여러 변형 시도)
-        search_queries = [model_number]
+        # ── 1차: 모델번호 검색 (복합 모델번호 분리 포함) ──
+        search_queries_phase1 = []
 
         # 슬래시 포함 복합 모델번호 분리 (315122-111/CW2288-111 → 각각 검색)
         if "/" in model_number:
             parts = [p.strip() for p in model_number.split("/") if p.strip()]
-            search_queries = parts + search_queries
+            search_queries_phase1.extend(parts)
+
+        # 원본 모델번호
+        if model_number not in search_queries_phase1:
+            search_queries_phase1.append(model_number)
 
         # 하이픈→공백 변형
-        alt = re.sub(r"[-]", " ", model_number)
-        if alt != model_number and alt not in search_queries:
-            search_queries.append(alt)
+        for q in list(search_queries_phase1):
+            alt = re.sub(r"[-]", " ", q)
+            if alt != q and alt not in search_queries_phase1:
+                search_queries_phase1.append(alt)
 
         search_results = []
-        for query in search_queries:
+        used_query = ""
+        for query in search_queries_phase1:
             search_results = await musinsa_crawler.search_products(query)
             if search_results:
+                used_query = query
+                logger.debug("무신사 1차 검색 성공: '%s' → %d건", query, len(search_results))
                 break
 
-        # 상품명으로 폴백 검색 (모델번호 검색 실패 시)
+        # ── 2차: 상품명으로 검색 (모델번호 검색 실패 시) ──
         if not search_results and kream_name:
-            # 브랜드명 + 핵심 키워드 추출
             name_query = re.sub(r"['\"]", "", kream_name)
-            # 영문 상품명에서 주요 단어만 (최대 3단어)
+            # 영문 상품명에서 주요 단어만 (최대 4단어)
             words = name_query.split()[:4]
             if words:
                 search_results = await musinsa_crawler.search_products(" ".join(words))
+                if search_results:
+                    used_query = " ".join(words)
+                    logger.debug("무신사 2차 검색(상품명) 성공: '%s' → %d건", used_query, len(search_results))
+
+        # ── 3차: 브랜드 + 상품명 조합 검색 ──
+        if not search_results and kream_brand and kream_name:
+            brand_name_query = f"{kream_brand} {kream_name.split()[0] if kream_name.split() else ''}"
+            brand_name_query = brand_name_query.strip()
+            if brand_name_query:
+                search_results = await musinsa_crawler.search_products(brand_name_query)
+                if search_results:
+                    used_query = brand_name_query
+                    logger.debug("무신사 3차 검색(브랜드+상품명) 성공: '%s' → %d건", used_query, len(search_results))
 
         if not search_results:
             return None
 
-        # 검색 결과에서 매칭 상품 찾기 (최대 3건 상세 조회)
-        for item in search_results[:3]:
+        # ── 검색 결과에서 모델번호 정확 매칭 찾기 (최대 5건 상세 조회) ──
+        matched_products: list[tuple[dict[str, tuple[int, bool]], str, str, str, int]] = []
+        near_miss_items: list[dict] = []  # 매칭 애매한 건 (검토 채널용)
+
+        for item in search_results[:5]:
             try:
                 detail = await musinsa_crawler.get_product_detail(item["product_id"])
                 if not detail:
                     continue
 
+                if not detail.model_number:
+                    continue
+
                 # 모델번호 정확 매칭 확인 (복합 모델번호 지원)
-                if detail.model_number and _match_model_with_slash(
-                    detail.model_number, model_number
-                ):
+                if _match_model_with_slash(detail.model_number, model_number):
                     # 사이즈별 가격 맵 구축
                     sizes: dict[str, tuple[int, bool]] = {}
                     for s in detail.sizes:
@@ -631,11 +669,81 @@ class Scanner:
                                 sizes[norm_size] = (s.price, s.in_stock)
 
                     if sizes:
-                        return (sizes, detail.url, detail.name, detail.product_id)
+                        # 최저가 계산 (가격 비교용)
+                        min_price = min(p for p, _ in sizes.values())
+                        matched_products.append(
+                            (sizes, detail.url, detail.name, detail.product_id, min_price)
+                        )
+                else:
+                    # 모델번호 불일치 — 상품명이 유사한데 모델번호가 다른 경우 기록
+                    near_miss_items.append({
+                        "musinsa_name": detail.name,
+                        "musinsa_model": detail.model_number,
+                        "musinsa_url": detail.url,
+                        "musinsa_price": item.get("price", 0),
+                    })
 
             except Exception as e:
                 logger.error(
                     "무신사 상세 조회 실패 (%s): %s", item.get("product_id"), e
                 )
 
-        return None
+        # ── 매칭 애매한 건 검토 채널에 기록 ──
+        if near_miss_items and not matched_products:
+            await self._log_match_review(
+                kream_name=kream_name,
+                kream_model=model_number,
+                kream_brand=kream_brand,
+                near_misses=near_miss_items,
+                search_query=used_query,
+            )
+
+        if not matched_products:
+            return None
+
+        # ── 여러 매칭 중 가격이 가장 낮은 상품 선택 ──
+        matched_products.sort(key=lambda x: x[4])  # min_price 기준 정렬
+        best = matched_products[0]
+
+        if len(matched_products) > 1:
+            logger.info(
+                "무신사 매칭 %d건 중 최저가 선택: %s (%s원)",
+                len(matched_products), best[2], f"{best[4]:,}",
+            )
+
+        return (best[0], best[1], best[2], best[3])
+
+    async def _log_match_review(
+        self,
+        kream_name: str,
+        kream_model: str,
+        kream_brand: str,
+        near_misses: list[dict],
+        search_query: str,
+    ) -> None:
+        """매칭 애매한 건을 #수정 디스코드 채널에 기록."""
+        if not settings.channel_match_review or not self._match_review_callback:
+            return
+
+        lines = [
+            f"**크림 상품:** {kream_name}",
+            f"**크림 모델번호:** `{kream_model}`",
+            f"**브랜드:** {kream_brand}",
+            f"**검색어:** `{search_query}`",
+            "",
+            "**무신사 검색 결과 (모델번호 불일치로 매칭 거부):**",
+        ]
+        for i, item in enumerate(near_misses[:3], 1):
+            price_str = f"{item['musinsa_price']:,}원" if item.get("musinsa_price") else "가격 미확인"
+            lines.append(
+                f"{i}. {item['musinsa_name']}\n"
+                f"   모델번호: `{item['musinsa_model']}` ≠ `{kream_model}`\n"
+                f"   가격: {price_str} | [링크]({item['musinsa_url']})"
+            )
+        lines.append("")
+        lines.append("**사유:** 상품명은 유사하지만 모델번호가 정확히 일치하지 않아 매칭하지 않음")
+
+        try:
+            await self._match_review_callback("\n".join(lines))
+        except Exception as e:
+            logger.error("매칭 검토 기록 실패: %s", e)

@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     channel_manual_search: int = 0
     channel_settings: int = 0
     channel_log: int = 0
+    channel_match_review: int = 0  # 매칭 애매한 경우 검토용 채널
 
     # Chrome CDP
     chrome_path: str = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
@@ -92,7 +93,7 @@ class Settings(BaseSettings):
     auto_scan_interval_minutes: int = 30  # 자동스캔 주기
     auto_scan_confirmed_roi: float = 5.0  # 확정 수익 ROI 기준 (%)
     auto_scan_estimated_roi: float = 10.0  # 예상 수익 ROI 기준 (%)
-    auto_scan_max_products: int = 50  # 1회 스캔 최대 상품 수
+    auto_scan_max_products: int = 100  # 1회 스캔 최대 상품 수
     auto_scan_concurrency: int = 3  # 동시 요청 수
     auto_scan_cache_minutes: int = 60  # 캐시 유효 시간 (분)
 
