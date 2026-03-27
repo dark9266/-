@@ -390,6 +390,14 @@ class MusinsaCrawler:
                     # 매핑 못 찾으면 deleted 여부로 판단
                     in_stock = not ov.get("isDeleted", False)
 
+            # "재입고 알림" 상태인 옵션은 품절 처리
+            if ov.get("isRestock") or "재입고" in size_name:
+                in_stock = False
+
+            if not in_stock:
+                logger.debug("무신사 품절 사이즈 스킵: %s", size_name)
+                continue
+
             sizes.append(RetailSizeInfo(
                 size=size_name,
                 price=sale_price,
@@ -578,8 +586,17 @@ class MusinsaCrawler:
                 if not value or value == "" or text in ("사이즈 선택", "선택", ""):
                     continue
 
-                in_stock = disabled is None and "품절" not in text and "sold" not in text.lower()
+                in_stock = (
+                    disabled is None
+                    and "품절" not in text
+                    and "재입고" not in text
+                    and "sold" not in text.lower()
+                )
                 size_text = re.sub(r"\s*\(.*?\)", "", text).strip()
+
+                if not in_stock:
+                    logger.debug("무신사 품절 사이즈 스킵 (select): %s", size_text)
+                    continue
 
                 sizes.append(RetailSizeInfo(
                     size=size_text,
@@ -617,9 +634,15 @@ class MusinsaCrawler:
                         and "sold" not in classes.lower()
                         and "disabled" not in classes.lower()
                         and "품절" not in text
+                        and "재입고" not in text
                     )
 
                     size_text = re.sub(r"\s*\(.*?\)", "", text).strip()
+
+                    if not in_stock:
+                        logger.debug("무신사 품절 사이즈 스킵 (button): %s", size_text)
+                        continue
+
                     sizes.append(RetailSizeInfo(
                         size=size_text,
                         price=sale_price,
