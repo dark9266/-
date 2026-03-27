@@ -1,0 +1,118 @@
+【목표】
+크림(KREAM)에서 잘 팔리는 상품을 자동으로 찾고
+→ 무신사 등에서 싸게 살 수 있는지 확인
+→ 수익 기회 발견시 디스코드로 자동 알림
+
+【환경】
+- 경로: /mnt/c/Users/USER/Desktop/크림봇
+- OS: Windows 11 + Ubuntu WSL
+- Python 3.12, virtualenv
+- Claude Code (Opus 4.6, Pro, --dangerously-skip-permissions)
+
+【프로젝트 구조】
+src/
+├── discord_bot/bot.py       - 디스코드 봇 (!자동스캔, !자동스캔시작, !자동스캔중지)
+├── discord_bot/formatter.py - 2단계 수익 알림 Embed (확정/예상 분리)
+├── crawlers/kream.py        - KREAM 크롤러 (인기상품 수집 + __NUXT_DATA__ 파싱)
+├── crawlers/musinsa.py      - 무신사 크롤러 (Playwright)
+├── scanner.py               - 자동스캔 파이프라인 (크림→무신사 역방향)
+├── matcher.py               - 크림↔무신사 매칭
+├── profit_calculator.py     - 2단계 수익 분석 (확정bid + 예상시세)
+├── scheduler.py             - 자동스캔 30분 반복 루프
+├── models/product.py        - AutoScanOpportunity, AutoScanSizeProfit 모델
+├── config.py                - 수수료/ROI기준/동시성 등 .env 설정
+└── .env                     - 토큰, 채널ID, 수수료, 자동스캔 설정
+
+【완료된 작업】
+1. 프로젝트 구조 설계 ✅
+2. 디스코드 봇 연동 ✅
+3. 무신사 크롤러 (정상 작동) ✅
+4. KREAM 크롤러 (HTTP + __NUXT_DATA__ + Pinia 파싱) ✅
+5. KREAM + 무신사 매칭 (93.8% 성공률) ✅
+6. 속도 최적화 (CDP 스킵, 2.6배 개선) ✅
+7. 162개 테스트 전부 통과 ✅
+8. ★ 자동스캔 시스템 구현 완료 ✅ (오늘 새벽)
+   - 크림 인기상품 자동 수집 (인기순+거래량순+급상승)
+   - 무신사 매입가 자동 검색 + 매칭
+   - 2단계 수익 분석 (확정 bid + 예상 시세)
+   - 수익 발견 즉시 디스코드 실시간 알림
+   - 병렬 처리 3~5개 동시, 캐싱 1시간, 거래량순 우선
+   - !자동스캔, !자동스캔시작(30분반복), !자동스캔중지
+   - 실전 테스트: 크림 12개 수집 → 무신사 5개 매칭 성공
+
+【크림 수수료 구조】
+- 판매 수수료: 6%
+- 검수비: 2,500원
+- 배송비: 3,000원
+- 순수익 = 크림 판매가 - 무신사 매입가 - (판매가*6%) - 2,500 - 3,000
+
+【수익 판단 기준】
+- 1순위 확정: 즉시구매가(bid) 기반 → ROI 5%↑ 긴급알림 🔴
+- 2순위 예상: 최근 체결가 기반 → ROI 10%↑ 참고알림 🟠
+- 보조지표: 7일 거래량, 가격추세, 시세안정성
+
+【현재 제한사항】
+- CDP 로그인 OFF (USE_CDP_LOGIN=false) → 즉시구매가(bid) 데이터 부족
+  → 1순위 확정 수익이 대부분 0으로 나옴
+  → 2순위 예상 수익은 정상 작동
+- WSL에서 Windows Chrome CDP 연결 안 됨 (15초 타임아웃)
+
+【설정값】
+- USE_CDP_LOGIN=false
+- 딜레이: 1.5~4.0초
+- 자동스캔 주기: 30분
+- 확정 ROI 기준: 5%
+- 예상 ROI 기준: 10%
+- 최대 상품 수: 50개
+- 동시 요청: 3개
+- 캐시: 60분
+
+========================================
+다녀와서 해야할 것 (우선순위 순)
+========================================
+
+1. 디스코드 봇 실전 테스트
+   cd /mnt/c/Users/USER/Desktop/크림봇
+   source venv/bin/activate
+   python3 -m src.discord_bot.bot
+   → 디스코드에서 !자동스캔 입력
+   → 결과가 채널에 제대로 뜨는지 확인
+
+2. !자동스캔시작으로 30분 반복 모드 테스트
+   → 실제로 30분마다 자동 실행되는지 확인
+   → 수익 기회 알림이 오는지 확인
+
+3. CDP 로그인 문제 해결 (즉시구매가 데이터 확보)
+   → WSL에 직접 Chrome 설치하거나
+   → bid 데이터 없이 예상 수익만으로 운영할지 결정
+
+4. 추가 매입처 크롤러 (카시나, 웍스아웃, 나이키, 29CM)
+   → 무신사 외 다른 사이트에서도 매입가 비교
+
+5. 모델번호 매핑 테이블
+   → NB 등 무신사/크림 모델번호 형식 다른 브랜드 대응
+
+6. 데이터 축적 후 AI 수익 예측
+
+【기술 스택】
+Python 3.12, discord.py, Playwright, aiohttp,
+pydantic, pydantic-settings, aiosqlite, pytest
+
+【실행 방법】
+cd /mnt/c/Users/USER/Desktop/크림봇
+source venv/bin/activate
+python3 -m src.discord_bot.bot
+
+【Claude Code 실행】
+cd /mnt/c/Users/USER/Desktop/크림봇
+source venv/bin/activate
+claude --dangerously-skip-permissions
+
+
+【세션 복구 명령어】
+cd /mnt/c/Users/USER/Desktop/크림봇
+source venv/bin/activate
+claude --resume b8e45836-fe1c-485e-a334-8400025cc7ad --dangerously-skip-permissions
+
+
+

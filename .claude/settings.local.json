@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m venv .venv)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(pip install:*)",
+      "Bash(sudo apt:*)",
+      "Bash(python3:*)",
+      "Bash(source ~/kream-venv/bin/activate)",
+      "Bash(curl -sS https://bootstrap.pypa.io/get-pip.py)",
+      "Bash(playwright install:*)",
+      "Bash(PYTHONPATH=. python -m pytest tests/ -v)"
+    ]
+  }
+}
