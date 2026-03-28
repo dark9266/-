@@ -1,5 +1,6 @@
 """디스코드 봇 코어 및 명령어 핸들러."""
 
+import asyncio
 from datetime import datetime, timedelta
 
 import discord
@@ -345,6 +346,88 @@ async def cmd_auto_scan_stop(ctx: commands.Context):
 
     bot.scheduler.stop_auto_scan()
     await ctx.send("⏹️ **자동스캔 중지** 완료.")
+
+
+# 배치스캔 태스크 추적
+_batch_scan_task: asyncio.Task | None = None
+
+
+@bot.command(name="배치스캔")
+async def cmd_batch_scan(ctx: commands.Context, *, args: str = ""):
+    """전체 DB 배치 스캔 시작/중지.
+
+    사용법:
+        !배치스캔       → 전체 DB 순회 시작
+        !배치스캔 중지  → 진행 중인 배치스캔 중지
+    """
+    global _batch_scan_task
+
+    if "중지" in args:
+        if _batch_scan_task and not _batch_scan_task.done():
+            bot.scanner.stop_batch_scan()
+            await ctx.send("⏹️ **배치스캔 중지 요청** — 현재 배치 완료 후 중지됩니다.")
+        else:
+            await ctx.send("⚠️ 배치스캔이 실행 중이 아닙니다.")
+        return
+
+    if _batch_scan_task and not _batch_scan_task.done():
+        await ctx.send("⚠️ 배치스캔이 이미 실행 중입니다. `!배치스캔 중지`로 중지할 수 있습니다.")
+        return
+
+    progress_msg = await ctx.send("🗂️ **배치스캔 시작** — 전체 DB 순회 중...")
+
+    async def on_opportunity(opportunity):
+        await bot.send_auto_scan_alert(opportunity)
+
+    async def on_progress(message):
+        try:
+            await progress_msg.edit(content=f"🗂️ {message}")
+        except Exception:
+            pass
+
+    async def run_batch():
+        try:
+            result = await bot.scanner.batch_scan(
+                on_opportunity=on_opportunity,
+                on_progress=on_progress,
+            )
+
+            elapsed = 0.0
+            if result.finished_at and result.started_at:
+                elapsed = (result.finished_at - result.started_at).total_seconds()
+
+            stopped = bot.scanner._batch_scan_stop
+            status = "중지됨" if stopped else "완료"
+
+            summary = (
+                f"{'⏹️' if stopped else '✅'} **배치스캔 {status}**\n"
+                f"• 총 상품: {result.total:,}개\n"
+                f"• 검색: {result.processed:,}개\n"
+                f"• 새 매칭: **{result.new_matched}건**\n"
+                f"• 기존 매칭 스킵: {result.already_matched:,}건\n"
+                f"• 미매칭: {result.no_match:,}건\n"
+                f"• 수익기회: **{len(result.opportunities)}건**\n"
+                f"• 소요시간: {elapsed:.0f}초"
+            )
+            if result.errors:
+                summary += f"\n• ⚠️ 오류: {len(result.errors)}건"
+
+            await ctx.send(summary)
+
+            await progress_msg.edit(
+                content=(
+                    f"{'⏹️' if stopped else '✅'} **배치스캔 {status}** — "
+                    f"매칭 {result.new_matched}건, "
+                    f"수익기회 {len(result.opportunities)}건 "
+                    f"({elapsed:.0f}초)"
+                )
+            )
+
+        except Exception as e:
+            logger.error("배치스캔 실패: %s", e)
+            await ctx.send(f"❌ 배치스캔 실패: {e}")
+
+    _batch_scan_task = asyncio.create_task(run_batch())
 
 
 @bot.command(name="크림")

@@ -102,6 +102,21 @@ class AutoScanResult:
         )
 
 
+class BatchScanResult:
+    """배치스캔 결과 (전체 DB 순회)."""
+
+    def __init__(self):
+        self.total: int = 0
+        self.processed: int = 0  # 실제 검색한 수
+        self.new_matched: int = 0  # 새로 매칭된 수
+        self.already_matched: int = 0  # 기존 매칭 스킵
+        self.no_match: int = 0
+        self.opportunities: list[AutoScanOpportunity] = []
+        self.errors: list[str] = []
+        self.started_at: datetime = datetime.now()
+        self.finished_at: datetime | None = None
+
+
 class Scanner:
     """스캔 오케스트레이터."""
 
@@ -112,6 +127,8 @@ class Scanner:
         self._auto_scan_cache: dict[str, tuple[datetime, KreamProduct]] = {}
         # 매칭 검토 채널 콜백 (봇에서 설정)
         self._match_review_callback = None
+        # 배치스캔 중지 플래그
+        self._batch_scan_stop: bool = False
 
     async def scan_keyword(self, keyword: str) -> ScanResult:
         """단일 키워드로 전체 파이프라인 실행.
@@ -345,20 +362,26 @@ class Scanner:
         on_opportunity=None,
         on_progress=None,
     ) -> AutoScanResult:
-        """크림 인기상품 기준 전체 자동 스캔.
+        """자동 스캔 — 매칭 DB 기반 가격 갱신 또는 크림 인기상품 탐색.
 
-        파이프라인:
-        1. 크림 인기상품 수집 (인기순 + 거래량순 + 급상승)
-        2. 각 상품의 모델번호로 무신사 검색
-        3. 2단계 수익 분석 (확정 + 예상)
-        4. 수익 기회 발견 즉시 콜백 (실시간 알림)
-
-        Args:
-            on_opportunity: 수익 기회 발견 시 호출할 콜백 (async callable)
-            on_progress: 진행 상황 업데이트 콜백 (async callable)
+        매칭 DB가 있으면: 기존 매칭 상품의 가격만 빠르게 갱신
+        매칭 DB가 없으면: 크림 인기상품 기반 탐색 (기존 방식)
         """
+        matched_count = await self.db.get_matched_count()
+        if matched_count > 0:
+            logger.info("=== 자동스캔 시작 (매칭 DB %d건 기반) ===", matched_count)
+            return await self._auto_scan_matched(on_opportunity, on_progress)
+        else:
+            logger.info("=== 자동스캔 시작 (매칭 DB 없음 → 인기상품 탐색) ===")
+            return await self._auto_scan_popular(on_opportunity, on_progress)
+
+    async def _auto_scan_popular(
+        self,
+        on_opportunity=None,
+        on_progress=None,
+    ) -> AutoScanResult:
+        """크림 인기상품 기준 자동 스캔 (매칭 DB 없을 때 폴백)."""
         result = AutoScanResult()
-        logger.info("=== 자동스캔 시작 ===")
 
         if on_progress:
             await on_progress("크림 인기상품 수집 중...")
@@ -515,6 +538,348 @@ class Scanner:
         )
 
         return result
+
+    async def _auto_scan_matched(
+        self,
+        on_opportunity=None,
+        on_progress=None,
+    ) -> AutoScanResult:
+        """매칭 DB 기반 가격 갱신 스캔 (검색 없이 빠르게)."""
+        result = AutoScanResult()
+
+        if on_progress:
+            await on_progress("매칭 DB 기반 가격 갱신 시작...")
+
+        max_products = settings.auto_scan_max_products
+        matched_rows = await self.db.get_matched_kream_products(limit=max_products)
+        if not matched_rows:
+            result.finished_at = datetime.now()
+            return result
+
+        logger.info("매칭 DB %d건 가격 갱신 시작", len(matched_rows))
+        if on_progress:
+            await on_progress(f"매칭 상품 {len(matched_rows)}건 가격 갱신 중...")
+
+        semaphore = asyncio.Semaphore(settings.auto_scan_concurrency)
+
+        async def process_matched(idx: int, row) -> AutoScanOpportunity | None:
+            async with semaphore:
+                try:
+                    product_id = row["product_id"]
+                    model_number = row["model_number"]
+                    result.kream_scanned += 1
+
+                    if on_progress and idx % 10 == 0 and idx > 0:
+                        await on_progress(
+                            f"가격 갱신 {idx}/{len(matched_rows)} "
+                            f"(수익기회 {len(result.opportunities)}건)"
+                        )
+
+                    # 크림 가격 수집
+                    kream_product = await self._get_kream_with_cache(product_id)
+                    if not kream_product or not kream_product.size_prices:
+                        return None
+
+                    # 리테일 가격 수집 (DB에서 알려진 상품)
+                    result.musinsa_searched += 1
+                    retail_result = await self._refresh_retail_for_model(model_number)
+                    if not retail_result:
+                        return None
+
+                    merged_sizes, best_url, best_name, best_pid, source_prices = retail_result
+                    result.matched += 1
+
+                    # 수익 분석
+                    opportunity = analyze_auto_scan_opportunity(
+                        kream_product=kream_product,
+                        musinsa_sizes=merged_sizes,
+                        musinsa_url=best_url,
+                        musinsa_name=best_name,
+                        musinsa_product_id=best_pid,
+                    )
+                    if opportunity:
+                        opportunity.source_prices = source_prices
+
+                    if opportunity and (
+                        opportunity.best_confirmed_profit > 0
+                        or opportunity.best_estimated_profit > 0
+                    ):
+                        if on_opportunity:
+                            confirmed_threshold = settings.auto_scan_confirmed_roi
+                            estimated_threshold = settings.auto_scan_estimated_roi
+                            if (
+                                opportunity.best_confirmed_roi >= confirmed_threshold
+                                or opportunity.best_estimated_roi >= estimated_threshold
+                            ):
+                                await on_opportunity(opportunity)
+                        return opportunity
+
+                except Exception as e:
+                    result.errors.append(f"갱신 실패 ({row['product_id']}): {e}")
+                    logger.error("매칭 가격갱신 실패 (%s): %s", row["product_id"], e)
+                return None
+
+        tasks = [process_matched(i, row) for i, row in enumerate(matched_rows)]
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for r in gathered:
+            if isinstance(r, Exception):
+                result.errors.append(f"병렬 처리 예외: {r}")
+            elif isinstance(r, AutoScanOpportunity):
+                result.opportunities.append(r)
+
+        result.opportunities.sort(
+            key=lambda o: (-o.best_confirmed_profit, -o.best_estimated_profit)
+        )
+        result.finished_at = datetime.now()
+
+        elapsed = (result.finished_at - result.started_at).total_seconds()
+        logger.info(
+            "=== 자동스캔 완료 (%.0f초) | 매칭DB %d → 가격갱신 %d → 수익기회 %d ===",
+            elapsed, result.kream_scanned, result.matched, len(result.opportunities),
+        )
+        return result
+
+    async def _refresh_retail_for_model(
+        self, model_number: str,
+    ) -> tuple[dict[str, tuple[int, bool]], str, str, str, dict[str, int]] | None:
+        """기존 매칭 상품의 가격만 갱신 (검색 없이)."""
+        from src.profit_calculator import _normalize_size
+
+        retail_rows = await self.db.find_retail_by_model(model_number)
+        if not retail_rows:
+            return None
+
+        merged_sizes: dict[str, tuple[int, bool]] = {}
+        source_prices: dict[str, int] = {}
+        best_url = ""
+        best_name = ""
+        best_pid = ""
+        best_min_price = float("inf")
+
+        for rr in retail_rows:
+            source = rr["source"]
+            pid = rr["product_id"]
+
+            try:
+                if source == "musinsa":
+                    detail = await musinsa_crawler.get_product_detail(pid)
+                elif source == "29cm":
+                    detail = await twentynine_cm_crawler.get_product_detail(pid)
+                else:
+                    continue
+
+                if not detail or not detail.sizes:
+                    continue
+
+                sizes: dict[str, tuple[int, bool]] = {}
+                for s in detail.sizes:
+                    if s.in_stock and s.price > 0:
+                        ns = _normalize_size(s.size)
+                        if ns not in sizes or s.price < sizes[ns][0]:
+                            sizes[ns] = (s.price, True)
+
+                if sizes:
+                    cur_min = min(p for p, _ in sizes.values())
+                    label = "무신사" if source == "musinsa" else "29CM"
+                    source_prices[label] = cur_min
+
+                    if cur_min < best_min_price:
+                        best_min_price = cur_min
+                        best_url = rr["url"]
+                        best_name = rr["name"]
+                        best_pid = pid
+
+                    for sk, sv in sizes.items():
+                        if sk not in merged_sizes or sv[0] < merged_sizes[sk][0]:
+                            merged_sizes[sk] = sv
+            except Exception as e:
+                logger.error("리테일 가격 갱신 실패 (%s/%s): %s", source, pid, e)
+
+        if not merged_sizes:
+            return None
+
+        return (merged_sizes, best_url, best_name, best_pid, source_prices)
+
+    # ─── 배치스캔 (전체 DB 순회) ─────────────────────────
+
+    async def batch_scan(
+        self,
+        on_opportunity=None,
+        on_progress=None,
+    ) -> BatchScanResult:
+        """전체 DB 배치 스캔.
+
+        kream_products 전체를 500개씩 순회하며 리테일 매칭을 수행한다.
+        이미 매칭된 상품은 검색 스킵, 미매칭 상품만 리테일 검색.
+        """
+        result = BatchScanResult()
+        self._batch_scan_stop = False
+
+        # 배치스캔 중 매칭 검토는 터미널 로그만 (디스코드 비활성화)
+        saved_callback = self._match_review_callback
+        self._match_review_callback = None
+
+        try:
+            total = await self.db.get_kream_product_count()
+            result.total = total
+            batch_size = 500
+            total_batches = (total + batch_size - 1) // batch_size
+
+            logger.info(
+                "=== 배치스캔 시작: 총 %d개, %d배치 ===", total, total_batches,
+            )
+            if on_progress:
+                await on_progress(
+                    f"배치스캔 시작 — 총 {total:,}개 상품, {total_batches}배치"
+                )
+
+            semaphore = asyncio.Semaphore(settings.auto_scan_concurrency)
+
+            for batch_idx in range(total_batches):
+                if self._batch_scan_stop:
+                    logger.info("배치스캔 중지 요청 수신")
+                    break
+
+                offset = batch_idx * batch_size
+                products = await self.db.get_kream_products_batch(offset, batch_size)
+
+                async def process_one(row) -> AutoScanOpportunity | None:
+                    async with semaphore:
+                        model_number = row["model_number"]
+                        if not model_number:
+                            return None
+
+                        # 이미 매칭 있으면 스킵
+                        existing = await self.db.find_retail_by_model(model_number)
+                        if existing:
+                            result.already_matched += 1
+                            return None
+
+                        result.processed += 1
+
+                        # 리테일 검색 (무신사 + 29CM 병렬)
+                        try:
+                            retail_result = await self._search_retail_for_model(
+                                model_number, row["name"],
+                                kream_brand=row["brand"] or "",
+                            )
+                        except Exception as e:
+                            result.errors.append(f"검색 실패 ({model_number}): {e}")
+                            return None
+
+                        if not retail_result:
+                            result.no_match += 1
+                            return None
+
+                        merged_sizes, best_url, best_name, best_pid, source_prices = retail_result
+                        if not merged_sizes:
+                            result.no_match += 1
+                            return None
+
+                        result.new_matched += 1
+
+                        # 리테일 상품 DB 저장
+                        source = "29cm" if "29cm" in best_url else "musinsa"
+                        await self.db.upsert_retail_product(
+                            source=source,
+                            product_id=best_pid,
+                            name=best_name,
+                            model_number=model_number,
+                            brand=row["brand"] or "",
+                            url=best_url,
+                        )
+
+                        # 크림 상세 조회 + 수익 분석
+                        try:
+                            kream_product = await self._get_kream_with_cache(
+                                row["product_id"],
+                            )
+                            if kream_product and kream_product.size_prices:
+                                opportunity = analyze_auto_scan_opportunity(
+                                    kream_product=kream_product,
+                                    musinsa_sizes=merged_sizes,
+                                    musinsa_url=best_url,
+                                    musinsa_name=best_name,
+                                    musinsa_product_id=best_pid,
+                                )
+                                if opportunity:
+                                    opportunity.source_prices = source_prices
+                                if opportunity and (
+                                    opportunity.best_confirmed_profit > 0
+                                    or opportunity.best_estimated_profit > 0
+                                ):
+                                    if on_opportunity:
+                                        ct = settings.auto_scan_confirmed_roi
+                                        et = settings.auto_scan_estimated_roi
+                                        if (
+                                            opportunity.best_confirmed_roi >= ct
+                                            or opportunity.best_estimated_roi >= et
+                                        ):
+                                            await on_opportunity(opportunity)
+                                    return opportunity
+                        except Exception as e:
+                            logger.error(
+                                "배치스캔 수익분석 실패 (%s): %s",
+                                row["product_id"], e,
+                            )
+
+                        return None
+
+                # 배치 내 병렬 처리
+                batch_tasks = [process_one(row) for row in products]
+                gathered = await asyncio.gather(
+                    *batch_tasks, return_exceptions=True,
+                )
+
+                for r in gathered:
+                    if isinstance(r, Exception):
+                        result.errors.append(str(r))
+                    elif isinstance(r, AutoScanOpportunity):
+                        result.opportunities.append(r)
+
+                # 진행률 알림
+                if on_progress:
+                    await on_progress(
+                        f"배치 {batch_idx + 1}/{total_batches} 완료 — "
+                        f"매칭 {result.new_matched}건, "
+                        f"수익기회 {len(result.opportunities)}건, "
+                        f"스킵 {result.already_matched}건"
+                    )
+
+                logger.info(
+                    "배치 %d/%d 완료: 새매칭 %d, 스킵 %d, 미매칭 %d, 수익기회 %d",
+                    batch_idx + 1, total_batches,
+                    result.new_matched, result.already_matched,
+                    result.no_match, len(result.opportunities),
+                )
+
+                # 배치 간 딜레이 30초 (차단 방지)
+                if batch_idx < total_batches - 1 and not self._batch_scan_stop:
+                    await asyncio.sleep(30)
+
+            result.finished_at = datetime.now()
+            elapsed = (result.finished_at - result.started_at).total_seconds()
+
+            logger.info(
+                "=== 배치스캔 %s (%.0f초) | 총 %d → 검색 %d → 매칭 %d → "
+                "수익기회 %d | 스킵 %d | 에러 %d ===",
+                "완료" if not self._batch_scan_stop else "중지",
+                elapsed, result.total, result.processed,
+                result.new_matched, len(result.opportunities),
+                result.already_matched, len(result.errors),
+            )
+
+            return result
+
+        finally:
+            # 매칭 검토 콜백 복원
+            self._match_review_callback = saved_callback
+
+    def stop_batch_scan(self) -> None:
+        """배치스캔 중지 요청."""
+        self._batch_scan_stop = True
+        logger.info("배치스캔 중지 요청됨")
 
     async def _collect_kream_popular(
         self, categories: list[str] | None = None,

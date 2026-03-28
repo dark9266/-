@@ -236,6 +236,58 @@ class Database:
         )
         await self.db.commit()
 
+    # -- 배치스캔용 조회 --
+
+    async def get_kream_product_count(self) -> int:
+        """크림 상품 총 수 (모델번호 있는 것만)."""
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) as cnt FROM kream_products WHERE model_number != ''"
+        )
+        row = await cursor.fetchone()
+        return row["cnt"] if row else 0
+
+    async def get_kream_products_batch(self, offset: int, limit: int) -> list:
+        """크림 상품 배치 조회."""
+        cursor = await self.db.execute(
+            """SELECT product_id, name, model_number, brand, category, image_url, url
+            FROM kream_products WHERE model_number != ''
+            ORDER BY product_id LIMIT ? OFFSET ?""",
+            (limit, offset),
+        )
+        return await cursor.fetchall()
+
+    async def find_retail_by_model(self, model_number: str) -> list:
+        """모델번호로 리테일 매칭 상품 조회."""
+        if not model_number:
+            return []
+        cursor = await self.db.execute(
+            "SELECT * FROM retail_products WHERE model_number = ?",
+            (model_number,),
+        )
+        return await cursor.fetchall()
+
+    async def get_matched_kream_products(self, limit: int = 200) -> list:
+        """리테일 매칭이 있는 크림 상품 조회 (자동스캔용)."""
+        cursor = await self.db.execute(
+            """SELECT DISTINCT kp.product_id, kp.name, kp.model_number, kp.brand,
+               kp.category, kp.image_url, kp.url
+            FROM kream_products kp
+            INNER JOIN retail_products rp ON kp.model_number = rp.model_number
+            ORDER BY kp.updated_at DESC LIMIT ?""",
+            (limit,),
+        )
+        return await cursor.fetchall()
+
+    async def get_matched_count(self) -> int:
+        """리테일 매칭이 있는 크림 상품 수."""
+        cursor = await self.db.execute(
+            """SELECT COUNT(DISTINCT kp.product_id) as cnt
+            FROM kream_products kp
+            INNER JOIN retail_products rp ON kp.model_number = rp.model_number"""
+        )
+        row = await cursor.fetchone()
+        return row["cnt"] if row else 0
+
     # -- 알림 기록 --
 
     async def save_alert(
