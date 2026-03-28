@@ -368,8 +368,8 @@ class MusinsaCrawler:
 
             # 재고 여부 판단
             in_stock = True
-            if inventory_data is not None:
-                # inventory 데이터가 존재하면 정확한 매핑으로 판단
+            if inventory_data:
+                # inventory 데이터가 존재하고 비어있지 않으면 정확한 매핑으로 판단
                 ov_no = ov.get("no")
                 matched_inv = False
                 for inv in inventory_data:
@@ -382,7 +382,7 @@ class MusinsaCrawler:
                     # inventory에 해당 옵션이 없으면 품절로 처리
                     in_stock = False
             else:
-                # inventory 데이터 자체가 없으면 isDeleted로 판단
+                # inventory 데이터 없거나 빈 리스트면 isDeleted로 판단
                 in_stock = not ov.get("isDeleted", False)
 
             # "재입고 알림" 상태인 옵션은 품절 처리

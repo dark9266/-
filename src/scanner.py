@@ -726,6 +726,7 @@ class Scanner:
             batch_size = 500
             total_batches = (total + batch_size - 1) // batch_size
 
+            print(f"[DEBUG batch_scan] 시작: total={total}, batches={total_batches}")
             logger.info(
                 "=== 배치스캔 시작: 총 %d개, %d배치 ===", total, total_batches,
             )
@@ -743,6 +744,7 @@ class Scanner:
 
                 offset = batch_idx * batch_size
                 products = await self.db.get_kream_products_batch(offset, batch_size)
+                print(f"[DEBUG batch_scan] 배치 {batch_idx+1}/{total_batches} DB조회 완료: {len(products)}건")
 
                 async def process_one(row) -> AutoScanOpportunity | None:
                     async with semaphore:
@@ -757,6 +759,7 @@ class Scanner:
                             return None
 
                         result.processed += 1
+                        print(f"[DEBUG process_one] #{result.processed} 검색: {model_number} ({row['name'][:30]})")
 
                         # 리테일 검색 (무신사 + 29CM 병렬)
                         try:
@@ -765,6 +768,7 @@ class Scanner:
                                 kream_brand=row["brand"] or "",
                             )
                         except Exception as e:
+                            print(f"[DEBUG process_one] 검색 예외: {model_number} → {e}")
                             result.errors.append(f"검색 실패 ({model_number}): {e}")
                             return None
 
@@ -778,6 +782,7 @@ class Scanner:
                             return None
 
                         result.new_matched += 1
+                        print(f"[DEBUG process_one] ✅ 매칭 성공: {model_number} → {best_name[:30]} ({best_url[:50]})")
 
                         # 리테일 상품 DB 저장
                         source = "29cm" if "29cm" in best_url else "musinsa"
@@ -827,13 +832,16 @@ class Scanner:
                         return None
 
                 # 배치 내 병렬 처리
+                print(f"[DEBUG batch_scan] 배치 {batch_idx+1} gather 시작: {len(products)}태스크")
                 batch_tasks = [process_one(row) for row in products]
                 gathered = await asyncio.gather(
                     *batch_tasks, return_exceptions=True,
                 )
+                print(f"[DEBUG batch_scan] 배치 {batch_idx+1} gather 완료")
 
                 for r in gathered:
                     if isinstance(r, Exception):
+                        print(f"[DEBUG batch_scan] gather 예외: {r}")
                         result.errors.append(str(r))
                     elif isinstance(r, AutoScanOpportunity):
                         result.opportunities.append(r)
@@ -856,6 +864,7 @@ class Scanner:
 
                 # 배치 간 딜레이 30초 (차단 방지)
                 if batch_idx < total_batches - 1 and not self._batch_scan_stop:
+                    print(f"[DEBUG batch_scan] 배치 {batch_idx+1} 완료, 30초 대기...")
                     await asyncio.sleep(30)
 
             result.finished_at = datetime.now()
