@@ -360,35 +360,30 @@ class MusinsaCrawler:
 
         option_values = size_option.get("optionValues", [])
 
-        # 재고 정보 맵 (variantId -> outOfStock)
-        stock_map: dict[int, bool] = {}
-        if inventory_data:
-            for inv in inventory_data:
-                vid = inv.get("productVariantId")
-                out = inv.get("outOfStock", False)
-                if vid is not None:
-                    stock_map[vid] = not out
-
         sizes: list[RetailSizeInfo] = []
         for ov in option_values:
             size_name = ov.get("name", "")
             if not size_name:
                 continue
 
-            # 재고 여부: inventory 데이터가 있으면 그것으로, 없으면 재고 있다고 가정
+            # 재고 여부 판단
             in_stock = True
-            if stock_map:
-                # variant와 option value 매핑은 순서 기반
+            if inventory_data is not None:
+                # inventory 데이터가 존재하면 정확한 매핑으로 판단
                 ov_no = ov.get("no")
-                # inventory에서 해당 옵션 찾기
-                for inv in (inventory_data or []):
+                matched_inv = False
+                for inv in inventory_data:
                     related = inv.get("relatedOption")
                     if related and related.get("optionValueNo") == ov_no:
                         in_stock = not inv.get("outOfStock", False)
+                        matched_inv = True
                         break
-                else:
-                    # 매핑 못 찾으면 deleted 여부로 판단
-                    in_stock = not ov.get("isDeleted", False)
+                if not matched_inv:
+                    # inventory에 해당 옵션이 없으면 품절로 처리
+                    in_stock = False
+            else:
+                # inventory 데이터 자체가 없으면 isDeleted로 판단
+                in_stock = not ov.get("isDeleted", False)
 
             # "재입고 알림" 상태인 옵션은 품절 처리
             if ov.get("isRestock") or "재입고" in size_name:

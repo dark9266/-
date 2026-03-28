@@ -672,9 +672,15 @@ class Scanner:
                     used_query = " ".join(words)
                     logger.debug("무신사 2차 검색(상품명) 성공: '%s' → %d건", used_query, len(search_results))
 
-        # ── 3차: 브랜드 + 상품명 조합 검색 ──
+        # ── 3차: 브랜드 + 상품명 조합 검색 (브랜드 중복 방지) ──
         if not search_results and kream_brand and kream_name:
-            brand_name_query = f"{kream_brand} {kream_name.split()[0] if kream_name.split() else ''}"
+            name_words = kream_name.split()
+            # 상품명이 브랜드명으로 시작하면 브랜드 중복 방지
+            if name_words and name_words[0].lower() == kream_brand.lower():
+                # 이미 브랜드 포함된 상품명에서 앞 3단어 사용
+                brand_name_query = " ".join(name_words[:3])
+            else:
+                brand_name_query = f"{kream_brand} {name_words[0] if name_words else ''}"
             brand_name_query = brand_name_query.strip()
             if brand_name_query:
                 search_results = await musinsa_crawler.search_products(brand_name_query)
@@ -758,12 +764,17 @@ class Scanner:
     ) -> tuple[dict[str, tuple[int, bool]], str, str, str] | None:
         """모델번호로 29CM에서 검색하여 사이즈별 가격 반환.
 
+        3단계 검색 전략:
+        1차: 모델번호 직접 검색 (복합 모델번호 분리 포함)
+        2차: 크림 상품명(한글/영문)으로 검색
+
         Returns:
             (sizes_dict, url, name, product_id) or None
         """
         from src.profit_calculator import _normalize_size
+        import re as _re
 
-        # 29CM 검색 (모델번호 → 상품명 단어 폴백)
+        # ── 1차: 모델번호 검색 ──
         search_queries = [model_number]
         if "/" in model_number:
             parts = [p.strip() for p in model_number.split("/") if p.strip()]
@@ -775,31 +786,72 @@ class Scanner:
             if search_results:
                 break
 
+        # ── 2차: 상품명으로 검색 (모델번호 검색 실패 시) ──
+        if not search_results and kream_name:
+            name_query = _re.sub(r"['\"]", "", kream_name)
+            words = name_query.split()[:4]
+            if words:
+                search_results = await twentynine_cm_crawler.search_products(
+                    " ".join(words), limit=10,
+                )
+                if search_results:
+                    logger.debug(
+                        "29CM 2차 검색(상품명) 성공: '%s' → %d건",
+                        " ".join(words), len(search_results),
+                    )
+
         if not search_results:
             return None
 
-        # 모델번호 매칭 (검색 결과의 model_number 필드 활용)
+        # 모델번호 매칭 (검색 결과의 model_number 필드 또는 상세 페이지)
         for item in search_results[:5]:
             item_model = item.get("model_number", "")
-            if not item_model:
+
+            # 검색 결과에 모델번호가 있으면 직접 매칭
+            if item_model and _match_model_with_slash(item_model, model_number):
+                result = await self._fetch_29cm_sizes(item["product_id"], model_number)
+                if result:
+                    return result
                 continue
 
-            if _match_model_with_slash(item_model, model_number):
-                # 상세 페이지에서 사이즈 수집
+            # 모델번호가 없으면 상세 페이지에서 모델번호 확인
+            if not item_model:
                 detail = await twentynine_cm_crawler.get_product_detail(item["product_id"])
                 if not detail or not detail.sizes:
                     continue
+                if detail.model_number and _match_model_with_slash(
+                    detail.model_number, model_number,
+                ):
+                    sizes: dict[str, tuple[int, bool]] = {}
+                    for s in detail.sizes:
+                        if s.in_stock and s.price > 0:
+                            norm_size = _normalize_size(s.size)
+                            if norm_size not in sizes or s.price < sizes[norm_size][0]:
+                                sizes[norm_size] = (s.price, s.in_stock)
+                    if sizes:
+                        return (sizes, detail.url, detail.name, detail.product_id)
 
-                sizes: dict[str, tuple[int, bool]] = {}
-                for s in detail.sizes:
-                    if s.in_stock and s.price > 0:
-                        norm_size = _normalize_size(s.size)
-                        if norm_size not in sizes or s.price < sizes[norm_size][0]:
-                            sizes[norm_size] = (s.price, s.in_stock)
+        return None
 
-                if sizes:
-                    return (sizes, detail.url, detail.name, detail.product_id)
+    async def _fetch_29cm_sizes(
+        self, product_id: str, model_number: str,
+    ) -> tuple[dict[str, tuple[int, bool]], str, str, str] | None:
+        """29CM 상세 페이지에서 사이즈별 가격 수집."""
+        from src.profit_calculator import _normalize_size
 
+        detail = await twentynine_cm_crawler.get_product_detail(product_id)
+        if not detail or not detail.sizes:
+            return None
+
+        sizes: dict[str, tuple[int, bool]] = {}
+        for s in detail.sizes:
+            if s.in_stock and s.price > 0:
+                norm_size = _normalize_size(s.size)
+                if norm_size not in sizes or s.price < sizes[norm_size][0]:
+                    sizes[norm_size] = (s.price, s.in_stock)
+
+        if sizes:
+            return (sizes, detail.url, detail.name, detail.product_id)
         return None
 
     async def _search_retail_for_model(
