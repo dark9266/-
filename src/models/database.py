@@ -199,6 +199,20 @@ class Database:
         )
         return await cursor.fetchone()
 
+    async def search_kream_by_model_like(self, model_number: str) -> aiosqlite.Row | None:
+        """모델번호 유연 검색 (슬래시 구분 모델번호 등 대응).
+
+        kream_db.json의 모델번호가 '315122-111/CW2288-111' 형태일 때,
+        'CW2288-111'로 검색해도 찾을 수 있도록 LIKE 검색을 수행한다.
+        """
+        if not model_number:
+            return None
+        cursor = await self.db.execute(
+            "SELECT * FROM kream_products WHERE model_number LIKE ? LIMIT 1",
+            (f"%{model_number}%",),
+        )
+        return await cursor.fetchone()
+
     # -- 리테일 상품 --
 
     async def upsert_retail_product(

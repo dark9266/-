@@ -8,7 +8,7 @@ import re
 
 from src.crawlers.kream import kream_crawler
 from src.models.database import Database
-from src.models.product import KreamProduct, RetailProduct
+from src.models.product import KreamProduct, KreamSizePrice, RetailProduct
 from src.utils.logging import setup_logger
 
 logger = setup_logger("matcher")
@@ -77,14 +77,48 @@ def model_numbers_match(a: str, b: str) -> bool:
     return False
 
 
+def _row_to_kream_product(row) -> KreamProduct:
+    """DB 행을 KreamProduct 객체로 변환."""
+    return KreamProduct(
+        product_id=row["product_id"],
+        name=row["name"],
+        model_number=row["model_number"],
+        brand=row["brand"] or "",
+        category=row["category"] or "sneakers",
+        image_url=row["image_url"] or "",
+        url=row["url"] or "",
+    )
+
+
+async def _find_in_db(normalized: str, original: str, db: Database):
+    """DB에서 모델번호로 크림 상품을 검색한다 (다단계 시도)."""
+    # 1) 정규화된 모델번호로 정확 검색
+    row = await db.find_kream_by_model(normalized)
+    if row:
+        return row
+
+    # 2) 원본 모델번호로 정확 검색
+    if normalized != original:
+        row = await db.find_kream_by_model(original)
+        if row:
+            return row
+
+    # 3) LIKE 검색 (슬래시 구분 모델번호 대응: "315122-111/CW2288-111")
+    row = await db.search_kream_by_model_like(normalized)
+    if row:
+        return row
+
+    return None
+
+
 async def find_kream_match(
     retail_product: RetailProduct,
     db: Database,
 ) -> KreamProduct | None:
     """리테일 상품에 매칭되는 크림 상품을 찾는다.
 
-    1. 먼저 DB에서 모델번호로 검색 (이미 수집된 상품)
-    2. 없으면 크림에서 검색하여 매칭 시도
+    1. 먼저 DB에서 모델번호로 검색 (47,000+ 상품 DB 활용, API 호출 없음)
+    2. 없으면 크림 API에서 검색하여 매칭 시도
 
     Args:
         retail_product: 리테일 상품 정보 (model_number 필수)
@@ -101,24 +135,13 @@ async def find_kream_match(
     normalized = normalize_model_number(model_number)
     logger.info("크림 매칭 시도: %s (정규화: %s)", model_number, normalized)
 
-    # 1단계: DB에서 검색
-    row = await db.find_kream_by_model(normalized)
+    # 1단계: DB에서 검색 (API 호출 없이 즉시 반환)
+    row = await _find_in_db(normalized, model_number, db)
     if row:
         logger.info("DB에서 매칭 발견: %s (product_id: %s)", row["name"], row["product_id"])
-        # DB에 있으면 크림에서 최신 가격 수집
-        product = await kream_crawler.get_full_product_info(row["product_id"])
-        if product:
-            return product
+        return _row_to_kream_product(row)
 
-    # 정규화 안 한 원본으로도 시도
-    if normalized != model_number:
-        row = await db.find_kream_by_model(model_number)
-        if row:
-            product = await kream_crawler.get_full_product_info(row["product_id"])
-            if product:
-                return product
-
-    # 2단계: 크림에서 검색
+    # 2단계: 크림 API에서 검색 (DB에 없을 때만)
     search_results = await kream_crawler.search_product(model_number)
 
     if not search_results:

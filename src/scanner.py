@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from src.config import settings
 from src.crawlers.kream import kream_crawler
 from src.crawlers.musinsa import musinsa_crawler
+from src.crawlers.twentynine_cm import twentynine_cm_crawler
 from src.matcher import find_kream_match, model_numbers_match, normalize_model_number
 from src.models.database import Database
 from src.models.product import (
@@ -414,17 +415,17 @@ class Scanner:
                         return None
                     seen_models.add(model_number)
 
-                    # 무신사 검색
+                    # 리테일 검색 (무신사 + 29CM 병렬)
                     result.musinsa_searched += 1
-                    musinsa_result = await self._search_musinsa_for_model(
+                    retail_result = await self._search_retail_for_model(
                         model_number, kream_product.name,
                         kream_brand=kream_product.brand or "",
                     )
-                    if not musinsa_result:
+                    if not retail_result:
                         return None
 
-                    musinsa_sizes, musinsa_url, musinsa_name, musinsa_pid = musinsa_result
-                    if not musinsa_sizes:
+                    merged_sizes, best_url, best_name, best_pid, source_prices = retail_result
+                    if not merged_sizes:
                         return None
 
                     result.matched += 1
@@ -432,11 +433,13 @@ class Scanner:
                     # 2단계 수익 분석
                     opportunity = analyze_auto_scan_opportunity(
                         kream_product=kream_product,
-                        musinsa_sizes=musinsa_sizes,
-                        musinsa_url=musinsa_url,
-                        musinsa_name=musinsa_name,
-                        musinsa_product_id=musinsa_pid,
+                        musinsa_sizes=merged_sizes,
+                        musinsa_url=best_url,
+                        musinsa_name=best_name,
+                        musinsa_product_id=best_pid,
                     )
+                    if opportunity:
+                        opportunity.source_prices = source_prices
 
                     if opportunity and (
                         opportunity.best_confirmed_profit > 0
@@ -499,7 +502,7 @@ class Scanner:
 
         elapsed = (result.finished_at - result.started_at).total_seconds()
         logger.info(
-            "=== 자동스캔 완료 (%.0f초) | 크림 %d → 무신사 %d → 매칭 %d → "
+            "=== 자동스캔 완료 (%.0f초) | 크림 %d → 리테일 %d → 매칭 %d → "
             "수익기회 %d (확정 %d / 예상 %d) | 에러 %d ===",
             elapsed,
             result.kream_scanned,
@@ -749,6 +752,137 @@ class Scanner:
             )
 
         return (best[0], best[1], best[2], best[3])
+
+    async def _search_29cm_for_model(
+        self, model_number: str, kream_name: str = "",
+    ) -> tuple[dict[str, tuple[int, bool]], str, str, str] | None:
+        """모델번호로 29CM에서 검색하여 사이즈별 가격 반환.
+
+        Returns:
+            (sizes_dict, url, name, product_id) or None
+        """
+        from src.profit_calculator import _normalize_size
+
+        # 29CM 검색 (모델번호 → 상품명 단어 폴백)
+        search_queries = [model_number]
+        if "/" in model_number:
+            parts = [p.strip() for p in model_number.split("/") if p.strip()]
+            search_queries = parts + [model_number]
+
+        search_results = []
+        for query in search_queries:
+            search_results = await twentynine_cm_crawler.search_products(query, limit=10)
+            if search_results:
+                break
+
+        if not search_results:
+            return None
+
+        # 모델번호 매칭 (검색 결과의 model_number 필드 활용)
+        for item in search_results[:5]:
+            item_model = item.get("model_number", "")
+            if not item_model:
+                continue
+
+            if _match_model_with_slash(item_model, model_number):
+                # 상세 페이지에서 사이즈 수집
+                detail = await twentynine_cm_crawler.get_product_detail(item["product_id"])
+                if not detail or not detail.sizes:
+                    continue
+
+                sizes: dict[str, tuple[int, bool]] = {}
+                for s in detail.sizes:
+                    if s.in_stock and s.price > 0:
+                        norm_size = _normalize_size(s.size)
+                        if norm_size not in sizes or s.price < sizes[norm_size][0]:
+                            sizes[norm_size] = (s.price, s.in_stock)
+
+                if sizes:
+                    return (sizes, detail.url, detail.name, detail.product_id)
+
+        return None
+
+    async def _search_retail_for_model(
+        self, model_number: str, kream_name: str = "",
+        kream_brand: str = "",
+    ) -> tuple[dict[str, tuple[int, bool]], str, str, str, dict[str, int]] | None:
+        """무신사 + 29CM 병렬 검색 후 사이즈별 최저가 병합.
+
+        Returns:
+            (merged_sizes, best_url, best_name, best_pid, source_prices) or None
+            source_prices: {"무신사": 최저가, "29CM": 최저가}
+        """
+        # 무신사 + 29CM 병렬 검색 (29CM 실패해도 무신사 결과 사용)
+        musinsa_task = self._search_musinsa_for_model(
+            model_number, kream_name, kream_brand=kream_brand,
+        )
+        twentynine_task = self._search_29cm_for_model(
+            model_number, kream_name,
+        )
+
+        results = await asyncio.gather(
+            musinsa_task, twentynine_task, return_exceptions=True,
+        )
+
+        musinsa_result = results[0] if not isinstance(results[0], Exception) else None
+        twentynine_result = results[1] if not isinstance(results[1], Exception) else None
+
+        if isinstance(results[0], Exception):
+            logger.warning("무신사 검색 예외: %s", results[0])
+        if isinstance(results[1], Exception):
+            logger.warning("29CM 검색 예외: %s", results[1])
+
+        if not musinsa_result and not twentynine_result:
+            return None
+
+        # 소싱처별 최저가 기록
+        source_prices: dict[str, int] = {}
+
+        # 소싱처별 결과 수집: [(sizes, url, name, pid, source_label)]
+        source_items: list[tuple[dict, str, str, str, str]] = []
+
+        if musinsa_result:
+            m_sizes, m_url, m_name, m_pid = musinsa_result
+            source_items.append((m_sizes, m_url, m_name, m_pid, "무신사"))
+            if m_sizes:
+                source_prices["무신사"] = min(p for p, _ in m_sizes.values())
+
+        if twentynine_result:
+            t_sizes, t_url, t_name, t_pid = twentynine_result
+            source_items.append((t_sizes, t_url, t_name, t_pid, "29CM"))
+            if t_sizes:
+                source_prices["29CM"] = min(p for p, _ in t_sizes.values())
+
+        # 사이즈별 최저가 병합 + 소싱처 추적
+        merged_sizes: dict[str, tuple[int, bool]] = {}
+        # 어떤 소싱처가 최저가인지 (best_url/name/pid 결정용)
+        best_source_label = ""
+        best_min_price = float("inf")
+
+        for sizes, url, name, pid, label in source_items:
+            cur_min = min((p for p, _ in sizes.values()), default=float("inf"))
+            if cur_min < best_min_price:
+                best_min_price = cur_min
+                best_url = url
+                best_name = name
+                best_pid = pid
+                best_source_label = label
+
+            for size_key, (price, in_stock) in sizes.items():
+                if size_key not in merged_sizes or price < merged_sizes[size_key][0]:
+                    merged_sizes[size_key] = (price, in_stock)
+
+        if not merged_sizes:
+            return None
+
+        if len(source_prices) > 1:
+            prices_str = " / ".join(f"{k} {v:,}원" for k, v in source_prices.items())
+            logger.info(
+                "리테일 가격 비교: %s → 최저가 %s (%s)",
+                model_number, best_source_label, prices_str,
+            )
+
+        return (merged_sizes, best_url, best_name, best_pid, source_prices)
 
     async def _log_match_review(
         self,

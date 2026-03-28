@@ -107,7 +107,8 @@ class AutoScanSizeProfit:
     """자동스캔 사이즈별 2단계 수익 분석."""
 
     size: str
-    musinsa_price: int  # 무신사 매입가
+    musinsa_price: int  # 리테일 매입가 (최저가 소싱처)
+    source: str = "무신사"  # 소싱처 ("무신사", "29CM" 등)
     # 1순위: 확정 수익 (즉시판매 = bid 기반)
     kream_bid_price: int | None = None  # 크림 즉시구매가 (= 내가 받는 가격)
     confirmed_profit: int = 0  # 확정 순수익
@@ -123,7 +124,7 @@ class AutoScanSizeProfit:
 
 @dataclass
 class AutoScanOpportunity:
-    """자동스캔 수익 기회 (크림 기준 → 무신사 매입)."""
+    """자동스캔 수익 기회 (크림 기준 → 리테일 매입)."""
 
     kream_product: KreamProduct
     musinsa_url: str = ""
@@ -141,3 +142,5 @@ class AutoScanOpportunity:
     price_trend: str = ""  # 상승/하락/횡보
     bid_ask_spread: int = 0  # 즉시구매가-최근거래가 차이 (클수록 불안정)
     detected_at: datetime = field(default_factory=datetime.now)
+    # 소싱처별 최저가 {"무신사": 109000, "29CM": 105000}
+    source_prices: dict[str, int] = field(default_factory=dict)

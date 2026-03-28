@@ -342,12 +342,15 @@ def format_auto_scan_alert(opportunity: AutoScanOpportunity) -> discord.Embed:
 
     # 매입처 정보
     if opportunity.musinsa_url:
+        source_info = f"**상품명:** {opportunity.musinsa_name}\n"
+        if opportunity.source_prices:
+            source_info += "**소싱처별 가격:**\n"
+            for src, price in sorted(opportunity.source_prices.items(), key=lambda x: x[1]):
+                source_info += f"  {src} **{price:,}원**\n"
+        source_info += f"[최저가 구매 링크]({opportunity.musinsa_url})"
         embed.add_field(
-            name="무신사 매입",
-            value=(
-                f"**상품명:** {opportunity.musinsa_name}\n"
-                f"[무신사 구매 링크]({opportunity.musinsa_url})"
-            ),
+            name="리테일 매입",
+            value=source_info,
             inline=True,
         )
 
@@ -378,7 +381,7 @@ def format_auto_scan_alert(opportunity: AutoScanOpportunity) -> discord.Embed:
         name="링크",
         value=(
             f"[크림 상품 페이지]({kp.url})"
-            + (f" | [무신사 구매]({opportunity.musinsa_url})" if opportunity.musinsa_url else "")
+            + (f" | [최저가 구매]({opportunity.musinsa_url})" if opportunity.musinsa_url else "")
         ),
         inline=False,
     )
