@@ -23,10 +23,11 @@ class KreamFees(BaseSettings):
         extra="ignore",
     )
 
-    sell_fee_rate: float = 0.06  # 판매 수수료 6%
-    sell_fee_vat_rate: float = 0.1  # 판매 수수료 부가세 10%
-    inspection_fee: int = 2500  # 검수비 (원)
-    kream_shipping_fee: int = 3500  # 크림 배송비 (원)
+    base_fee: int = 2500  # 기본료 (원)
+    sell_fee_rate: float = 0.06  # 등급 수수료율 6%
+    vat_rate: float = 0.1  # 부가세 10%
+    inspection_fee: int = 0  # 검수비 (무료)
+    kream_shipping_fee: int = 0  # 크림 배송비 (무료)
 
 
 class SignalThresholds(BaseSettings):

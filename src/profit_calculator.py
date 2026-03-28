@@ -35,13 +35,13 @@ def calculate_kream_fees(sell_price: int) -> dict:
     """
     fees = settings.fees
 
-    # 판매 수수료 = 판매가 × 6% × (1 + 부가세 10%)
-    sell_fee_before_vat = sell_price * fees.sell_fee_rate
-    sell_fee = math.ceil(sell_fee_before_vat * (1 + fees.sell_fee_vat_rate))
+    # 수수료 = (기본료 + 판매가 × 등급수수료율) × (1 + 부가세)
+    fee_subtotal = fees.base_fee + sell_price * fees.sell_fee_rate
+    sell_fee = round(fee_subtotal * (1 + fees.vat_rate))
 
-    inspection_fee = fees.inspection_fee
-    kream_shipping_fee = fees.kream_shipping_fee
-    seller_shipping_fee = settings.shipping_cost_to_kream
+    inspection_fee = fees.inspection_fee  # 0원 (무료)
+    kream_shipping_fee = fees.kream_shipping_fee  # 0원 (무료)
+    seller_shipping_fee = settings.shipping_cost_to_kream  # 판매자 배송비
 
     total_fees = sell_fee + inspection_fee + kream_shipping_fee + seller_shipping_fee
 

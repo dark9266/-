@@ -18,26 +18,45 @@ from src.profit_calculator import (
 
 class TestCalculateKreamFees:
     def test_basic_fee_calculation(self):
-        """130,000원 판매 시 수수료 계산."""
+        """130,000원 판매 시 수수료 계산.
+
+        수수료 = ceil((2500 + 130000 * 0.06) * 1.1) = ceil(11330.0) = 11330
+        """
         result = calculate_kream_fees(130_000)
 
-        # 판매 수수료: 130000 * 0.06 * 1.1 = 8,580원
-        assert result["sell_fee"] == 8_580
-        assert result["inspection_fee"] == 2_500
-        assert result["kream_shipping_fee"] == 3_500
+        assert result["sell_fee"] == 11_330
+        assert result["inspection_fee"] == 0
+        assert result["kream_shipping_fee"] == 0
         assert result["seller_shipping_fee"] == 3_000
-        assert result["total_fees"] == 8_580 + 2_500 + 3_500 + 3_000
+        assert result["total_fees"] == 11_330 + 3_000
 
     def test_zero_price(self):
+        """판매가 0원 → 기본료만 적용."""
         result = calculate_kream_fees(0)
-        assert result["sell_fee"] == 0
-        assert result["total_fees"] == 2_500 + 3_500 + 3_000
+        # ceil(2500 * 1.1) = ceil(2750) = 2750
+        assert result["sell_fee"] == 2_750
+        assert result["total_fees"] == 2_750 + 3_000
 
     def test_high_price(self):
-        """500,000원 판매 시."""
+        """500,000원 판매 시.
+
+        수수료 = ceil((2500 + 500000 * 0.06) * 1.1) = ceil(35750.0) = 35750
+        """
         result = calculate_kream_fees(500_000)
-        # 500000 * 0.06 * 1.1 = 33,000원
-        assert result["sell_fee"] == 33_000
+        assert result["sell_fee"] == 35_750
+
+    def test_real_account_verification(self):
+        """실제 크림 계정 화면 검증값.
+
+        판매가 167,000원 → 수수료 = ceil((2500 + 167000*0.06) * 1.1) = ceil(13772.0) = 13772
+        정산금액 = 167000 - 13772 = 153228 (크림 화면 13770/153230과 2원 차이 - 10원 절사 추정)
+        """
+        result = calculate_kream_fees(167_000)
+        assert result["sell_fee"] == 13_772
+        assert result["inspection_fee"] == 0
+        assert result["kream_shipping_fee"] == 0
+        assert result["seller_shipping_fee"] == 3_000
+        assert result["total_fees"] == 13_772 + 3_000
 
 
 class TestCalculateSizeProfit:
@@ -47,10 +66,10 @@ class TestCalculateSizeProfit:
             retail_price=80_000,
             kream_sell_price=130_000,
         )
-        # 수수료: 130000*0.06*1.1=8580 + 2500 + 3500 + 3000 = 17580
-        # 총비용: 80000 + 17580 = 97580
-        # 순수익: 130000 - 97580 = 32420
-        assert result.net_profit == 32_420
+        # 수수료: ceil((2500 + 130000*0.06) * 1.1) = 11330 + 3000 = 14330
+        # 총비용: 80000 + 14330 = 94330
+        # 순수익: 130000 - 94330 = 35670
+        assert result.net_profit == 35_670
         assert result.roi > 0
 
     def test_loss_case(self):
@@ -59,10 +78,10 @@ class TestCalculateSizeProfit:
             retail_price=120_000,
             kream_sell_price=130_000,
         )
-        # 수수료: 17580
-        # 총비용: 120000 + 17580 = 137580
-        # 순수익: 130000 - 137580 = -7580
-        assert result.net_profit == -7_580
+        # 수수료: 14330
+        # 총비용: 120000 + 14330 = 134330
+        # 순수익: 130000 - 134330 = -4330
+        assert result.net_profit == -4_330
         assert result.roi < 0
 
     def test_roi_calculation(self):
@@ -70,11 +89,11 @@ class TestCalculateSizeProfit:
             retail_price=100_000,
             kream_sell_price=150_000,
         )
-        # 수수료: 150000*0.06*1.1=9900 + 2500 + 3500 + 3000 = 18900
-        # 순수익: 150000 - 100000 - 18900 = 31100
-        # ROI: 31100/100000*100 = 31.1%
-        assert result.net_profit == 31_100
-        assert result.roi == 31.1
+        # 수수료: round((2500 + 9000) * 1.1) = 12650, total = 12650 + 3000 = 15650
+        # 순수익: 150000 - 100000 - 15650 = 34350
+        # ROI: 34350/100000*100 = 34.4%
+        assert result.net_profit == 34_350
+        assert result.roi == 34.4
 
 
 class TestDetermineSignal:

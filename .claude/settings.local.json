@@ -9,7 +9,8 @@
       "Bash(source ~/kream-venv/bin/activate)",
       "Bash(curl -sS https://bootstrap.pypa.io/get-pip.py)",
       "Bash(playwright install:*)",
-      "Bash(PYTHONPATH=. python -m pytest tests/ -v)"
+      "Bash(PYTHONPATH=. python -m pytest tests/ -v)",
+      "Bash(python:*)"
     ]
   }
 }
