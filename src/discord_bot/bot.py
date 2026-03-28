@@ -19,6 +19,7 @@ from src.discord_bot.formatter import (
     format_profit_alert,
     format_status,
 )
+from src.kream_db_builder import build_kream_db, CATEGORIES
 from src.models.database import Database
 from src.profit_calculator import analyze_opportunity
 from src.scanner import Scanner
@@ -709,6 +710,66 @@ async def cmd_chrome_health(ctx: commands.Context):
     )
 
     await ctx.send(embed=embed)
+
+
+@bot.command(name="DB구축")
+async def cmd_build_db(ctx: commands.Context, *, args: str = ""):
+    """크림 전체 상품 DB 구축.
+
+    사용법:
+        !DB구축         → 테스트 (신발 2페이지만)
+        !DB구축 전체    → 전체 카테고리 수집
+        !DB구축 테스트  → 테스트 모드 (신발 2페이지)
+    """
+    test_mode = "전체" not in args
+    mode_label = "테스트 (신발 2페이지)" if test_mode else "전체 카테고리"
+
+    progress_msg = await ctx.send(
+        f"🗄️ **크림 DB 구축 시작** — {mode_label}\n"
+        f"카테고리: {', '.join(CATEGORIES.keys())}\n"
+        f"요청 간 1~2초 딜레이 적용"
+    )
+
+    async def on_progress(message: str):
+        """진행상황을 로그 채널에 전송."""
+        await bot.log_to_channel(f"[DB구축] {message}")
+        # 진행 메시지도 업데이트
+        try:
+            await progress_msg.edit(content=f"🗄️ {message}")
+        except Exception:
+            pass
+
+    try:
+        result = await build_kream_db(
+            on_progress=on_progress,
+            test_mode=test_mode,
+        )
+
+        # 카테고리별 통계
+        cat_lines = []
+        for cat, count in result["by_category"].items():
+            if count > 0:
+                cat_lines.append(f"  • {cat}: {count:,}개")
+
+        summary = (
+            f"✅ **크림 DB 구축 완료**\n"
+            f"• 총 상품: **{result['total']:,}개**\n"
+            f"• 거래량 0 제외: {result['excluded']:,}개\n"
+            f"• 소요시간: {result['elapsed_seconds']:.0f}초\n"
+            f"• 저장: `{result['path']}`\n"
+        )
+        if cat_lines:
+            summary += "\n**카테고리별:**\n" + "\n".join(cat_lines)
+
+        await ctx.send(summary)
+        await bot.log_to_channel(
+            f"[DB구축] 완료: {result['total']:,}개 상품 ({result['elapsed_seconds']:.0f}초)"
+        )
+
+    except Exception as e:
+        logger.error("DB 구축 실패: %s", e)
+        await ctx.send(f"❌ DB 구축 중 오류 발생: {e}")
+        await bot.log_to_channel(f"[DB구축] ❌ 실패: {e}")
 
 
 @bot.command(name="도움")
