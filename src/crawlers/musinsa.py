@@ -246,7 +246,10 @@ class MusinsaCrawler:
                     options_data = await resp.json()
                 elif "prioritized-inventories" in url and resp.ok:
                     body = await resp.json()
-                    inventory_data = body.get("data", [])
+                    if isinstance(body, dict):
+                        inventory_data = body.get("data", [])
+                    elif isinstance(body, list):
+                        inventory_data = body
             except Exception:
                 pass
 
@@ -328,11 +331,18 @@ class MusinsaCrawler:
             )
             if not sizes:
                 if options_data:
+                    try:
+                        _d = options_data if isinstance(options_data, dict) else {}
+                        _data = _d.get("data") if isinstance(_d, dict) else None
+                        _basic = _data.get("basic") if isinstance(_data, dict) else None
+                        _info = "no-basic"
+                        if isinstance(_basic, list) and _basic and isinstance(_basic[0], dict):
+                            _info = list(_basic[0].keys())[:5]
+                    except Exception:
+                        _info = f"type={type(options_data).__name__}"
                     logger.info(
                         "API 사이즈 파싱 0개 (DOM 폴백): pid=%s options_keys=%s",
-                        product_id,
-                        list((options_data.get("data") or {}).get("basic", [{}])[0].keys())[:5]
-                        if (options_data.get("data") or {}).get("basic") else "no-basic",
+                        product_id, _info,
                     )
                 else:
                     logger.info("API 옵션 데이터 미수신: pid=%s", product_id)
@@ -399,6 +409,8 @@ class MusinsaCrawler:
 
         size_option = None
         for opt in basic_options:
+            if not isinstance(opt, dict):
+                continue
             name_lower = (opt.get("name") or "").strip().lower()
             std_no = opt.get("standardOptionNo")
 
@@ -446,6 +458,8 @@ class MusinsaCrawler:
 
         sizes: list[RetailSizeInfo] = []
         for ov in option_values:
+            if not isinstance(ov, dict):
+                continue
             size_name = ov.get("name", "")
             if not size_name:
                 continue
@@ -488,9 +502,35 @@ class MusinsaCrawler:
 
         return sizes
 
+    @staticmethod
+    def _is_musinsa_sku(model: str) -> bool:
+        """무신사 자체 SKU인지 판별.
+
+        무신사 SKU 패턴: 브랜드접두사 + 언더스코어/숫자 조합
+        예: NBPDGS111G_15, SXCR2405_BK, APA5FS14_BK55
+        크림 모델번호와 달리 언더스코어를 포함하거나, 영문4자리+숫자 형태가 아님.
+        """
+        if not model:
+            return False
+        # 언더스코어 포함 → 무신사 SKU일 가능성 높음
+        if "_" in model:
+            return True
+        # 전형적 크림 모델번호 패턴이면 SKU가 아님
+        upper = model.upper()
+        # Nike/Jordan: XX1234-123, Adidas: AB1234, NB: M990XX / U7408PL
+        if re.match(r"^[A-Z]{1,3}\d{3,5}[-]\d{2,4}$", upper):
+            return False
+        if re.match(r"^[A-Z]{1,2}\d{3,5}[A-Z]{0,3}$", upper):
+            return False
+        # 6자리 이상 영문+숫자 혼합이면서 하이픈 없으면 SKU 의심
+        if len(model) >= 8 and not "-" in model and re.match(r"^[A-Z]{2,}", upper):
+            return True
+        return False
+
     async def _extract_model_number(self, page: Page) -> str:
         """상세 페이지에서 모델번호 추출."""
         # 1. 상품 상세 정보 테이블에서 찾기
+        table_model = ""
         for sel in [
             "//th[contains(text(), '품번')]/following-sibling::td",
             "//th[contains(text(), '모델')]/following-sibling::td",
@@ -502,39 +542,73 @@ class MusinsaCrawler:
                 if el:
                     text = (await el.inner_text()).strip()
                     if text and text != "-":
-                        return text
+                        table_model = text
+                        break
             except Exception:
                 continue
 
         # 2. data attribute에서 찾기
-        for sel in [
-            "[data-model-number]", "[data-product-code]",
-        ]:
-            try:
-                el = await page.query_selector(sel)
-                if el:
-                    val = await el.get_attribute("data-model-number")
-                    if not val:
-                        val = await el.get_attribute("data-product-code")
-                    if val:
-                        return val.strip()
-            except Exception:
-                continue
+        if not table_model:
+            for sel in [
+                "[data-model-number]", "[data-product-code]",
+            ]:
+                try:
+                    el = await page.query_selector(sel)
+                    if el:
+                        val = await el.get_attribute("data-model-number")
+                        if not val:
+                            val = await el.get_attribute("data-product-code")
+                        if val:
+                            table_model = val.strip()
+                            break
+                except Exception:
+                    continue
 
-        # 3. 상품명에서 모델번호 패턴 추출 (무신사는 상품명에 모델번호를 포함시킴)
-        # 예: "덩크 로우 W - 세일:화이트:메탈릭 골드:펄 핑크 / IO4244-100"
+        # 3. 상품명에서 모델번호 패턴 추출
+        # 예: "덩크 로우 W - 세일:화이트 / IO4244-100"
+        # 예: "뉴발란스 574 레거시 U7408PL"
+        name_model = ""
         try:
             name_el = await page.query_selector("[class*='GoodsName']")
             if name_el:
                 name_text = (await name_el.inner_text()).strip()
-                # "/" 뒤의 모델번호 패턴
+                # "/" 뒤의 모델번호
                 m = re.search(r"/\s*([A-Za-z0-9][-A-Za-z0-9]+)", name_text)
                 if m:
-                    candidate = m.group(1).strip()
-                    if re.match(r"[A-Z]{1,3}\d{3,5}[-\s]?\d{2,4}", candidate.upper()):
-                        return candidate.upper()
+                    candidate = m.group(1).strip().upper()
+                    if re.match(r"[A-Z]{1,3}\d{3,5}[-\s]?\d{2,4}", candidate):
+                        name_model = candidate
+                # 상품명 내 품번 패턴 (공백/하이픈 구분)
+                if not name_model:
+                    # Nike/Jordan: XX1234-123
+                    m = re.search(r"\b([A-Z]{1,3}\d{3,5}-\d{2,4})\b", name_text.upper())
+                    if m:
+                        name_model = m.group(1)
+                if not name_model:
+                    # NB/기타: 영문1~2자+숫자3~4자+영문0~3자 (U7408PL, MT410GC5, BB550)
+                    m = re.search(
+                        r"\b([A-Z]{1,2}\d{3,5}[A-Z]{0,3}\d{0,2})\b", name_text.upper(),
+                    )
+                    if m:
+                        candidate = m.group(1)
+                        # 너무 짧은(4자 이하) 것은 제외
+                        if len(candidate) >= 5:
+                            name_model = candidate
         except Exception:
             pass
+
+        # table_model이 무신사 SKU면 name_model 우선, 아니면 table_model 우선
+        if table_model and not self._is_musinsa_sku(table_model):
+            return table_model
+        if name_model:
+            if table_model:
+                logger.debug(
+                    "무신사 SKU→상품명 품번 대체: %s → %s", table_model, name_model,
+                )
+            return name_model
+        if table_model:
+            # SKU라도 없는 것보다 낫다
+            return table_model
 
         # 4. 페이지 HTML에서 정규식으로 추출
         try:
@@ -542,7 +616,7 @@ class MusinsaCrawler:
             patterns = [
                 r"[A-Z]{1,3}\d{3,5}[-\s]?\d{2,4}",  # DQ8423-100, FJ4188-100
                 r"\d{6}[-\s]?\d{3}",  # adidas: 123456-001
-                r"[A-Z]{2}\d{4}",  # NB: BB550
+                r"[A-Z]{1,2}\d{3,5}[A-Z]{0,3}",  # NB: BB550, U7408PL
             ]
             for pattern in patterns:
                 m = re.search(pattern, content)
