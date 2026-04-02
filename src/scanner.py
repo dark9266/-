@@ -1103,9 +1103,9 @@ class Scanner:
 
                     result.db_matched += 1
 
-                    # 크림 상세 정보 수집 (가격/거래량)
-                    kream_product = await self._get_kream_with_cache(
-                        row["product_id"],
+                    # 크림 가격: DB 우선, 없으면 API 호출
+                    kream_product = await self._get_kream_from_db_or_api(
+                        row["product_id"], row,
                     )
                     if not kream_product or not kream_product.size_prices:
                         return None
@@ -1303,6 +1303,48 @@ class Scanner:
             self._auto_scan_cache[normalized] = (datetime.now(), product)
 
         return product
+
+    async def _get_kream_from_db_or_api(
+        self, product_id: str, row: dict,
+    ) -> KreamProduct | None:
+        """크림 상품 정보를 DB 가격 우선으로 구축, 없으면 API 호출.
+
+        역방향 스캔용: DB에 가격 이력이 있으면 API 호출 없이 KreamProduct 구성.
+        가격 이력이 없으면 그때만 크림 API 호출.
+        """
+        from src.models.product import KreamSizePrice
+
+        # 1. DB에서 최신 가격 이력 조회
+        db_prices = await self.db.get_latest_kream_prices(product_id)
+
+        if db_prices:
+            # DB 가격으로 KreamProduct 구성 (API 호출 없음)
+            size_prices = []
+            for p in db_prices:
+                size_prices.append(KreamSizePrice(
+                    size=p["size"],
+                    sell_now_price=p["sell_now_price"],
+                    buy_now_price=p["buy_now_price"],
+                    bid_count=p.get("bid_count", 0),
+                    last_sale_price=p.get("last_sale_price"),
+                ))
+
+            product = KreamProduct(
+                product_id=product_id,
+                name=row["name"],
+                model_number=row["model_number"],
+                brand=row["brand"] or "",
+                category=row.get("category", "sneakers") or "sneakers",
+                image_url=row.get("image_url", "") or "",
+                url=row.get("url", "") or "",
+                size_prices=size_prices,
+            )
+            logger.debug("크림 DB 가격 사용: %s (%d사이즈)", product.name, len(size_prices))
+            return product
+
+        # 2. DB에 가격 없으면 크림 API 호출
+        logger.info("크림 DB 가격 없음, API 호출: %s", row["name"])
+        return await self._get_kream_with_cache(product_id)
 
     async def _search_musinsa_for_model(
         self, model_number: str, kream_name: str = "",
