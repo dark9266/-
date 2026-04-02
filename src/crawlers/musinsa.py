@@ -718,19 +718,37 @@ class MusinsaCrawler:
 
                     # 할인율 필터링
                     # 세일 페이지(gf=A, sortCode=DISCOUNT_RATE)에서 수집한 상품은
-                    # 할인율 파싱 실패(0)해도 실제로는 세일 상품이므로 포함
+                    # 이미 세일 상품이므로, 할인율 파싱 실패/부정확해도 포함한다.
+                    # min_discount_rate는 파싱된 할인율이 있을 때만 적용.
                     filtered = 0
                     for p in products_on_page:
-                        if p["discount_rate"] >= min_discount_rate or p["discount_rate"] == 0:
+                        parsed_rate = p["discount_rate"]
+                        # 파싱 실패(0) → 세일 페이지이므로 포함
+                        # 파싱 성공 → 기준 이상이면 포함
+                        if parsed_rate == 0 or parsed_rate >= min_discount_rate:
                             all_products.append(p)
                             filtered += 1
+                        else:
+                            # 파싱은 됐지만 기준 미달 — 세일 페이지에서 온 것이므로
+                            # 파싱 오차 가능성 고려하여 원가/세일가 차이가 있으면 포함
+                            if p.get("original_price", 0) > p.get("sale_price", 0) > 0:
+                                all_products.append(p)
+                                filtered += 1
 
+                    # 실제 할인율 분포 디버그 출력
+                    rates = [p["discount_rate"] for p in products_on_page if p["discount_rate"] > 0]
+                    rate_summary = ""
+                    if rates:
+                        rate_summary = (
+                            f" 할인율범위={min(rates):.0%}~{max(rates):.0%}"
+                            f" 평균={sum(rates)/len(rates):.0%}"
+                        )
                     logger.info(
                         "무신사 세일 수집: cat=%s page=%d → %d건 (포함 %d건, "
-                        "할인율 파싱성공 %d건, 누적 %d건)",
+                        "할인율 파싱성공 %d건, 누적 %d건)%s",
                         cat_code, page_num, len(products_on_page), filtered,
                         sum(1 for p in products_on_page if p["discount_rate"] > 0),
-                        len(all_products),
+                        len(all_products), rate_summary,
                     )
                 except Exception as e:
                     logger.warning(
@@ -847,11 +865,11 @@ class MusinsaCrawler:
 
                 full_url = href if href.startswith("http") else f"{MUSINSA_BASE}{href}"
 
-                # 할인율 파싱 실패 로그
+                # 할인율 파싱 실패 로그 (info로 올려서 확인 용이하게)
                 if discount_rate == 0:
-                    logger.debug(
-                        "세일 상품 할인율 미파싱: %s (card_text 길이=%d, prices=%s)",
-                        product_id, len(card_text),
+                    logger.info(
+                        "세일 상품 할인율 미파싱: pid=%s card_text_preview='%s' prices=%s",
+                        product_id, card_text[:120].replace('\n', ' '),
                         [p for p in re.findall(r"\d[\d,]+원?", card_text[:200])],
                     )
 

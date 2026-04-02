@@ -110,11 +110,26 @@ class BatchScanResult:
         self.processed: int = 0  # 실제 검색한 수
         self.new_matched: int = 0  # 새로 매칭된 수
         self.already_matched: int = 0  # 기존 매칭 스킵
+        self.brand_skipped: int = 0  # 브랜드 스킵 수
         self.no_match: int = 0
         self.opportunities: list[AutoScanOpportunity] = []
         self.errors: list[str] = []
         self.started_at: datetime = datetime.now()
         self.finished_at: datetime | None = None
+
+
+# 무신사/29CM에서 판매하지 않는 럭셔리/특수 브랜드 (배치스캔 스킵용)
+_SKIP_BRANDS = {
+    "Louis Vuitton", "Chanel", "Gucci", "Hermes", "Hermès",
+    "Prada", "Dior", "Balenciaga", "Bottega Veneta", "Saint Laurent",
+    "Burberry", "Givenchy", "Fendi", "Valentino", "Versace",
+    "Loewe", "Celine", "Céline", "Moncler", "Tom Ford",
+    "Chrome Hearts", "Off-White", "Bape", "A Bathing Ape",
+    "Supreme", "Fear of God", "Essentials",
+    "Apple", "Samsung", "Sony", "Nintendo", "Dyson",
+    "Rolex", "Omega", "Cartier", "Tiffany & Co.",
+    "Rimowa", "Goyard",
+}
 
 
 class ReverseScanResult:
@@ -781,6 +796,12 @@ class Scanner:
                         if not model_number:
                             return None
 
+                        # 무신사/29CM에서 안 파는 브랜드 스킵
+                        brand = (row["brand"] or "").strip()
+                        if brand in _SKIP_BRANDS:
+                            result.brand_skipped += 1
+                            return None
+
                         # 이미 매칭 있으면 스킵
                         existing = await self.db.find_retail_by_model(model_number)
                         if existing:
@@ -881,13 +902,15 @@ class Scanner:
                         f"배치 {batch_idx + 1}/{total_batches} 완료 — "
                         f"매칭 {result.new_matched}건, "
                         f"수익기회 {len(result.opportunities)}건, "
-                        f"스킵 {result.already_matched}건"
+                        f"스킵 {result.already_matched}건, "
+                        f"브랜드스킵 {result.brand_skipped}건"
                     )
 
                 logger.info(
-                    "배치 %d/%d 완료: 새매칭 %d, 스킵 %d, 미매칭 %d, 수익기회 %d",
+                    "배치 %d/%d 완료: 새매칭 %d, 스킵 %d, 브랜드스킵 %d, 미매칭 %d, 수익기회 %d",
                     batch_idx + 1, total_batches,
                     result.new_matched, result.already_matched,
+                    result.brand_skipped,
                     result.no_match, len(result.opportunities),
                 )
 
@@ -900,10 +923,10 @@ class Scanner:
             elapsed = (result.finished_at - result.started_at).total_seconds()
 
             logger.info(
-                "=== 배치스캔 %s (%.0f초) | 총 %d → 검색 %d → 매칭 %d → "
-                "수익기회 %d | 스킵 %d | 에러 %d ===",
+                "=== 배치스캔 %s (%.0f초) | 총 %d → 브랜드스킵 %d → 검색 %d → 매칭 %d → "
+                "수익기회 %d | 기존매칭 %d | 에러 %d ===",
                 "완료" if not self._batch_scan_stop else "중지",
-                elapsed, result.total, result.processed,
+                elapsed, result.total, result.brand_skipped, result.processed,
                 result.new_matched, len(result.opportunities),
                 result.already_matched, len(result.errors),
             )
@@ -925,7 +948,7 @@ class Scanner:
         self,
         on_opportunity=None,
         on_progress=None,
-        min_discount_rate: float = 0.05,
+        min_discount_rate: float = 0.01,
         max_pages: int = 3,
     ) -> ReverseScanResult:
         """역방향 스캔: 무신사 세일 상품 → 크림 DB 매칭 → 수익 분석.
@@ -1286,11 +1309,11 @@ class Scanner:
         if not search_results:
             return None
 
-        # ── 검색 결과에서 모델번호 정확 매칭 찾기 (최대 5건 상세 조회) ──
+        # ── 검색 결과에서 모델번호 정확 매칭 찾기 (최대 8건 상세 조회) ──
         matched_products: list[tuple[dict[str, tuple[int, bool]], str, str, str, int]] = []
         near_miss_items: list[dict] = []  # 매칭 애매한 건 (검토 채널용)
 
-        for item in search_results[:5]:
+        for item in search_results[:8]:
             try:
                 detail = await musinsa_crawler.get_product_detail(item["product_id"])
                 if not detail:
@@ -1314,6 +1337,11 @@ class Scanner:
                         min_price = min(p for p, _ in sizes.values())
                         matched_products.append(
                             (sizes, detail.url, detail.name, detail.product_id, min_price)
+                        )
+                    else:
+                        logger.info(
+                            "무신사 모델매칭 성공이나 사이즈 0개 (전체품절): %s (%s) 전체사이즈=%d개",
+                            detail.name, model_number, len(detail.sizes),
                         )
                 else:
                     # 모델번호 불일치 — 상품명이 유사한데 모델번호가 다른 경우 기록

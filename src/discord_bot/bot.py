@@ -440,7 +440,7 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
     """무신사 세일 → 크림 DB 매칭 역방향 스캔.
 
     사용법:
-        !역방향스캔          → 기본 (할인율 5% 이상, 3페이지)
+        !역방향스캔          → 기본 (할인율 1% 이상, 3페이지)
         !역방향스캔 30       → 할인율 30% 이상
         !역방향스캔 25 5     → 할인율 25% 이상, 5페이지
     """
@@ -451,7 +451,7 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
         return
 
     # 인자 파싱
-    min_discount = 5
+    min_discount = 1
     max_pages = 3
     parts = args.strip().split()
     if parts:
@@ -469,7 +469,7 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
 
     progress_msg = await ctx.send(
         f"🔄 **역방향 스캔 시작**\n"
-        f"• 무신사 세일 상품 (할인율 {min_discount}% 이상)\n"
+        f"• 무신사 세일 상품 (할인율 {min_discount}% 이상, 파싱 실패 시 포함)\n"
         f"• 크림 DB 매칭 (API 호출 없음)\n"
         f"• 페이지: 카테고리당 {max_pages}페이지"
     )
