@@ -987,6 +987,7 @@ class Scanner:
         on_opportunity=None,
         on_progress=None,
         max_results_per_brand: int = 10,
+        max_brands: int = 0,
     ) -> ReverseScanResult:
         """역방향 스캔: 크림 DB 브랜드별 무신사 검색 → 모델번호 매칭 → 수익 분석.
 
@@ -1017,6 +1018,10 @@ class Scanner:
             else:
                 # 한글 매핑 없으면 영문 브랜드명 그대로 검색
                 search_brands.append((brand, brand))
+
+        # max_brands > 0이면 브랜드 수 제한 (테스트 모드)
+        if max_brands > 0:
+            search_brands = search_brands[:max_brands]
 
         logger.info(
             "=== 역방향 스캔 시작: %d개 브랜드 검색 ===", len(search_brands),
