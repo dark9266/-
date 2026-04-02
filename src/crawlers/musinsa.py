@@ -242,7 +242,7 @@ class MusinsaCrawler:
             nonlocal options_data, inventory_data
             try:
                 url = resp.url
-                if "/options?" in url and "optKindCd" in url and resp.ok:
+                if "/options" in url and "goods" in url and resp.ok:
                     options_data = await resp.json()
                 elif "prioritized-inventories" in url and resp.ok:
                     body = await resp.json()
@@ -320,6 +320,15 @@ class MusinsaCrawler:
                 sale_price, original_price, discount_type, discount_rate,
             )
             if not sizes:
+                if options_data:
+                    logger.info(
+                        "API 사이즈 파싱 0개 (DOM 폴백): pid=%s options_keys=%s",
+                        product_id,
+                        list((options_data.get("data") or {}).get("basic", [{}])[0].keys())[:5]
+                        if (options_data.get("data") or {}).get("basic") else "no-basic",
+                    )
+                else:
+                    logger.info("API 옵션 데이터 미수신: pid=%s", product_id)
                 sizes = await self._extract_sizes(
                     page, sale_price, original_price, discount_type, discount_rate,
                 )
@@ -364,17 +373,51 @@ class MusinsaCrawler:
         data = options_data.get("data", {})
         basic_options = data.get("basic", [])
 
-        # 사이즈 옵션 찾기
+        # 사이즈 옵션 찾기 — standardOptionNo(3,4,6) 또는 이름 매칭
+        _COLOR_NAMES = {"c", "color", "색상", "컬러"}
+        _SIZE_NAMES = {"s", "size", "사이즈", "신발", "shoes"}
+        _SKIP_NAMES = {"none", ""}
+
         size_option = None
         for opt in basic_options:
-            if opt.get("name") in ("사이즈", "size"):
+            name_lower = (opt.get("name") or "").strip().lower()
+            std_no = opt.get("standardOptionNo")
+
+            # standardOptionNo 기반 판별 (3,4,6 = 사이즈)
+            if std_no in (3, 4, 6):
+                size_option = opt
+                break
+            # 이름 기반 판별
+            if name_lower in _SIZE_NAMES:
                 size_option = opt
                 break
 
+        # 옵션이 1개뿐이고 컬러/NONE이 아니면 사이즈로 간주
+        if not size_option and len(basic_options) == 1:
+            name_lower = (basic_options[0].get("name") or "").strip().lower()
+            if name_lower not in _COLOR_NAMES and name_lower not in _SKIP_NAMES:
+                size_option = basic_options[0]
+
         if not size_option:
+            opt_names = [o.get("name") for o in basic_options]
+            logger.debug("사이즈 옵션 매칭 실패: options=%s", opt_names)
             return []
 
         option_values = size_option.get("optionValues", [])
+
+        # optionItems에서 재고(activated) 매핑 구축
+        option_items = data.get("optionItems", [])
+        # optionValueNo → activated 매핑
+        activated_map: dict[int, bool] = {}
+        for item in option_items:
+            if not item.get("activated", True):
+                # 비활성 아이템의 모든 옵션값을 품절 처리
+                for val_no in item.get("optionValueNos", []):
+                    activated_map[val_no] = False
+            else:
+                for val_no in item.get("optionValueNos", []):
+                    if val_no not in activated_map:
+                        activated_map[val_no] = True
 
         sizes: list[RetailSizeInfo] = []
         for ov in option_values:
@@ -382,11 +425,13 @@ class MusinsaCrawler:
             if not size_name:
                 continue
 
-            # 재고 여부 판단
+            ov_no = ov.get("no")
+
+            # 재고 여부 판단: optionItems.activated > inventory > isDeleted
             in_stock = True
-            if inventory_data:
-                # inventory 데이터가 존재하고 비어있지 않으면 정확한 매핑으로 판단
-                ov_no = ov.get("no")
+            if activated_map and ov_no is not None:
+                in_stock = activated_map.get(ov_no, False)
+            elif inventory_data:
                 matched_inv = False
                 for inv in inventory_data:
                     related = inv.get("relatedOption")
@@ -395,10 +440,8 @@ class MusinsaCrawler:
                         matched_inv = True
                         break
                 if not matched_inv:
-                    # inventory에 해당 옵션이 없으면 품절로 처리
                     in_stock = False
             else:
-                # inventory 데이터 없거나 빈 리스트면 isDeleted로 판단
                 in_stock = not ov.get("isDeleted", False)
 
             # "재입고 알림" 상태인 옵션은 품절 처리
