@@ -363,6 +363,16 @@ class Database:
         rows = await cursor.fetchall()
         return [row["brand"] for row in rows]
 
+    async def get_brands_min_count(self, min_count: int = 10) -> list[str]:
+        """상품 수가 min_count 이상인 모든 브랜드 반환 (상품 수 내림차순)."""
+        cursor = await self.db.execute(
+            "SELECT brand FROM kream_products WHERE brand != '' "
+            "GROUP BY brand HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC",
+            (min_count,),
+        )
+        rows = await cursor.fetchall()
+        return [row["brand"] for row in rows]
+
     # -- 키워드 --
 
     async def get_active_keywords(self) -> list[str]:

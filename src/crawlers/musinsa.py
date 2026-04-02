@@ -377,8 +377,20 @@ class MusinsaCrawler:
         if not options_data:
             return []
 
-        data = options_data.get("data", {})
+        # API 응답이 list로 오는 경우 처리
+        if isinstance(options_data, list):
+            if not options_data:
+                return []
+            options_data = options_data[0] if isinstance(options_data[0], dict) else {}
+
+        data = options_data.get("data") if isinstance(options_data, dict) else None
+        if not isinstance(data, dict):
+            logger.debug("options_data.data가 dict가 아님: type=%s", type(data).__name__)
+            return []
         basic_options = data.get("basic", [])
+        if not isinstance(basic_options, list):
+            logger.debug("basic_options가 list가 아님: type=%s", type(basic_options).__name__)
+            return []
 
         # 사이즈 옵션 찾기 — standardOptionNo(3,4,6) 또는 이름 매칭
         _COLOR_NAMES = {"c", "color", "색상", "컬러"}
@@ -411,12 +423,18 @@ class MusinsaCrawler:
             return []
 
         option_values = size_option.get("optionValues", [])
+        if not isinstance(option_values, list):
+            return []
 
         # optionItems에서 재고(activated) 매핑 구축
         option_items = data.get("optionItems", [])
+        if not isinstance(option_items, list):
+            option_items = []
         # optionValueNo → activated 매핑
         activated_map: dict[int, bool] = {}
         for item in option_items:
+            if not isinstance(item, dict):
+                continue
             if not item.get("activated", True):
                 # 비활성 아이템의 모든 옵션값을 품절 처리
                 for val_no in item.get("optionValueNos", []):

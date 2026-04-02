@@ -948,7 +948,7 @@ class Scanner:
 
     # ─── 역방향 스캔 (전략 C: 브랜드별 무신사 검색 → 크림 DB 매칭) ──────
 
-    # 크림 브랜드명 → 무신사 검색 키워드 매핑
+    # 크림 브랜드명 → 무신사 검색 키워드 매핑 (주요 30개 한글 하드코딩)
     _BRAND_SEARCH_QUERIES: dict[str, list[str]] = {
         "Nike": ["나이키"],
         "Adidas": ["아디다스"],
@@ -970,6 +970,16 @@ class Scanner:
         "Sacai": ["사카이"],
         "Kith": ["키스"],
         "Aime Leon Dore": ["에메레온도레"],
+        "Salomon": ["살로몬"],
+        "On": ["온러닝"],
+        "Hoka": ["호카"],
+        "Saucony": ["사코니"],
+        "Crocs": ["크록스"],
+        "Birkenstock": ["버켄스탁"],
+        "Dr. Martens": ["닥터마틴"],
+        "Timberland": ["팀버랜드"],
+        "Columbia": ["컬럼비아"],
+        "Descente": ["데상트"],
     }
 
     async def reverse_scan(
@@ -993,11 +1003,11 @@ class Scanner:
 
         result = ReverseScanResult()
 
-        # 1단계: 크림 DB에서 상위 브랜드 → 무신사 검색 키워드 매핑
-        top_brands = await self.db.get_top_brands(limit=30)
+        # 1단계: 크림 DB에서 상품 10개 이상 브랜드 → 무신사 검색 키워드 매핑
+        all_brands = await self.db.get_brands_min_count(min_count=10)
         search_brands: list[tuple[str, str]] = []  # [(brand, search_query), ...]
 
-        for brand in top_brands:
+        for brand in all_brands:
             if brand in _SKIP_BRANDS:
                 continue
             queries = self._BRAND_SEARCH_QUERIES.get(brand)
@@ -1005,7 +1015,7 @@ class Scanner:
                 for q in queries:
                     search_brands.append((brand, q))
             else:
-                # 매핑 없으면 영문 브랜드명 그대로 사용
+                # 한글 매핑 없으면 영문 브랜드명 그대로 검색
                 search_brands.append((brand, brand))
 
         logger.info(
