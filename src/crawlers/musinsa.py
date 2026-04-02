@@ -259,12 +259,19 @@ class MusinsaCrawler:
 
             # 오프라인 전용 / 발매예정 상품 필터링
             page_text = await page.inner_text("body")
-            if "오프라인 전용" in page_text or "오프라인 스토어" in page_text:
-                logger.info("오프라인전용 스킵: pid=%s", product_id)
-                return None
+            # 1) "판매예정" / "출시예정" → 무조건 스킵
             if "판매예정" in page_text or "출시예정" in page_text:
                 logger.info("발매예정 스킵: pid=%s", product_id)
                 return None
+            # 2) "오프라인 전용 상품" 정확한 문구 + 구매버튼 없음 → 스킵
+            if "오프라인 전용 상품" in page_text:
+                buy_btn = await page.query_selector(
+                    "button:has-text('구매하기'), button:has-text('바로구매'), "
+                    "button:has-text('장바구니')"
+                )
+                if not buy_btn:
+                    logger.info("오프라인전용 스킵: pid=%s", product_id)
+                    return None
 
             # 상품명 — GoodsName 컴포넌트 또는 전통적 셀렉터
             name = ""
