@@ -687,7 +687,7 @@ class MusinsaCrawler:
               "original_price", "sale_price", "discount_rate"}, ...]
         """
         if categories is None:
-            categories = ["018", "001", "003"]  # 신발, 상의, 하의
+            categories = ["018", "002", "001", "003"]  # 스니커즈, 아우터, 상의, 하의
 
         ctx = await self.connect()
         all_products: list[dict] = []
@@ -743,7 +743,7 @@ class MusinsaCrawler:
                                 all_products.append(p)
                                 filtered += 1
 
-                    # 실제 할인율 분포 디버그 출력
+                    # 실제 할인율/가격 분포 디버그 출력
                     rates = [p["discount_rate"] for p in products_on_page if p["discount_rate"] > 0]
                     rate_summary = ""
                     if rates:
@@ -751,13 +751,26 @@ class MusinsaCrawler:
                             f" 할인율범위={min(rates):.0%}~{max(rates):.0%}"
                             f" 평균={sum(rates)/len(rates):.0%}"
                         )
+                    # 처음 3개 상품의 가격 상세 (디버그용)
+                    price_samples = []
+                    for p in products_on_page[:3]:
+                        price_samples.append(
+                            f"{p['name'][:15]}:"
+                            f"원가{p['original_price']:,}/"
+                            f"세일{p['sale_price']:,}/"
+                            f"할인{p['discount_rate']:.0%}"
+                        )
+                    sample_str = " | ".join(price_samples) if price_samples else ""
+
                     logger.info(
                         "무신사 세일 수집: cat=%s page=%d → %d건 (포함 %d건, "
-                        "할인율 파싱성공 %d건, 누적 %d건)%s",
+                        "할인율파싱 %d건, 브랜드스킵 %d건, 누적 %d건)%s",
                         cat_code, page_num, len(products_on_page), filtered,
                         sum(1 for p in products_on_page if p["discount_rate"] > 0),
-                        len(all_products), rate_summary,
+                        brand_skipped, len(all_products), rate_summary,
                     )
+                    if sample_str:
+                        logger.info("  샘플: %s", sample_str)
                 except Exception as e:
                     logger.warning(
                         "무신사 세일 페이지 크롤링 실패 (cat=%s page=%d): %s",
@@ -829,12 +842,22 @@ class MusinsaCrawler:
 
                 if card_text:
                     # 할인율 추출 (예: "30%", "25%")
+                    # 쿠폰/적립 등의 % 오인 방지: 1~80% 범위만 유효한 할인율로 인정
                     rate_match = re.search(r"(\d+)\s*%", card_text)
+                    parsed_rate_from_text = 0
+                    if rate_match:
+                        pct = int(rate_match.group(1))
+                        if 1 <= pct <= 80:
+                            parsed_rate_from_text = pct
 
-                    # 가격 추출 (모든 숫자,숫자 패턴)
-                    prices = re.findall(r"(\d[\d,]+)원?", card_text)
+                    # 가격 추출: "원" 필수 (상품ID·리뷰수 등 숫자 오인 방지)
+                    prices = re.findall(r"(\d[\d,]+)\s*원", card_text)
                     parsed_prices = sorted(
-                        [int(p.replace(",", "")) for p in prices if int(p.replace(",", "")) >= 10000],
+                        [
+                            int(p.replace(",", ""))
+                            for p in prices
+                            if 10_000 <= int(p.replace(",", "")) <= 2_000_000
+                        ],
                         reverse=True,
                     )
 
@@ -845,10 +868,13 @@ class MusinsaCrawler:
                         sale_price = parsed_prices[0]
                         original_price = sale_price
 
-                    if rate_match:
-                        discount_rate = int(rate_match.group(1)) / 100
+                    if parsed_rate_from_text > 0:
+                        discount_rate = parsed_rate_from_text / 100
                     elif original_price > 0 and sale_price > 0 and original_price > sale_price:
-                        discount_rate = round(1 - sale_price / original_price, 3)
+                        calc_rate = round(1 - sale_price / original_price, 3)
+                        # 계산 할인율도 80% 초과면 파싱 오류로 간주
+                        if calc_rate <= 0.80:
+                            discount_rate = calc_rate
 
                 # 브랜드 추출 (보통 상품명 위에 있음)
                 brand = ""

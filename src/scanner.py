@@ -989,11 +989,14 @@ class Scanner:
             ", ".join(sorted(brand_filter)[:10]) + "...",
         )
 
-        # 1단계: 무신사 세일 상품 수집 (크림 브랜드만)
+        # 1단계: 무신사 세일 상품 수집 (크림 브랜드 + 스니커즈·스포츠 카테고리)
+        # 018=스니커즈, 003=바지, 002=아우터(TNF/아크), 001=상의
+        reverse_categories = ["018", "003", "002", "001"]
         try:
             sale_products = await musinsa_crawler.get_sale_products(
                 min_discount_rate=min_discount_rate,
                 max_pages=max_pages,
+                categories=reverse_categories,
                 brand_filter=brand_filter,
             )
         except Exception as e:
