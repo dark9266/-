@@ -118,16 +118,20 @@ class BatchScanResult:
         self.finished_at: datetime | None = None
 
 
-# 무신사/29CM에서 판매하지 않는 럭셔리/특수 브랜드 (배치스캔 스킵용)
+# 무신사/29CM에서 판매하지 않는 럭셔리/특수 브랜드 (배치스캔·역방향 스킵용)
 _SKIP_BRANDS = {
+    # 럭셔리
     "Louis Vuitton", "Chanel", "Gucci", "Hermes", "Hermès",
     "Prada", "Dior", "Balenciaga", "Bottega Veneta", "Saint Laurent",
     "Burberry", "Givenchy", "Fendi", "Valentino", "Versace",
     "Loewe", "Celine", "Céline", "Moncler", "Tom Ford",
     "Chrome Hearts", "Off-White", "Bape", "A Bathing Ape",
     "Supreme", "Fear of God", "Essentials",
-    "Apple", "Samsung", "Sony", "Nintendo", "Dyson",
-    "Rolex", "Omega", "Cartier", "Tiffany & Co.",
+    "Hansroom x Chrome Hearts",
+    # 전자기기·시계
+    "Apple", "Apple Refurbished", "Samsung", "Sony", "Nintendo", "Dyson",
+    "Rolex", "Rolex Vintage", "Omega", "Cartier", "Tiffany & Co.",
+    # 기타
     "Rimowa", "Goyard",
 }
 
@@ -973,11 +977,24 @@ class Scanner:
                 f"무신사 세일 상품 수집 중... (할인율 {min_discount_rate:.0%} 이상)"
             )
 
-        # 1단계: 무신사 세일 상품 수집
+        # 0단계: 크림 DB에서 상위 브랜드 조회 → 무신사 세일에서 해당 브랜드만 수집
+        top_brands = await self.db.get_top_brands(limit=30)
+        # 럭셔리/전자기기 등 무신사에 없는 브랜드 제외
+        brand_filter = {
+            b.lower() for b in top_brands if b not in _SKIP_BRANDS
+        }
+        logger.info(
+            "역방향 스캔 브랜드 필터: %d개 (%s)",
+            len(brand_filter),
+            ", ".join(sorted(brand_filter)[:10]) + "...",
+        )
+
+        # 1단계: 무신사 세일 상품 수집 (크림 브랜드만)
         try:
             sale_products = await musinsa_crawler.get_sale_products(
                 min_discount_rate=min_discount_rate,
                 max_pages=max_pages,
+                brand_filter=brand_filter,
             )
         except Exception as e:
             result.errors.append(f"세일 상품 수집 실패: {e}")

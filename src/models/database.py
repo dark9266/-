@@ -351,6 +351,18 @@ class Database:
 
         return False
 
+    # -- 브랜드 --
+
+    async def get_top_brands(self, limit: int = 30) -> list[str]:
+        """크림 DB에서 상품 수 기준 상위 브랜드 목록 반환."""
+        cursor = await self.db.execute(
+            "SELECT brand FROM kream_products WHERE brand != '' "
+            "GROUP BY brand ORDER BY COUNT(*) DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [row["brand"] for row in rows]
+
     # -- 키워드 --
 
     async def get_active_keywords(self) -> list[str]:

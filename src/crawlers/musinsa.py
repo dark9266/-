@@ -666,6 +666,7 @@ class MusinsaCrawler:
         min_discount_rate: float = 0.05,
         max_pages: int = 3,
         categories: list[str] | None = None,
+        brand_filter: set[str] | None = None,
     ) -> list[dict]:
         """무신사 세일/할인 페이지에서 할인 상품 수집.
 
@@ -677,6 +678,9 @@ class MusinsaCrawler:
             max_pages: 카테고리당 크롤링할 최대 페이지 수
             categories: 수집할 카테고리 코드 목록.
                 None이면 기본값 ["018"(신발), "001"(상의), "003"(하의)]
+            brand_filter: 수집할 브랜드 이름 집합 (소문자).
+                None이면 필터 없이 전부 수집.
+                예: {"nike", "adidas", "new balance"}
 
         Returns:
             [{"product_id", "name", "brand", "url",
@@ -688,6 +692,7 @@ class MusinsaCrawler:
         ctx = await self.connect()
         all_products: list[dict] = []
         seen_ids: set[str] = set()
+        brand_skipped = 0
 
         for cat_code in categories:
             for page_num in range(1, max_pages + 1):
@@ -716,21 +721,24 @@ class MusinsaCrawler:
                     if not products_on_page:
                         break
 
-                    # 할인율 필터링
-                    # 세일 페이지(gf=A, sortCode=DISCOUNT_RATE)에서 수집한 상품은
-                    # 이미 세일 상품이므로, 할인율 파싱 실패/부정확해도 포함한다.
-                    # min_discount_rate는 파싱된 할인율이 있을 때만 적용.
+                    # 브랜드 필터 + 할인율 필터링
                     filtered = 0
                     for p in products_on_page:
+                        # 브랜드 필터: 크림 DB에 있는 브랜드만 수집
+                        if brand_filter:
+                            item_brand = (p.get("brand") or "").strip().lower()
+                            if not item_brand or item_brand not in brand_filter:
+                                brand_skipped += 1
+                                continue
+
+                        # 할인율 필터: 세일 페이지(gf=A)에서 수집한 상품은
+                        # 이미 세일 상품이므로, 파싱 실패/부정확해도 포함한다.
                         parsed_rate = p["discount_rate"]
-                        # 파싱 실패(0) → 세일 페이지이므로 포함
-                        # 파싱 성공 → 기준 이상이면 포함
                         if parsed_rate == 0 or parsed_rate >= min_discount_rate:
                             all_products.append(p)
                             filtered += 1
                         else:
-                            # 파싱은 됐지만 기준 미달 — 세일 페이지에서 온 것이므로
-                            # 파싱 오차 가능성 고려하여 원가/세일가 차이가 있으면 포함
+                            # 파싱 오차 가능성 → 원가>세일가이면 포함
                             if p.get("original_price", 0) > p.get("sale_price", 0) > 0:
                                 all_products.append(p)
                                 filtered += 1
@@ -761,7 +769,11 @@ class MusinsaCrawler:
 
         # 할인율 높은 순 정렬
         all_products.sort(key=lambda x: -x["discount_rate"])
-        logger.info("무신사 세일 상품 수집 완료: 총 %d건 (할인율 %.0f%% 이상)", len(all_products), min_discount_rate * 100)
+        brand_msg = f", 브랜드필터 스킵 {brand_skipped}건" if brand_filter else ""
+        logger.info(
+            "무신사 세일 상품 수집 완료: 총 %d건 (할인율 %.0f%% 이상%s)",
+            len(all_products), min_discount_rate * 100, brand_msg,
+        )
         return all_products
 
     async def _parse_sale_page(self, page: Page, seen_ids: set[str]) -> list[dict]:
