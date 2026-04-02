@@ -437,12 +437,11 @@ _reverse_scan_task: asyncio.Task | None = None
 
 @bot.command(name="역방향스캔")
 async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
-    """무신사 세일 → 크림 DB 매칭 역방향 스캔.
+    """브랜드별 무신사 검색 → 크림 DB 매칭 역방향 스캔.
 
     사용법:
-        !역방향스캔          → 기본 (할인율 1% 이상, 3페이지)
-        !역방향스캔 30       → 할인율 30% 이상
-        !역방향스캔 25 5     → 할인율 25% 이상, 5페이지
+        !역방향스캔          → 기본 (브랜드당 10건)
+        !역방향스캔 20       → 브랜드당 20건
     """
     global _reverse_scan_task
 
@@ -451,27 +450,19 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
         return
 
     # 인자 파싱
-    min_discount = 1
-    max_pages = 3
+    max_per_brand = 10
     parts = args.strip().split()
     if parts:
         try:
-            min_discount = int(parts[0])
+            max_per_brand = int(parts[0])
         except ValueError:
             pass
-    if len(parts) >= 2:
-        try:
-            max_pages = int(parts[1])
-        except ValueError:
-            pass
-
-    min_rate = min_discount / 100
 
     progress_msg = await ctx.send(
         f"🔄 **역방향 스캔 시작**\n"
-        f"• 무신사 세일 상품 (할인율 {min_discount}% 이상, 파싱 실패 시 포함)\n"
-        f"• 크림 DB 매칭 (API 호출 없음)\n"
-        f"• 페이지: 카테고리당 {max_pages}페이지"
+        f"• 크림 DB TOP 브랜드 → 무신사 한글 검색\n"
+        f"• 브랜드당 최대 {max_per_brand}건 상세 조회\n"
+        f"• 정가·할인가 모두 크림 대비 수익 분석"
     )
 
     async def on_opportunity(opportunity):
@@ -488,8 +479,7 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
             result = await bot.scanner.reverse_scan(
                 on_opportunity=on_opportunity,
                 on_progress=on_progress,
-                min_discount_rate=min_rate,
-                max_pages=max_pages,
+                max_results_per_brand=max_per_brand,
             )
 
             # 통계 업데이트
@@ -509,14 +499,13 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
                 total_opportunities=len(result.opportunities),
                 elapsed_seconds=elapsed,
                 errors=len(result.errors),
-                min_discount_rate=min_rate,
             )
             await ctx.send(embed=summary_embed)
 
             await progress_msg.edit(
                 content=(
                     f"✅ **역방향 스캔 완료** — "
-                    f"세일 {result.sale_collected}개 → DB매칭 {result.db_matched}개 → "
+                    f"검색 {result.sale_collected}건 → DB매칭 {result.db_matched}건 → "
                     f"수익기회 {len(result.opportunities)}건 "
                     f"(확정 {result.confirmed_count} / 예상 {result.estimated_count})"
                 )
