@@ -257,6 +257,15 @@ class MusinsaCrawler:
             await page.goto(url, wait_until="networkidle", timeout=20000)
             await asyncio.sleep(1)
 
+            # 오프라인 전용 / 발매예정 상품 필터링
+            page_text = await page.inner_text("body")
+            if "오프라인 전용" in page_text or "오프라인 스토어" in page_text:
+                logger.info("오프라인전용 스킵: pid=%s", product_id)
+                return None
+            if "판매예정" in page_text or "출시예정" in page_text:
+                logger.info("발매예정 스킵: pid=%s", product_id)
+                return None
+
             # 상품명 — GoodsName 컴포넌트 또는 전통적 셀렉터
             name = ""
             for sel in [
