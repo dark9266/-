@@ -156,8 +156,13 @@ class MusinsaCrawler:
         finally:
             await browser.close()
 
-    async def search_products(self, keyword: str) -> list[dict]:
+    async def search_products(self, keyword: str, category: str = "") -> list[dict]:
         """무신사에서 키워드로 상품 검색.
+
+        Args:
+            keyword: 검색 키워드
+            category: 카테고리 필터. 빈 문자열이면 전체 검색.
+                예: "shoes", "top", "pants"
 
         Returns:
             [{"product_id": str, "name": str, "brand": str, "url": str, "price": int}, ...]
@@ -166,7 +171,9 @@ class MusinsaCrawler:
         page = await ctx.new_page()
 
         try:
-            search_url = f"{MUSINSA_BASE}/search/goods?keyword={keyword}&category=shoes"
+            search_url = f"{MUSINSA_BASE}/search/goods?keyword={keyword}"
+            if category:
+                search_url += f"&category={category}"
             await page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
             await _random_delay()
 
@@ -653,6 +660,215 @@ class MusinsaCrawler:
                 break
 
         return sizes
+
+    async def get_sale_products(
+        self,
+        min_discount_rate: float = 0.05,
+        max_pages: int = 3,
+        categories: list[str] | None = None,
+    ) -> list[dict]:
+        """무신사 세일/할인 페이지에서 할인 상품 수집.
+
+        카테고리별 상품을 할인율 높은 순으로 수집한다.
+        각 상품의 기본 정보(상품ID, 이름, 브랜드, 가격, 할인율)를 추출한다.
+
+        Args:
+            min_discount_rate: 최소 할인율 필터 (0.05 = 5%)
+            max_pages: 카테고리당 크롤링할 최대 페이지 수
+            categories: 수집할 카테고리 코드 목록.
+                None이면 기본값 ["018"(신발), "001"(상의), "003"(하의)]
+
+        Returns:
+            [{"product_id", "name", "brand", "url",
+              "original_price", "sale_price", "discount_rate"}, ...]
+        """
+        if categories is None:
+            categories = ["018", "001", "003"]  # 신발, 상의, 하의
+
+        ctx = await self.connect()
+        all_products: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for cat_code in categories:
+            for page_num in range(1, max_pages + 1):
+                page = await ctx.new_page()
+                try:
+                    sale_url = (
+                        f"{MUSINSA_BASE}/categories/item/{cat_code}"
+                        f"?gf=A&sortCode=DISCOUNT_RATE&page={page_num}"
+                    )
+                    await page.goto(sale_url, wait_until="domcontentloaded", timeout=20000)
+                    await _random_delay()
+
+                    # 상품 카드가 로드될 때까지 대기
+                    try:
+                        await page.wait_for_selector(
+                            "a[href*='/products/']", timeout=10000,
+                        )
+                    except Exception:
+                        logger.info(
+                            "무신사 세일 페이지 상품 없음: cat=%s page=%d", cat_code, page_num,
+                        )
+                        break
+
+                    products_on_page = await self._parse_sale_page(page, seen_ids)
+
+                    if not products_on_page:
+                        break
+
+                    # 할인율 필터링
+                    # 세일 페이지(gf=A, sortCode=DISCOUNT_RATE)에서 수집한 상품은
+                    # 할인율 파싱 실패(0)해도 실제로는 세일 상품이므로 포함
+                    filtered = 0
+                    for p in products_on_page:
+                        if p["discount_rate"] >= min_discount_rate or p["discount_rate"] == 0:
+                            all_products.append(p)
+                            filtered += 1
+
+                    logger.info(
+                        "무신사 세일 수집: cat=%s page=%d → %d건 (포함 %d건, "
+                        "할인율 파싱성공 %d건, 누적 %d건)",
+                        cat_code, page_num, len(products_on_page), filtered,
+                        sum(1 for p in products_on_page if p["discount_rate"] > 0),
+                        len(all_products),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "무신사 세일 페이지 크롤링 실패 (cat=%s page=%d): %s",
+                        cat_code, page_num, e,
+                    )
+                    break
+                finally:
+                    await page.close()
+
+        # 할인율 높은 순 정렬
+        all_products.sort(key=lambda x: -x["discount_rate"])
+        logger.info("무신사 세일 상품 수집 완료: 총 %d건 (할인율 %.0f%% 이상)", len(all_products), min_discount_rate * 100)
+        return all_products
+
+    async def _parse_sale_page(self, page: Page, seen_ids: set[str]) -> list[dict]:
+        """세일 페이지에서 상품 카드 정보 파싱."""
+        results: list[dict] = []
+
+        # 상품 링크 수집
+        links = await page.query_selector_all("a[href*='/products/']")
+
+        for link in links:
+            try:
+                href = await link.get_attribute("href") or ""
+                match = re.search(r"/products/(\d+)", href)
+                if not match:
+                    continue
+
+                product_id = match.group(1)
+                if product_id in seen_ids:
+                    continue
+
+                # 상품 카드 컨테이너 (부모 요소)에서 정보 추출
+                # 텍스트가 있는 링크만 (상품명 링크)
+                text = (await link.inner_text()).strip()
+                if not text or len(text) < 3:
+                    continue
+
+                seen_ids.add(product_id)
+
+                # 부모 카드에서 가격/할인 정보 추출 시도
+                # 더 넓은 범위로 탐색 (최대 8레벨, 더 다양한 클래스 패턴)
+                card = await link.evaluate_handle(
+                    """el => {
+                        let node = el;
+                        for (let i = 0; i < 8; i++) {
+                            if (!node.parentElement) break;
+                            node = node.parentElement;
+                            const txt = node.innerText || '';
+                            // 가격(%나 원)이 포함된 컨테이너 찾기
+                            if (txt.match(/\\d+%/) || txt.match(/\\d[\\d,]+원/)) {
+                                return txt;
+                            }
+                        }
+                        // 못 찾으면 가장 가까운 article/li/div[class*=card] 시도
+                        node = el.closest('article, li, [class*="card"], [class*="Card"], [class*="item"], [class*="Item"], [class*="product"], [class*="Product"]');
+                        return node ? node.innerText : '';
+                    }"""
+                )
+                card_text = str(await card.json_value()) if card else ""
+
+                original_price = 0
+                sale_price = 0
+                discount_rate = 0.0
+
+                if card_text:
+                    # 할인율 추출 (예: "30%", "25%")
+                    rate_match = re.search(r"(\d+)\s*%", card_text)
+
+                    # 가격 추출 (모든 숫자,숫자 패턴)
+                    prices = re.findall(r"(\d[\d,]+)원?", card_text)
+                    parsed_prices = sorted(
+                        [int(p.replace(",", "")) for p in prices if int(p.replace(",", "")) >= 10000],
+                        reverse=True,
+                    )
+
+                    if len(parsed_prices) >= 2:
+                        original_price = parsed_prices[0]
+                        sale_price = parsed_prices[-1]
+                    elif len(parsed_prices) == 1:
+                        sale_price = parsed_prices[0]
+                        original_price = sale_price
+
+                    if rate_match:
+                        discount_rate = int(rate_match.group(1)) / 100
+                    elif original_price > 0 and sale_price > 0 and original_price > sale_price:
+                        discount_rate = round(1 - sale_price / original_price, 3)
+
+                # 브랜드 추출 (보통 상품명 위에 있음)
+                brand = ""
+                try:
+                    brand_el = await link.evaluate_handle(
+                        """el => {
+                            let node = el.closest('article, li, [class*="card"], [class*="Card"], [class*="item"], [class*="Item"], [class*="product"], [class*="Product"]');
+                            if (node) {
+                                const brandEl = node.querySelector('[class*="rand"], [class*="brand"], [class*="Brand"]');
+                                if (brandEl) return brandEl.innerText.trim();
+                            }
+                            // 폴백: 부모 탐색
+                            node = el;
+                            for (let i = 0; i < 5; i++) {
+                                if (!node.parentElement) break;
+                                node = node.parentElement;
+                                const brandEl = node.querySelector('[class*="rand"]');
+                                if (brandEl) return brandEl.innerText.trim();
+                            }
+                            return '';
+                        }"""
+                    )
+                    brand = str(await brand_el.json_value()) if brand_el else ""
+                except Exception:
+                    pass
+
+                full_url = href if href.startswith("http") else f"{MUSINSA_BASE}{href}"
+
+                # 할인율 파싱 실패 로그
+                if discount_rate == 0:
+                    logger.debug(
+                        "세일 상품 할인율 미파싱: %s (card_text 길이=%d, prices=%s)",
+                        product_id, len(card_text),
+                        [p for p in re.findall(r"\d[\d,]+원?", card_text[:200])],
+                    )
+
+                results.append({
+                    "product_id": product_id,
+                    "name": text,
+                    "brand": brand,
+                    "url": full_url,
+                    "original_price": original_price,
+                    "sale_price": sale_price,
+                    "discount_rate": discount_rate,
+                })
+
+            except Exception:
+                continue
+
+        return results
 
     async def disconnect(self) -> None:
         """브라우저 종료."""

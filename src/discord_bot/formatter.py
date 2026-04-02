@@ -456,6 +456,56 @@ def format_auto_scan_summary(
     return embed
 
 
+def format_reverse_scan_summary(
+    sale_collected: int,
+    detail_fetched: int,
+    db_matched: int,
+    confirmed_count: int,
+    estimated_count: int,
+    total_opportunities: int,
+    elapsed_seconds: float,
+    errors: int = 0,
+    min_discount_rate: float = 0.2,
+) -> discord.Embed:
+    """역방향 스캔 완료 요약 Embed."""
+    embed = discord.Embed(
+        title="🔄 역방향 스캔 완료",
+        description=f"무신사 세일 (할인율 {min_discount_rate:.0%} 이상) → 크림 DB 매칭",
+        color=0x5865F2,
+        timestamp=datetime.now(),
+    )
+
+    embed.add_field(
+        name="스캔 결과",
+        value=(
+            f"**세일 상품:** {sale_collected}개\n"
+            f"**상세 조회:** {detail_fetched}개\n"
+            f"**DB 매칭:** {db_matched}개\n"
+            f"**소요 시간:** {elapsed_seconds:.0f}초"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="수익 기회",
+        value=(
+            f"**전체:** {total_opportunities}건\n"
+            f"🔴 **확정 수익:** {confirmed_count}건\n"
+            f"🟠 **예상 수익:** {estimated_count}건"
+        ),
+        inline=True,
+    )
+
+    if errors > 0:
+        embed.add_field(
+            name="오류",
+            value=f"⚠️ {errors}건",
+            inline=True,
+        )
+
+    return embed
+
+
 def format_status(
     is_chrome_connected: bool,
     is_kream_logged_in: bool,
@@ -500,6 +550,7 @@ def format_help() -> discord.Embed:
     )
 
     commands = {
+        "!역방향스캔": "무신사 세일 → 크림 DB 매칭 역방향 스캔 (!역방향스캔 [할인율] [페이지])",
         "!배치스캔": "전체 DB 47K 상품 배치 순회 매칭 (500개/배치)",
         "!배치스캔 중지": "진행 중인 배치스캔 중지",
         "!자동스캔": "매칭 DB 기반 가격 갱신 스캔 (매칭 없으면 인기상품 탐색)",

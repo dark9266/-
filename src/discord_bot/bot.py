@@ -18,6 +18,7 @@ from src.discord_bot.formatter import (
     format_price_change_alert,
     format_product_detail,
     format_profit_alert,
+    format_reverse_scan_summary,
     format_status,
 )
 from src.kream_db_builder import build_kream_db, CATEGORIES
@@ -428,6 +429,104 @@ async def cmd_batch_scan(ctx: commands.Context, *, args: str = ""):
             await ctx.send(f"❌ 배치스캔 실패: {e}")
 
     _batch_scan_task = asyncio.create_task(run_batch())
+
+
+# 역방향스캔 태스크 추적
+_reverse_scan_task: asyncio.Task | None = None
+
+
+@bot.command(name="역방향스캔")
+async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
+    """무신사 세일 → 크림 DB 매칭 역방향 스캔.
+
+    사용법:
+        !역방향스캔          → 기본 (할인율 5% 이상, 3페이지)
+        !역방향스캔 30       → 할인율 30% 이상
+        !역방향스캔 25 5     → 할인율 25% 이상, 5페이지
+    """
+    global _reverse_scan_task
+
+    if _reverse_scan_task and not _reverse_scan_task.done():
+        await ctx.send("⚠️ 역방향 스캔이 이미 실행 중입니다.")
+        return
+
+    # 인자 파싱
+    min_discount = 5
+    max_pages = 3
+    parts = args.strip().split()
+    if parts:
+        try:
+            min_discount = int(parts[0])
+        except ValueError:
+            pass
+    if len(parts) >= 2:
+        try:
+            max_pages = int(parts[1])
+        except ValueError:
+            pass
+
+    min_rate = min_discount / 100
+
+    progress_msg = await ctx.send(
+        f"🔄 **역방향 스캔 시작**\n"
+        f"• 무신사 세일 상품 (할인율 {min_discount}% 이상)\n"
+        f"• 크림 DB 매칭 (API 호출 없음)\n"
+        f"• 페이지: 카테고리당 {max_pages}페이지"
+    )
+
+    async def on_opportunity(opportunity):
+        await bot.send_auto_scan_alert(opportunity)
+
+    async def on_progress(message):
+        try:
+            await progress_msg.edit(content=f"🔄 {message}")
+        except Exception:
+            pass
+
+    async def run_reverse():
+        try:
+            result = await bot.scanner.reverse_scan(
+                on_opportunity=on_opportunity,
+                on_progress=on_progress,
+                min_discount_rate=min_rate,
+                max_pages=max_pages,
+            )
+
+            # 통계 업데이트
+            bot.daily_stats["scan_count"] += 1
+            bot.daily_stats["product_count"] += result.detail_fetched
+
+            elapsed = 0.0
+            if result.finished_at and result.started_at:
+                elapsed = (result.finished_at - result.started_at).total_seconds()
+
+            summary_embed = format_reverse_scan_summary(
+                sale_collected=result.sale_collected,
+                detail_fetched=result.detail_fetched,
+                db_matched=result.db_matched,
+                confirmed_count=result.confirmed_count,
+                estimated_count=result.estimated_count,
+                total_opportunities=len(result.opportunities),
+                elapsed_seconds=elapsed,
+                errors=len(result.errors),
+                min_discount_rate=min_rate,
+            )
+            await ctx.send(embed=summary_embed)
+
+            await progress_msg.edit(
+                content=(
+                    f"✅ **역방향 스캔 완료** — "
+                    f"세일 {result.sale_collected}개 → DB매칭 {result.db_matched}개 → "
+                    f"수익기회 {len(result.opportunities)}건 "
+                    f"(확정 {result.confirmed_count} / 예상 {result.estimated_count})"
+                )
+            )
+
+        except Exception as e:
+            logger.error("역방향 스캔 실패: %s", e)
+            await ctx.send(f"❌ 역방향 스캔 실패: {e}")
+
+    _reverse_scan_task = asyncio.create_task(run_reverse())
 
 
 @bot.command(name="크림")

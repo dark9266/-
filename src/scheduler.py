@@ -255,11 +255,7 @@ class Scheduler:
         logger.info("=== 자동스캔 루프 실행 ===")
 
         try:
-            # Chrome 상태 확인
-            if not await chrome_health.check_and_recover():
-                logger.error("Chrome 상태 불량, 자동스캔 건너뜀")
-                await self.bot.log_to_channel("⚠️ Chrome 연결 불량으로 자동스캔 건너뜀")
-                return
+            # 배치스캔은 aiohttp만 사용하므로 Chrome 상태 체크 불필요
 
             async def on_opportunity(opportunity: AutoScanOpportunity):
                 """수익 기회 발견 즉시 디스코드 알림."""
@@ -291,8 +287,6 @@ class Scheduler:
             self.bot.daily_stats["scan_count"] += 1
             self.bot.daily_stats["product_count"] += result.kream_scanned
 
-            chrome_health.report_success()
-
             # 완료 요약 로그 채널에 전송
             elapsed = 0.0
             if result.finished_at and result.started_at:
@@ -312,7 +306,6 @@ class Scheduler:
             )
 
         except Exception as e:
-            chrome_health.report_failure()
             error_aggregator.add("auto_scan_loop", e)
             logger.error("자동스캔 루프 실패: %s", e)
             await self.bot.log_to_channel(f"⚠️ 자동스캔 실패: {e}")

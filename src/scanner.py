@@ -117,6 +117,35 @@ class BatchScanResult:
         self.finished_at: datetime | None = None
 
 
+class ReverseScanResult:
+    """역방향 스캔 결과 (무신사 세일 → 크림 DB 매칭)."""
+
+    def __init__(self):
+        self.opportunities: list[AutoScanOpportunity] = []
+        self.sale_collected: int = 0  # 세일 상품 수집 수
+        self.detail_fetched: int = 0  # 상세 조회 수
+        self.db_matched: int = 0  # 크림 DB 매칭 성공 수
+        self.errors: list[str] = []
+        self.started_at: datetime = datetime.now()
+        self.finished_at: datetime | None = None
+
+    @property
+    def confirmed_count(self) -> int:
+        threshold = settings.auto_scan_confirmed_roi
+        return sum(
+            1 for o in self.opportunities
+            if o.best_confirmed_roi >= threshold
+        )
+
+    @property
+    def estimated_count(self) -> int:
+        threshold = settings.auto_scan_estimated_roi
+        return sum(
+            1 for o in self.opportunities
+            if o.best_estimated_roi >= threshold
+        )
+
+
 class Scanner:
     """스캔 오케스트레이터."""
 
@@ -889,6 +918,198 @@ class Scanner:
         """배치스캔 중지 요청."""
         self._batch_scan_stop = True
         logger.info("배치스캔 중지 요청됨")
+
+    # ─── 역방향 스캔 (전략 B: 무신사 세일 → 크림 DB 매칭) ──────
+
+    async def reverse_scan(
+        self,
+        on_opportunity=None,
+        on_progress=None,
+        min_discount_rate: float = 0.05,
+        max_pages: int = 3,
+    ) -> ReverseScanResult:
+        """역방향 스캔: 무신사 세일 상품 → 크림 DB 매칭 → 수익 분석.
+
+        전략 B: 무신사 할인 상품을 먼저 수집하고,
+        각 상품의 모델번호로 크림 DB(kream_products)에서 매칭을 검색한다.
+        크림 API 호출 없이 SQLite DB만 사용하므로 빠르고 안정적이다.
+
+        Args:
+            on_opportunity: 수익 기회 발견 시 콜백 (실시간 알림용)
+            on_progress: 진행 상황 콜백
+            min_discount_rate: 최소 할인율 (0.05 = 5%)
+            max_pages: 카테고리당 크롤링할 최대 페이지 수
+        """
+        from src.profit_calculator import _normalize_size
+
+        result = ReverseScanResult()
+        logger.info("=== 역방향 스캔 시작 (할인율 %.0f%% 이상) ===", min_discount_rate * 100)
+
+        if on_progress:
+            await on_progress(
+                f"무신사 세일 상품 수집 중... (할인율 {min_discount_rate:.0%} 이상)"
+            )
+
+        # 1단계: 무신사 세일 상품 수집
+        try:
+            sale_products = await musinsa_crawler.get_sale_products(
+                min_discount_rate=min_discount_rate,
+                max_pages=max_pages,
+            )
+        except Exception as e:
+            result.errors.append(f"세일 상품 수집 실패: {e}")
+            logger.error("무신사 세일 상품 수집 실패: %s", e)
+            result.finished_at = datetime.now()
+            return result
+
+        result.sale_collected = len(sale_products)
+
+        if not sale_products:
+            logger.info("세일 상품 없음")
+            result.finished_at = datetime.now()
+            return result
+
+        if on_progress:
+            await on_progress(
+                f"세일 상품 {len(sale_products)}건 수집 완료. "
+                f"상세 조회 + 크림 DB 매칭 시작..."
+            )
+
+        # 2단계: 각 상품 상세 조회 → 모델번호 추출 → 크림 DB 매칭
+        semaphore = asyncio.Semaphore(settings.auto_scan_concurrency)
+        seen_models: set[str] = set()
+
+        async def process_sale_item(
+            idx: int, item: dict,
+        ) -> AutoScanOpportunity | None:
+            async with semaphore:
+                try:
+                    product_id = item["product_id"]
+                    result.detail_fetched += 1
+
+                    if on_progress and idx % 10 == 0 and idx > 0:
+                        await on_progress(
+                            f"진행 {idx}/{len(sale_products)} "
+                            f"(DB매칭 {result.db_matched}건, "
+                            f"수익기회 {len(result.opportunities)}건)"
+                        )
+
+                    # 상세 페이지에서 모델번호/사이즈/가격 수집
+                    retail_product = await musinsa_crawler.get_product_detail(product_id)
+                    if not retail_product or not retail_product.model_number:
+                        return None
+
+                    normalized = normalize_model_number(retail_product.model_number)
+                    if not normalized:
+                        return None
+
+                    # 중복 모델번호 스킵
+                    if normalized in seen_models:
+                        return None
+                    seen_models.add(normalized)
+
+                    # 크림 DB 매칭 (SQLite only, API 호출 없음)
+                    row = await self.db.find_kream_by_model(normalized)
+                    if not row:
+                        row = await self.db.search_kream_by_model_like(normalized)
+                    if not row:
+                        return None
+
+                    result.db_matched += 1
+
+                    # 크림 상세 정보 수집 (가격/거래량)
+                    kream_product = await self._get_kream_with_cache(
+                        row["product_id"],
+                    )
+                    if not kream_product or not kream_product.size_prices:
+                        return None
+
+                    # 무신사 사이즈맵 구축
+                    musinsa_sizes: dict[str, tuple[int, bool]] = {}
+                    for s in retail_product.sizes:
+                        if s.in_stock and s.price > 0:
+                            ns = _normalize_size(s.size)
+                            if ns not in musinsa_sizes or s.price < musinsa_sizes[ns][0]:
+                                musinsa_sizes[ns] = (s.price, True)
+
+                    if not musinsa_sizes:
+                        return None
+
+                    # 2단계 수익 분석
+                    opportunity = analyze_auto_scan_opportunity(
+                        kream_product=kream_product,
+                        musinsa_sizes=musinsa_sizes,
+                        musinsa_url=retail_product.url,
+                        musinsa_name=retail_product.name,
+                        musinsa_product_id=retail_product.product_id,
+                    )
+                    if not opportunity:
+                        return None
+
+                    opportunity.source_prices = {"무신사": min(
+                        p for p, _ in musinsa_sizes.values()
+                    )}
+
+                    # 수익 있는 건만
+                    if (
+                        opportunity.best_confirmed_profit <= 0
+                        and opportunity.best_estimated_profit <= 0
+                    ):
+                        return None
+
+                    # 실시간 알림
+                    confirmed_threshold = settings.auto_scan_confirmed_roi
+                    estimated_threshold = settings.auto_scan_estimated_roi
+                    if on_opportunity and (
+                        opportunity.best_confirmed_roi >= confirmed_threshold
+                        or opportunity.best_estimated_roi >= estimated_threshold
+                    ):
+                        await on_opportunity(opportunity)
+
+                    return opportunity
+
+                except Exception as e:
+                    result.errors.append(
+                        f"역방향 처리 실패 ({item.get('product_id', '?')}): {e}"
+                    )
+                    logger.error("역방향 스캔 상품 처리 실패: %s", e)
+                    return None
+
+        # 병렬 처리
+        tasks = [
+            process_sale_item(i, item)
+            for i, item in enumerate(sale_products)
+        ]
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for r in gathered:
+            if isinstance(r, Exception):
+                result.errors.append(f"병렬 처리 예외: {r}")
+                logger.error("역방향 스캔 병렬 예외: %s", r)
+            elif isinstance(r, AutoScanOpportunity):
+                result.opportunities.append(r)
+
+        # 확정 수익 높은 순 정렬
+        result.opportunities.sort(
+            key=lambda o: (-o.best_confirmed_profit, -o.best_estimated_profit)
+        )
+        result.finished_at = datetime.now()
+
+        elapsed = (result.finished_at - result.started_at).total_seconds()
+        logger.info(
+            "=== 역방향 스캔 완료 (%.0f초) | 세일 %d → 상세 %d → DB매칭 %d → "
+            "수익기회 %d (확정 %d / 예상 %d) | 에러 %d ===",
+            elapsed,
+            result.sale_collected,
+            result.detail_fetched,
+            result.db_matched,
+            len(result.opportunities),
+            result.confirmed_count,
+            result.estimated_count,
+            len(result.errors),
+        )
+
+        return result
 
     async def _collect_kream_popular(
         self, categories: list[str] | None = None,
