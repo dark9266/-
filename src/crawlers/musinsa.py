@@ -288,7 +288,7 @@ class MusinsaCrawler:
 
         try:
             url = f"{MUSINSA_BASE}/products/{product_id}"
-            await page.goto(url, wait_until="networkidle", timeout=20000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(1)
 
             # 오프라인 전용 / 발매예정 상품 필터링

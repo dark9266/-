@@ -1119,6 +1119,8 @@ class Scanner:
                     result.db_matched += 1
 
                     # 크림 가격: DB 우선, 없으면 API 호출
+                    # sqlite3.Row는 .get() 불가 → dict 변환
+                    row = dict(row)
                     kream_product = await self._get_kream_from_db_or_api(
                         row["product_id"], row,
                     )
@@ -1334,6 +1336,8 @@ class Scanner:
 
         if db_prices:
             # DB 가격으로 KreamProduct 구성 (API 호출 없음)
+            # sqlite3.Row는 .get() 불가 → dict 변환
+            db_prices = [dict(p) for p in db_prices]
             size_prices = []
             for p in db_prices:
                 size_prices.append(KreamSizePrice(
