@@ -574,7 +574,7 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
     """카테고리 기반 전체 상품 스캔.
 
     사용법:
-        !카테고리스캔              → 스니커즈 30페이지
+        !카테고리스캔              → 신발 30페이지
         !카테고리스캔 50           → 스니커즈 50페이지
         !카테고리스캔 신발전체 20   → 신발전체 20페이지
         !카테고리스캔 상태          → 스캔 진행 현황
@@ -610,7 +610,7 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
 
     # 인자 파싱
     max_pages = 30
-    category_name = "스니커즈"
+    category_name = "신발"
     resume = True
 
     for part in parts:
@@ -624,7 +624,7 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
             except ValueError:
                 pass
 
-    category_code = musinsa_crawler.CATEGORY_CODES.get(category_name, "003")
+    category_code = musinsa_crawler.CATEGORY_CODES.get(category_name, "103")
 
     progress_msg = await ctx.send(
         f"📂 **카테고리 스캔 시작** [{category_name}] ({category_code})\n"

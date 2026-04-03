@@ -1282,14 +1282,14 @@ class Scanner:
     ) -> CategoryScanResult:
         """카테고리 기반 전체 페이지 크롤링.
 
-        무신사 카테고리 리스팅 API로 상품 수집 → 4단계 필터 → 크림 DB 매칭 → 수익 분석.
+        무신사 카테고리 페이지를 스크롤하여 리스팅 수집 → 4단계 필터 → 크림 DB 매칭 → 수익 분석.
 
         Args:
-            categories: 스캔할 카테고리 코드 목록. None이면 ["003"] (스니커즈).
-            max_pages: 카테고리당 최대 페이지 수
+            categories: 스캔할 카테고리 코드 목록. None이면 ["103"] (신발).
+            max_pages: 카테고리당 최대 페이지 수 (1페이지 = 60건)
             on_opportunity: 수익 기회 발견 시 콜백
             on_progress: 진행 상황 콜백
-            resume: True면 이전 스캔 이어서, False면 처음부터
+            resume: True면 이전 스캔 이어서, False면 처음부터 (미사용, 향후 확장)
         """
         from src.crawlers.musinsa import musinsa_crawler
         from src.profit_calculator import _normalize_size
@@ -1297,28 +1297,34 @@ class Scanner:
         result = CategoryScanResult()
 
         if categories is None:
-            categories = ["003"]  # 기본: 스니커즈
+            categories = ["103"]  # 기본: 신발
 
         # 1단계: 사전 데이터 로딩
-        # 브랜드 화이트리스트 (크림 DB에 10개 이상 상품이 있는 브랜드)
+        # 브랜드 화이트리스트 — slug 형식 + 영문 소문자 모두 포함
         kream_brands = await self.db.get_brands_min_count(min_count=10)
         kream_brand_set: set[str] = set()
         for b in kream_brands:
-            kream_brand_set.add(b.lower())
+            b_lower = b.lower()
+            kream_brand_set.add(b_lower)
+            # slug 변환: "New Balance" → "newbalance", "The North Face" → "thenorthface"
+            slug = b_lower.replace(" ", "").replace("'", "").replace(".", "")
+            kream_brand_set.add(slug)
 
-        # 역매핑: 한글 → 영문 브랜드 (브랜드 필터용)
-        musinsa_to_kream: dict[str, str] = {}
+        # 역매핑: 한글 브랜드명 → 영문 slug (브랜드 필터용)
+        musinsa_kr_to_slug: dict[str, str] = {}
         for eng, queries in self._BRAND_SEARCH_QUERIES.items():
+            slug = eng.lower().replace(" ", "").replace("'", "").replace(".", "")
             for q in queries:
-                musinsa_to_kream[q.lower()] = eng.lower()
+                musinsa_kr_to_slug[q.lower()] = slug
 
         # 이미 스캔한 상품 SET
         scanned_set = await self.db.load_scanned_goods_nos()
 
         logger.info(
             "=== 카테고리 스캔 시작: 카테고리 %s, 최대 %d페이지, "
-            "크림 브랜드 %d개, 이미스캔 %d건 ===",
-            categories, max_pages, len(kream_brand_set), len(scanned_set),
+            "크림 브랜드 %d개 (slug %d개), 이미스캔 %d건 ===",
+            categories, max_pages, len(kream_brands),
+            len(kream_brand_set), len(scanned_set),
         )
 
         if on_progress:
@@ -1337,273 +1343,278 @@ class Scanner:
         seen_models: set[str] = set()
 
         for category in categories:
-            # 이전 진행 상황에서 이어서 시작
-            start_page = 1
-            if resume:
-                progress = await self.db.get_category_progress(category)
-                if progress and progress.get("last_scanned_page", 0) > 0:
-                    start_page = progress["last_scanned_page"] + 1
-                    logger.info(
-                        "카테고리 %s: 이전 진행(%d페이지)에서 이어서 시작",
-                        category, progress["last_scanned_page"],
-                    )
-
-            for page_num in range(start_page, start_page + max_pages):
-                # 리스팅 API 호출
-                listing = await musinsa_crawler.fetch_category_listing(
-                    category=category, page_num=page_num,
+            # 스크롤+인터셉트로 전체 리스팅 수집 (한 번에)
+            if on_progress:
+                await on_progress(
+                    f"카테고리 [{category}] 리스팅 수집 중... ({max_pages}페이지 스크롤)"
                 )
 
-                if not listing:
-                    logger.info("카테고리 %s: 페이지 %d 빈 응답 → 스캔 종료", category, page_num)
-                    break
+            listing = await musinsa_crawler.fetch_category_listing(
+                category=category, max_pages=max_pages,
+            )
 
-                result.listing_fetched += len(listing)
-                result.pages_scanned += 1
+            if not listing:
+                logger.info("카테고리 %s: 리스팅 0건 → 스캔 종료", category)
+                continue
 
-                # 4단계 필터링
-                detail_queue: list[dict] = []  # 상세 방문 필요한 항목
-                name_match_queue: list[tuple[dict, str]] = []  # (item, model) 이름매칭 성공
+            result.listing_fetched += len(listing)
+            result.pages_scanned += len(listing) // 60 + (1 if len(listing) % 60 else 0)
 
-                for item in listing:
-                    goods_no = item["goodsNo"]
+            if on_progress:
+                await on_progress(
+                    f"카테고리 [{category}] 리스팅 {len(listing)}건 수집 완료. 필터링 시작..."
+                )
 
-                    # Layer 1: 품절/이미스캔 필터
-                    if item.get("isSoldOut"):
-                        result.sold_out_skipped += 1
-                        continue
-                    if goods_no in scanned_set:
-                        result.already_scanned += 1
-                        continue
+            # 브랜드 디버그 로그 (처음 5건)
+            for i, item in enumerate(listing[:5]):
+                logger.info(
+                    "카테고리 리스팅 샘플 %d: brand=%s brandName=%s goodsName=%s",
+                    i + 1, item.get("brand"), item.get("brandName"),
+                    (item.get("goodsName") or "")[:40],
+                )
 
-                    # Layer 2: 브랜드 필터
-                    brand_raw = (item.get("brand") or "").strip()
-                    brand_lower = brand_raw.lower()
-                    # 한글→영문 변환 or 영문 직접 매칭
-                    brand_eng = musinsa_to_kream.get(brand_lower, brand_lower)
-                    if brand_eng not in kream_brand_set:
-                        result.brand_filtered += 1
-                        # 스캔 이력에 저장 (재검사 방지)
+            # 4단계 필터링
+            detail_queue: list[dict] = []
+            name_match_queue: list[tuple[dict, str]] = []
+
+            for item in listing:
+                goods_no = item["goodsNo"]
+
+                # Layer 1: 품절/이미스캔 필터
+                if item.get("isSoldOut"):
+                    result.sold_out_skipped += 1
+                    continue
+                if goods_no in scanned_set:
+                    result.already_scanned += 1
+                    continue
+
+                # Layer 2: 브랜드 필터
+                # 무신사: brand="newbalance" (slug), brandName="뉴발란스" (한글)
+                brand_slug = (item.get("brand") or "").strip().lower()
+                brand_kr = (item.get("brandName") or "").strip().lower()
+
+                # 매칭 시도: slug 직접 → 한글→slug 변환 → 원본 비교
+                brand_matched = (
+                    brand_slug in kream_brand_set
+                    or musinsa_kr_to_slug.get(brand_kr, "") in kream_brand_set
+                    or brand_kr in kream_brand_set
+                )
+
+                if not brand_matched:
+                    result.brand_filtered += 1
+                    await self.db.save_category_scan(
+                        goods_no=goods_no,
+                        category=category,
+                        brand=brand_slug,
+                        goods_name=item.get("goodsName", ""),
+                        price=item.get("price", 0),
+                    )
+                    scanned_set.add(goods_no)
+                    continue
+
+                # Layer 3: 상품명에서 모델번호 추출
+                goods_name = item.get("goodsName", "")
+                name_model = extract_model_from_name(goods_name)
+
+                if name_model:
+                    row = await self.db.find_kream_by_model(name_model)
+                    if not row:
+                        row = await self.db.search_kream_by_model_like(name_model)
+
+                    if row:
+                        result.name_matched += 1
+                        name_match_queue.append((item, name_model))
+                    else:
+                        result.name_no_match += 1
                         await self.db.save_category_scan(
-                            goods_no=goods_no,
-                            category=category,
-                            brand=brand_raw,
-                            goods_name=item.get("goodsName", ""),
+                            goods_no=goods_no, category=category,
+                            brand=brand_slug, goods_name=goods_name,
+                            model_number=name_model,
+                            price=item.get("price", 0),
+                        )
+                        scanned_set.add(goods_no)
+                        continue
+                else:
+                    detail_queue.append(item)
+
+            logger.info(
+                "카테고리 %s 필터 결과: 총 %d → 품절 %d / 이미스캔 %d / "
+                "브랜드 %d / 이름매칭 %d / 이름미매칭 %d / 상세필요 %d",
+                category, len(listing),
+                result.sold_out_skipped, result.already_scanned,
+                result.brand_filtered, result.name_matched,
+                result.name_no_match, len(detail_queue),
+            )
+
+            if on_progress:
+                await on_progress(
+                    f"카테고리 [{category}] 필터 완료\n"
+                    f"• 리스팅 {len(listing)}건 → 브랜드필터 {result.brand_filtered} / "
+                    f"품절 {result.sold_out_skipped} / 이미스캔 {result.already_scanned}\n"
+                    f"• 이름매칭 {result.name_matched}건 + "
+                    f"상세방문 대기 {len(detail_queue)}건"
+                )
+
+            # 상세 방문 처리
+            all_detail_items = [
+                (item, model) for item, model in name_match_queue
+            ] + [
+                (item, "") for item in detail_queue
+            ]
+
+            for idx, (item, pre_model) in enumerate(all_detail_items):
+                goods_no = item["goodsNo"]
+                goods_name = item.get("goodsName", "")
+                brand_slug = (item.get("brand") or "").strip()
+
+                try:
+                    result.detail_fetched += 1
+
+                    # 진행 보고
+                    if on_progress and idx > 0 and idx % 10 == 0:
+                        await on_progress(
+                            f"카테고리 [{category}] 상세 조회 {idx}/{len(all_detail_items)}\n"
+                            f"• DB매칭 {result.detail_matched}건 / "
+                            f"수익기회 {len(result.opportunities)}건"
+                        )
+
+                    retail_product = await musinsa_crawler.get_product_detail(
+                        goods_no,
+                    )
+                    if not retail_product:
+                        await self.db.save_category_scan(
+                            goods_no=goods_no, category=category,
+                            brand=brand_slug, goods_name=goods_name,
                             price=item.get("price", 0),
                         )
                         scanned_set.add(goods_no)
                         continue
 
-                    # Layer 3: 상품명에서 모델번호 추출
-                    goods_name = item.get("goodsName", "")
-                    name_model = extract_model_from_name(goods_name)
-
-                    if name_model:
-                        # 이름에서 모델번호 추출 성공 → 크림 DB 조회
-                        row = await self.db.find_kream_by_model(name_model)
-                        if not row:
-                            row = await self.db.search_kream_by_model_like(name_model)
-
-                        if row:
-                            # DB 매칭 성공 → 상세 방문 큐 (사이즈/가격만 필요)
-                            result.name_matched += 1
-                            name_match_queue.append((item, name_model))
-                        else:
-                            # 모델번호 있으나 DB 미매칭 → 스킵
-                            result.name_no_match += 1
-                            await self.db.save_category_scan(
-                                goods_no=goods_no,
-                                category=category,
-                                brand=brand_raw,
-                                goods_name=goods_name,
-                                model_number=name_model,
-                                price=item.get("price", 0),
-                            )
-                            scanned_set.add(goods_no)
-                            continue
-                    else:
-                        # 모델번호 추출 실패 → 상세 방문 필요
-                        detail_queue.append(item)
-
-                # 상세 방문 처리 (이름매칭 + 미추출 모두)
-                all_detail_items = [
-                    (item, model) for item, model in name_match_queue
-                ] + [
-                    (item, "") for item in detail_queue
-                ]
-
-                for item, pre_model in all_detail_items:
-                    goods_no = item["goodsNo"]
-                    goods_name = item.get("goodsName", "")
-                    brand_raw = (item.get("brand") or "").strip()
-
-                    try:
-                        result.detail_fetched += 1
-
-                        retail_product = await musinsa_crawler.get_product_detail(
-                            goods_no,
-                        )
-                        if not retail_product:
-                            await self.db.save_category_scan(
-                                goods_no=goods_no, category=category,
-                                brand=brand_raw, goods_name=goods_name,
-                                price=item.get("price", 0),
-                            )
-                            scanned_set.add(goods_no)
-                            continue
-
-                        # 모델번호 결정: 이름매칭이면 pre_model, 아니면 상세페이지 추출
-                        model = pre_model or normalize_model_number(
-                            retail_product.model_number,
-                        )
-                        if not model:
-                            await self.db.save_category_scan(
-                                goods_no=goods_no, category=category,
-                                brand=brand_raw, goods_name=goods_name,
-                                price=item.get("price", 0),
-                            )
-                            scanned_set.add(goods_no)
-                            continue
-
-                        # 중복 모델 스킵
-                        if model in seen_models:
-                            scanned_set.add(goods_no)
-                            continue
-                        seen_models.add(model)
-
-                        # 크림 DB 매칭
-                        row = await self.db.find_kream_by_model(model)
-                        if not row:
-                            row = await self.db.search_kream_by_model_like(model)
-                        if not row:
-                            await self.db.save_category_scan(
-                                goods_no=goods_no, category=category,
-                                brand=brand_raw, goods_name=goods_name,
-                                model_number=model,
-                                price=item.get("price", 0),
-                            )
-                            scanned_set.add(goods_no)
-                            continue
-
-                        result.detail_matched += 1
-
-                        # 크림 가격 조회
-                        row = dict(row)
-                        kream_product = await self._get_kream_from_db_or_api(
-                            row["product_id"], row,
-                        )
-                        if not kream_product or not kream_product.size_prices:
-                            await self.db.save_category_scan(
-                                goods_no=goods_no, category=category,
-                                brand=brand_raw, goods_name=goods_name,
-                                model_number=model, kream_matched=True,
-                                kream_product_id=row["product_id"],
-                                price=item.get("price", 0),
-                            )
-                            scanned_set.add(goods_no)
-                            continue
-
-                        # 무신사 사이즈맵 구축
-                        musinsa_sizes: dict[str, tuple[int, bool]] = {}
-                        for s in retail_product.sizes:
-                            if s.in_stock and s.price > 0:
-                                ns = _normalize_size(s.size)
-                                if ns not in musinsa_sizes or s.price < musinsa_sizes[ns][0]:
-                                    musinsa_sizes[ns] = (s.price, True)
-
-                        if not musinsa_sizes:
-                            await self.db.save_category_scan(
-                                goods_no=goods_no, category=category,
-                                brand=brand_raw, goods_name=goods_name,
-                                model_number=model, kream_matched=True,
-                                kream_product_id=row["product_id"],
-                                price=item.get("price", 0),
-                            )
-                            scanned_set.add(goods_no)
-                            continue
-
-                        # 수익 분석
-                        opportunity = analyze_auto_scan_opportunity(
-                            kream_product=kream_product,
-                            musinsa_sizes=musinsa_sizes,
-                            musinsa_url=retail_product.url,
-                            musinsa_name=retail_product.name,
-                            musinsa_product_id=goods_no,
-                        )
-
-                        # 스캔 이력 저장
+                    model = pre_model or normalize_model_number(
+                        retail_product.model_number,
+                    )
+                    if not model:
                         await self.db.save_category_scan(
                             goods_no=goods_no, category=category,
-                            brand=brand_raw, goods_name=goods_name,
+                            brand=brand_slug, goods_name=goods_name,
+                            price=item.get("price", 0),
+                        )
+                        scanned_set.add(goods_no)
+                        continue
+
+                    if model in seen_models:
+                        scanned_set.add(goods_no)
+                        continue
+                    seen_models.add(model)
+
+                    row = await self.db.find_kream_by_model(model)
+                    if not row:
+                        row = await self.db.search_kream_by_model_like(model)
+                    if not row:
+                        await self.db.save_category_scan(
+                            goods_no=goods_no, category=category,
+                            brand=brand_slug, goods_name=goods_name,
+                            model_number=model,
+                            price=item.get("price", 0),
+                        )
+                        scanned_set.add(goods_no)
+                        continue
+
+                    result.detail_matched += 1
+
+                    row = dict(row)
+                    kream_product = await self._get_kream_from_db_or_api(
+                        row["product_id"], row,
+                    )
+                    if not kream_product or not kream_product.size_prices:
+                        await self.db.save_category_scan(
+                            goods_no=goods_no, category=category,
+                            brand=brand_slug, goods_name=goods_name,
                             model_number=model, kream_matched=True,
                             kream_product_id=row["product_id"],
                             price=item.get("price", 0),
                         )
                         scanned_set.add(goods_no)
+                        continue
 
-                        if not opportunity:
-                            continue
+                    musinsa_sizes: dict[str, tuple[int, bool]] = {}
+                    for s in retail_product.sizes:
+                        if s.in_stock and s.price > 0:
+                            ns = _normalize_size(s.size)
+                            if ns not in musinsa_sizes or s.price < musinsa_sizes[ns][0]:
+                                musinsa_sizes[ns] = (s.price, True)
 
-                        opportunity.source_prices = {"무신사": min(
-                            p for p, _ in musinsa_sizes.values()
-                        )}
-
-                        if (
-                            opportunity.best_confirmed_profit <= 0
-                            and opportunity.best_estimated_profit <= 0
-                        ):
-                            continue
-
-                        # 리테일 상품 DB 저장
-                        await self.db.upsert_retail_product(
-                            source="musinsa",
-                            product_id=goods_no,
-                            name=retail_product.name,
-                            model_number=model,
-                            brand=brand_raw,
-                            url=retail_product.url,
-                            image_url=retail_product.image_url,
+                    if not musinsa_sizes:
+                        await self.db.save_category_scan(
+                            goods_no=goods_no, category=category,
+                            brand=brand_slug, goods_name=goods_name,
+                            model_number=model, kream_matched=True,
+                            kream_product_id=row["product_id"],
+                            price=item.get("price", 0),
                         )
+                        scanned_set.add(goods_no)
+                        continue
 
-                        result.opportunities.append(opportunity)
-
-                        # 실시간 알림
-                        if on_opportunity:
-                            try:
-                                await on_opportunity(opportunity)
-                            except Exception as e:
-                                logger.error(
-                                    "카테고리 스캔 알림 콜백 실패: %s", e,
-                                )
-
-                    except Exception as e:
-                        result.errors.append(
-                            f"상세 처리 실패 ({goods_no}): {e}"
-                        )
-                        logger.error("카테고리 스캔 상품 처리 실패 (%s): %s", goods_no, e)
-
-                # 진행 상황 업데이트
-                await self.db.update_category_progress(
-                    category, page_num, len(listing),
-                )
-
-                # 5페이지마다 진행 보고
-                pages_done = page_num - start_page + 1
-                if on_progress and pages_done % 5 == 0:
-                    await on_progress(
-                        f"카테고리스캔 [{category}] {pages_done}/{max_pages}\n"
-                        f"• 조회: {result.listing_fetched} → "
-                        f"필터: 브랜드 {result.brand_filtered} / "
-                        f"품절 {result.sold_out_skipped} / "
-                        f"이미스캔 {result.already_scanned}\n"
-                        f"• 이름매칭: {result.name_matched}건 / "
-                        f"상세방문: {result.detail_fetched}건 → "
-                        f"{result.detail_matched}건 매칭\n"
-                        f"• 수익기회: {len(result.opportunities)}건"
+                    opportunity = analyze_auto_scan_opportunity(
+                        kream_product=kream_product,
+                        musinsa_sizes=musinsa_sizes,
+                        musinsa_url=retail_product.url,
+                        musinsa_name=retail_product.name,
+                        musinsa_product_id=goods_no,
                     )
 
-                # 리스팅 API 호출 간 딜레이
-                await asyncio.sleep(1.0)
+                    await self.db.save_category_scan(
+                        goods_no=goods_no, category=category,
+                        brand=brand_slug, goods_name=goods_name,
+                        model_number=model, kream_matched=True,
+                        kream_product_id=row["product_id"],
+                        price=item.get("price", 0),
+                    )
+                    scanned_set.add(goods_no)
+
+                    if not opportunity:
+                        continue
+
+                    opportunity.source_prices = {"무신사": min(
+                        p for p, _ in musinsa_sizes.values()
+                    )}
+
+                    if (
+                        opportunity.best_confirmed_profit <= 0
+                        and opportunity.best_estimated_profit <= 0
+                    ):
+                        continue
+
+                    await self.db.upsert_retail_product(
+                        source="musinsa",
+                        product_id=goods_no,
+                        name=retail_product.name,
+                        model_number=model,
+                        brand=brand_slug,
+                        url=retail_product.url,
+                        image_url=retail_product.image_url,
+                    )
+
+                    result.opportunities.append(opportunity)
+
+                    if on_opportunity:
+                        try:
+                            await on_opportunity(opportunity)
+                        except Exception as e:
+                            logger.error(
+                                "카테고리 스캔 알림 콜백 실패: %s", e,
+                            )
+
+                except Exception as e:
+                    result.errors.append(
+                        f"상세 처리 실패 ({goods_no}): {e}"
+                    )
+                    logger.error("카테고리 스캔 상품 처리 실패 (%s): %s", goods_no, e)
+
+            # 진행 상황 DB 저장
+            await self.db.update_category_progress(
+                category, result.pages_scanned, len(listing),
+            )
 
         # 결과 정렬
         result.opportunities.sort(

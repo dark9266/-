@@ -244,111 +244,112 @@ class MusinsaCrawler:
         finally:
             await page.close()
 
-    # 카테고리 코드 (API 호출로 확인된 코드 사용)
+    # 카테고리 코드 (실제 무신사 사이트에서 확인)
     CATEGORY_CODES: dict[str, str] = {
-        "스니커즈": "003",
-        "러닝화": "018",
-        "구두": "005",
-        "샌들": "104",
-        "슬리퍼": "105",
-        "신발전체": "017",
+        "신발": "103",         # 무신사 킥스 (신발 전체)
+        "스니커즈": "103",     # 신발 = 103
+        "스포츠": "017",       # 스포츠/레저
+        "바지": "003",
+        "상의": "001",
+        "아우터": "002",
+        "가방": "004",
     }
 
     async def fetch_category_listing(
         self,
         category: str,
-        page_num: int = 1,
-        size: int = 60,
-        sort: str = "POPULAR",
+        max_pages: int = 1,
     ) -> list[dict]:
-        """무신사 카테고리 리스팅 API 호출.
+        """무신사 카테고리 리스팅 — 스크롤+인터셉트 방식.
 
-        브라우저 페이지의 fetch()를 사용하여 세션 쿠키 포함.
+        무신사 API는 페이지 2+에 hmacId(클라이언트 생성)가 필요하므로
+        직접 fetch 호출이 불가능. 실제 브라우저 스크롤로 무한스크롤을
+        트리거하고 API 응답을 인터셉트하여 데이터를 수집한다.
 
         Args:
-            category: 카테고리 코드 (예: "003", "017")
-            page_num: 페이지 번호 (1부터)
-            size: 페이지당 상품 수 (최대 60)
-            sort: 정렬 기준 (POPULAR, NEW, PRICE_ASC, PRICE_DESC)
+            category: 카테고리 코드 (예: "103", "017")
+            max_pages: 수집할 페이지 수 (1페이지 = 60건)
 
         Returns:
             [{"goodsNo": str, "goodsName": str, "brand": str,
-              "price": int, "saleRate": int, "isSoldOut": bool}, ...]
+              "brandName": str, "price": int, "saleRate": int,
+              "isSoldOut": bool}, ...]
         """
         ctx = await self.connect()
         page = await ctx.new_page()
 
-        try:
-            # 먼저 무신사 메인 페이지 방문 (세션 쿠키 활성화)
-            await page.goto(
-                f"{MUSINSA_BASE}/categories/item/{category}",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
+        all_items: list[dict] = []
+        seen_goods: set[str] = set()
+        pages_collected = 0
 
-            api_url = (
-                f"https://api.musinsa.com/api2/dp/v2/plp/goods"
-                f"?gf=A&sortCode={sort}&category={category}"
-                f"&size={size}&page={page_num}&caller=CATEGORY"
-            )
-
-            # page.evaluate(fetch) 사용 — 브라우저 세션 쿠키 자동 포함
-            response = await page.evaluate(
-                """async (url) => {
-                    try {
-                        const res = await fetch(url, {credentials: 'include'});
-                        if (!res.ok) return {error: res.status};
-                        return await res.json();
-                    } catch (e) {
-                        return {error: e.message};
-                    }
-                }""",
-                api_url,
-            )
-
-            if not response or "error" in response:
-                logger.warning(
-                    "카테고리 리스팅 API 실패: category=%s page=%d error=%s",
-                    category, page_num, response.get("error") if response else "no response",
-                )
-                return []
-
-            # 응답 구조: {"data": {"list": [...]}} 또는 {"data": {"goods": [...]}}
-            data = response.get("data", {})
-            goods_list = data.get("list") or data.get("goods") or []
-
-            if not isinstance(goods_list, list):
-                logger.warning(
-                    "카테고리 리스팅 예상 외 구조: category=%s keys=%s",
-                    category, list(data.keys()) if isinstance(data, dict) else type(data).__name__,
-                )
-                return []
-
-            results = []
+        def _parse_goods(goods_list: list) -> list[dict]:
+            """API 응답의 goods 목록을 파싱."""
+            parsed = []
             for item in goods_list:
                 if not isinstance(item, dict):
                     continue
-                goods_no = str(item.get("goodsNo") or item.get("goodsId") or "")
-                if not goods_no:
+                goods_no = str(item.get("goodsNo") or "")
+                if not goods_no or goods_no in seen_goods:
                     continue
-                results.append({
+                seen_goods.add(goods_no)
+                parsed.append({
                     "goodsNo": goods_no,
-                    "goodsName": item.get("goodsName") or item.get("goodsNm") or "",
-                    "brand": item.get("brand") or item.get("brandName") or "",
+                    "goodsName": item.get("goodsName") or "",
+                    "brand": item.get("brand") or "",
+                    "brandName": item.get("brandName") or "",
                     "price": item.get("price") or item.get("normalPrice") or 0,
-                    "saleRate": item.get("saleRate") or item.get("discountRate") or 0,
+                    "saleRate": item.get("saleRate") or 0,
                     "isSoldOut": bool(item.get("isSoldOut", False)),
                 })
+            return parsed
+
+        async def on_response(response: Response) -> None:
+            nonlocal pages_collected
+            url = response.url
+            if "plp/goods" not in url or "count" in url or "label" in url:
+                return
+            try:
+                data = await response.json()
+                goods_list = (data.get("data") or {}).get("list") or []
+                if goods_list:
+                    parsed = _parse_goods(goods_list)
+                    all_items.extend(parsed)
+                    pages_collected += 1
+                    logger.debug(
+                        "카테고리 리스팅 인터셉트: page=%d, +%d건 (총 %d건)",
+                        pages_collected, len(parsed), len(all_items),
+                    )
+            except Exception:
+                pass
+
+        try:
+            page.on("response", on_response)
+
+            await page.goto(
+                f"{MUSINSA_BASE}/categories/item/{category}",
+                wait_until="domcontentloaded",
+                timeout=20000,
+            )
+            # 첫 페이지 로드 대기
+            await asyncio.sleep(2)
+
+            # 스크롤로 추가 페이지 로드
+            scroll_attempts = 0
+            max_scroll_attempts = max_pages * 3  # 안전장치
+            while pages_collected < max_pages and scroll_attempts < max_scroll_attempts:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(1.2)
+                scroll_attempts += 1
 
             logger.info(
-                "카테고리 리스팅: category=%s page=%d → %d건",
-                category, page_num, len(results),
+                "카테고리 리스팅 완료: category=%s, %d페이지, %d건",
+                category, pages_collected, len(all_items),
             )
-            return results
+            return all_items
 
         except Exception as e:
-            logger.error("카테고리 리스팅 실패: category=%s page=%d error=%s", category, page_num, e)
-            return []
+            logger.error("카테고리 리스팅 실패: category=%s error=%s", category, e)
+            return all_items  # 이미 수집된 것이라도 반환
         finally:
             await page.close()
 
