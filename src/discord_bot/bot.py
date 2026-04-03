@@ -457,7 +457,7 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
     """브랜드별 무신사 검색 → 크림 DB 매칭 역방향 스캔.
 
     사용법:
-        !역방향스캔          → 테스트 (브랜드 5개)
+        !역방향스캔          → TOP 20 브랜드 스캔
         !역방향스캔 테스트    → 테스트 (브랜드 5개)
         !역방향스캔 전체      → 전체 브랜드 스캔
         !역방향스캔 전체 20   → 전체 + 브랜드당 20건
@@ -470,7 +470,7 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
 
     # 인자 파싱
     max_per_brand = 10
-    max_brands = 5  # 기본: 테스트 모드 (5개 브랜드)
+    max_brands = 20  # 기본: TOP 20 브랜드
     parts = args.strip().split()
 
     for part in parts:
@@ -484,7 +484,12 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
             except ValueError:
                 pass
 
-    mode_label = "테스트 (5개 브랜드)" if max_brands > 0 else "전체 브랜드"
+    if max_brands == 5:
+        mode_label = "테스트 (5개 브랜드)"
+    elif max_brands > 0:
+        mode_label = f"TOP {max_brands} 브랜드"
+    else:
+        mode_label = "전체 브랜드"
     progress_msg = await ctx.send(
         f"🔄 **역방향 스캔 시작** [{mode_label}]\n"
         f"• 크림 DB 브랜드 → 무신사 한글 검색\n"
