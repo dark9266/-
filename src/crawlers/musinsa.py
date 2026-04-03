@@ -26,6 +26,24 @@ MUSINSA_BASE = "https://www.musinsa.com"
 SESSION_FILE = DATA_DIR / "musinsa_session.json"
 
 
+def _diagnose_options_data(options_data: object) -> str:
+    """옵션 데이터 구조 진단 문자열."""
+    if options_data is None:
+        return "None"
+    if not isinstance(options_data, dict):
+        return f"type={type(options_data).__name__}"
+    data = options_data.get("data")
+    if not isinstance(data, dict):
+        return f"data.type={type(data).__name__}"
+    basic = data.get("basic")
+    if not isinstance(basic, list):
+        return f"basic.type={type(basic).__name__}"
+    if not basic:
+        return "basic=empty"
+    first = basic[0] if isinstance(basic[0], dict) else {}
+    return f"basic[0].keys={list(first.keys())[:5]}"
+
+
 async def _random_delay() -> None:
     delay = random.uniform(settings.request_delay_min, settings.request_delay_max)
     await asyncio.sleep(delay)
@@ -242,8 +260,21 @@ class MusinsaCrawler:
             nonlocal options_data, inventory_data
             try:
                 url = resp.url
-                if "/options" in url and "goods" in url and resp.ok:
-                    options_data = await resp.json()
+                if (
+                    re.search(r"/api2?/goods/\d+/options", url)
+                    and resp.ok
+                ):
+                    body = await resp.json()
+                    # 유효한 구조일 때만 저장 (다른 응답으로 덮어쓰기 방지)
+                    if isinstance(body, dict):
+                        d = body.get("data")
+                        if isinstance(d, dict) and isinstance(
+                            d.get("basic"), list
+                        ):
+                            options_data = body
+                            logger.debug(
+                                "인터셉트 옵션 캡처: url=%s", url[:100],
+                            )
                 elif "prioritized-inventories" in url and resp.ok:
                     body = await resp.json()
                     if isinstance(body, dict):
@@ -324,28 +355,39 @@ class MusinsaCrawler:
                     if image_url:
                         break
 
-            # 사이즈별 재고 — API 데이터 우선, 폴백으로 DOM 파싱
-            sizes = self._parse_sizes_from_api(
-                options_data, inventory_data,
-                sale_price, original_price, discount_type, discount_rate,
-            )
-            if not sizes:
-                if options_data:
-                    try:
-                        _d = options_data if isinstance(options_data, dict) else {}
-                        _data = _d.get("data") if isinstance(_d, dict) else None
-                        _basic = _data.get("basic") if isinstance(_data, dict) else None
-                        _info = "no-basic"
-                        if isinstance(_basic, list) and _basic and isinstance(_basic[0], dict):
-                            _info = list(_basic[0].keys())[:5]
-                    except Exception:
-                        _info = f"type={type(options_data).__name__}"
-                    logger.info(
-                        "API 사이즈 파싱 0개 (DOM 폴백): pid=%s options_keys=%s",
-                        product_id, _info,
+            # ---- 사이즈별 재고: 3단계 폴백 ----
+            sizes: list[RetailSizeInfo] = []
+
+            # Tier 1: 직접 API 호출 (가장 신뢰성 높음)
+            direct_options = await self._fetch_options_api(page, product_id)
+            if direct_options:
+                sizes = self._parse_sizes_from_api(
+                    direct_options, inventory_data,
+                    sale_price, original_price, discount_type, discount_rate,
+                )
+                if sizes:
+                    logger.debug(
+                        "Tier1(직접API) 사이즈 파싱 성공: pid=%s %d개",
+                        product_id, len(sizes),
                     )
-                else:
-                    logger.info("API 옵션 데이터 미수신: pid=%s", product_id)
+
+            # Tier 2: 브라우저 인터셉트 데이터
+            if not sizes and options_data:
+                sizes = self._parse_sizes_from_api(
+                    options_data, inventory_data,
+                    sale_price, original_price, discount_type, discount_rate,
+                )
+                if sizes:
+                    logger.debug(
+                        "Tier2(인터셉트) 사이즈 파싱 성공: pid=%s %d개",
+                        product_id, len(sizes),
+                    )
+
+            # Tier 3: DOM 폴백 + 원인별 진단 로깅
+            if not sizes:
+                self._log_size_parse_failure(
+                    product_id, direct_options, options_data,
+                )
                 sizes = await self._extract_sizes(
                     page, sale_price, original_price, discount_type, discount_rate,
                 )
@@ -501,6 +543,118 @@ class MusinsaCrawler:
             ))
 
         return sizes
+
+    def _log_size_parse_failure(
+        self,
+        product_id: str,
+        direct_options: dict | None,
+        intercepted_options: dict | None,
+    ) -> None:
+        """사이즈 파싱 실패 시 원인별 진단 로그."""
+        # 직접 API 데이터가 있으나 사이즈 0 → 전체 품절 가능성
+        if direct_options:
+            data = direct_options.get("data", {})
+            basic = data.get("basic", []) if isinstance(data, dict) else []
+            total_values = 0
+            for opt in basic:
+                if isinstance(opt, dict):
+                    vals = opt.get("optionValues", [])
+                    total_values += len(vals) if isinstance(vals, list) else 0
+            if total_values > 0:
+                logger.info(
+                    "사이즈 전체 품절 (DOM 폴백): pid=%s (총 %d개 옵션 모두 품절/비활성)",
+                    product_id, total_values,
+                )
+            else:
+                logger.info(
+                    "사이즈 옵션값 없음 (DOM 폴백): pid=%s", product_id,
+                )
+            return
+
+        # 인터셉트 데이터만 있는 경우
+        if intercepted_options:
+            diag = _diagnose_options_data(intercepted_options)
+            logger.info(
+                "API 사이즈 파싱 0개 (DOM 폴백): pid=%s diag=%s",
+                product_id, diag,
+            )
+            return
+
+        # 두 소스 모두 데이터 없음
+        logger.info(
+            "API 옵션 데이터 미수신 (직접+인터셉트 모두 실패, DOM 폴백): pid=%s",
+            product_id,
+        )
+
+    async def _fetch_options_api(
+        self, page: Page, product_id: str,
+    ) -> dict | None:
+        """직접 API 호출로 옵션 데이터 가져오기.
+
+        page.evaluate(fetch)를 사용하면 브라우저 쿠키/세션이 자동 포함된다.
+        CORS 차단 시 Playwright APIRequestContext로 폴백.
+        """
+        api_url = (
+            f"https://goods-detail.musinsa.com/api2/goods/{product_id}/options"
+        )
+        try:
+            result = await page.evaluate(
+                """async (url) => {
+                    try {
+                        const resp = await fetch(url, {
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: { 'Accept': 'application/json' }
+                        });
+                        if (!resp.ok) return { __error: resp.status };
+                        return await resp.json();
+                    } catch (e) {
+                        return { __error: e.message };
+                    }
+                }""",
+                api_url,
+            )
+        except Exception as e:
+            logger.debug("옵션 API evaluate 실패: pid=%s %s", product_id, e)
+            result = None
+
+        # evaluate 실패 또는 CORS → Playwright APIRequestContext 폴백
+        if result is None or (isinstance(result, dict) and "__error" in result):
+            if isinstance(result, dict):
+                logger.debug(
+                    "옵션 API fetch 에러 (APIRequest 폴백): pid=%s error=%s",
+                    product_id, result.get("__error"),
+                )
+            try:
+                ctx = page.context
+                resp = await ctx.request.get(api_url)
+                if resp.ok:
+                    result = await resp.json()
+                else:
+                    logger.debug(
+                        "옵션 APIRequest 실패: pid=%s status=%s",
+                        product_id, resp.status,
+                    )
+                    return None
+            except Exception as e:
+                logger.debug("옵션 APIRequest 예외: pid=%s %s", product_id, e)
+                return None
+
+        # 구조 검증
+        if not isinstance(result, dict):
+            return None
+        data = result.get("data")
+        if isinstance(data, dict) and isinstance(data.get("basic"), list):
+            logger.debug(
+                "옵션 직접 API 성공: pid=%s basic=%d개",
+                product_id, len(data["basic"]),
+            )
+            return result
+        logger.debug(
+            "옵션 직접 API 구조 비정상: pid=%s keys=%s",
+            product_id, list(result.keys())[:5],
+        )
+        return None
 
     @staticmethod
     def _is_musinsa_sku(model: str) -> bool:
@@ -724,6 +878,59 @@ class MusinsaCrawler:
     ) -> list[RetailSizeInfo]:
         """사이즈 옵션 및 재고 추출 (DOM 파싱 폴백)."""
         sizes: list[RetailSizeInfo] = []
+
+        # 방법 0: 현재 무신사 React UI — 옵션 드롭다운 트리거 후 항목 수집
+        try:
+            for trigger_sel in [
+                "[class*='OptionItem']", "[class*='option_select']",
+                "[class*='FilterOption']", "button:has-text('사이즈')",
+                "[class*='ProductOption']",
+            ]:
+                trigger = await page.query_selector(trigger_sel)
+                if trigger:
+                    await trigger.click()
+                    await asyncio.sleep(0.5)
+                    break
+
+            for item_sel in [
+                "[role='option']", "[role='listbox'] li",
+                "[class*='OptionValue']", "[class*='option_value']",
+                "[class*='FilterValue']", "li[class*='option']",
+            ]:
+                items = await page.query_selector_all(item_sel)
+                if not items or len(items) < 2:
+                    continue
+                for item in items:
+                    text = (await item.inner_text()).strip()
+                    if not text or len(text) > 15:
+                        continue
+                    if text in ("사이즈 선택", "선택", ""):
+                        continue
+                    classes = await item.get_attribute("class") or ""
+                    aria_disabled = await item.get_attribute("aria-disabled")
+                    in_stock = (
+                        "sold" not in classes.lower()
+                        and "disabled" not in classes.lower()
+                        and aria_disabled != "true"
+                        and "품절" not in text
+                        and "재입고" not in text
+                    )
+                    size_text = re.sub(r"\s*[\(\[].*?[\)\]]", "", text).strip()
+                    if not in_stock:
+                        continue
+                    sizes.append(RetailSizeInfo(
+                        size=size_text,
+                        price=sale_price,
+                        original_price=original_price,
+                        in_stock=True,
+                        discount_type=discount_type,
+                        discount_rate=discount_rate,
+                    ))
+                if sizes:
+                    logger.debug("DOM 방법0(React UI) 사이즈 %d개", len(sizes))
+                    return sizes
+        except Exception:
+            pass
 
         # 방법 1: select 태그
         select = await page.query_selector(
