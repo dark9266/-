@@ -77,6 +77,49 @@ def model_numbers_match(a: str, b: str) -> bool:
     return False
 
 
+def extract_model_from_name(name: str) -> str | None:
+    """상품명에서 모델번호 패턴 추출 (상세 페이지 방문 없이).
+
+    카테고리 리스팅 API의 goodsName에서 모델번호를 추출하여
+    상세 페이지 방문 없이 크림 DB 매칭을 시도할 때 사용.
+
+    Examples:
+        "나이키 덩크 로우 DQ8423-100" -> "DQ8423-100"
+        "뉴발란스 574 U7408PL" -> "U7408PL"
+        "아디다스 삼바 OG B75806" -> "B75806"
+    """
+    if not name:
+        return None
+
+    text = name.strip().upper()
+
+    # "/" 뒤의 모델번호 (예: "덩크 로우 W - 세일:화이트 / IO4244-100")
+    m = re.search(r"/\s*([A-Za-z0-9][-A-Za-z0-9]+)", text)
+    if m:
+        candidate = m.group(1).strip()
+        if re.match(r"[A-Z]{1,3}\d{3,5}[-\s]?\d{2,4}", candidate):
+            return normalize_model_number(candidate)
+
+    # Nike/Jordan: XX1234-123
+    m = re.search(r"\b([A-Z]{1,3}\d{3,5}-\d{2,4})\b", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
+    # Adidas: 6자리-3자리 (123456-001)
+    m = re.search(r"\b(\d{6}-\d{3})\b", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
+    # NB/기타: 영문1~2자+숫자3~5자+영문0~3자 (U7408PL, MT410GC5, BB550)
+    m = re.search(r"\b([A-Z]{1,2}\d{3,5}[A-Z]{0,3}\d{0,2})\b", text)
+    if m:
+        candidate = m.group(1)
+        if len(candidate) >= 5:
+            return normalize_model_number(candidate)
+
+    return None
+
+
 def _row_to_kream_product(row) -> KreamProduct:
     """DB 행을 KreamProduct 객체로 변환."""
     return KreamProduct(

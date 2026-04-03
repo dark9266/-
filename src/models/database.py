@@ -107,6 +107,28 @@ CREATE TABLE IF NOT EXISTS bot_settings (
     value TEXT NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 카테고리 스캔 이력 (재방문 방지)
+CREATE TABLE IF NOT EXISTS category_scan_history (
+    goods_no TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    brand TEXT DEFAULT '',
+    goods_name TEXT DEFAULT '',
+    model_number TEXT DEFAULT '',
+    kream_matched INTEGER DEFAULT 0,
+    kream_product_id TEXT DEFAULT '',
+    price INTEGER DEFAULT 0,
+    scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_cat_scan_category ON category_scan_history(category);
+
+-- 카테고리 스캔 진행 상황
+CREATE TABLE IF NOT EXISTS category_scan_progress (
+    category TEXT PRIMARY KEY,
+    last_scanned_page INTEGER DEFAULT 0,
+    total_items_scanned INTEGER DEFAULT 0,
+    last_scan_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -398,3 +420,97 @@ class Database:
         )
         await self.db.commit()
         return cursor.rowcount > 0
+
+    # -- 카테고리 스캔 --
+
+    async def load_scanned_goods_nos(self, category: str = "") -> set[str]:
+        """카테고리 스캔 이력에서 goods_no 집합 로딩 (메모리 SET)."""
+        if category:
+            cursor = await self.db.execute(
+                "SELECT goods_no FROM category_scan_history WHERE category = ?",
+                (category,),
+            )
+        else:
+            cursor = await self.db.execute(
+                "SELECT goods_no FROM category_scan_history"
+            )
+        rows = await cursor.fetchall()
+        return {row["goods_no"] for row in rows}
+
+    async def save_category_scan(
+        self,
+        goods_no: str,
+        category: str,
+        brand: str = "",
+        goods_name: str = "",
+        model_number: str = "",
+        kream_matched: bool = False,
+        kream_product_id: str = "",
+        price: int = 0,
+    ) -> None:
+        """카테고리 스캔 이력 저장 (UPSERT)."""
+        await self.db.execute(
+            """INSERT INTO category_scan_history
+            (goods_no, category, brand, goods_name, model_number,
+             kream_matched, kream_product_id, price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(goods_no) DO UPDATE SET
+                model_number=excluded.model_number,
+                kream_matched=excluded.kream_matched,
+                kream_product_id=excluded.kream_product_id,
+                price=excluded.price,
+                scanned_at=CURRENT_TIMESTAMP""",
+            (goods_no, category, brand, goods_name, model_number,
+             1 if kream_matched else 0, kream_product_id, price),
+        )
+        await self.db.commit()
+
+    async def get_category_progress(self, category: str) -> dict | None:
+        """카테고리 스캔 진행 상황 조회."""
+        cursor = await self.db.execute(
+            "SELECT * FROM category_scan_progress WHERE category = ?",
+            (category,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def update_category_progress(
+        self, category: str, page: int, items: int,
+    ) -> None:
+        """카테고리 스캔 진행 상황 업데이트."""
+        await self.db.execute(
+            """INSERT INTO category_scan_progress
+            (category, last_scanned_page, total_items_scanned)
+            VALUES (?, ?, ?)
+            ON CONFLICT(category) DO UPDATE SET
+                last_scanned_page=excluded.last_scanned_page,
+                total_items_scanned=category_scan_progress.total_items_scanned + excluded.total_items_scanned,
+                last_scan_at=CURRENT_TIMESTAMP""",
+            (category, page, items),
+        )
+        await self.db.commit()
+
+    async def get_category_scan_stats(self) -> dict:
+        """전체 카테고리 스캔 통계."""
+        cursor = await self.db.execute(
+            """SELECT category, last_scanned_page, total_items_scanned, last_scan_at
+            FROM category_scan_progress ORDER BY last_scan_at DESC"""
+        )
+        rows = await cursor.fetchall()
+        stats = {row["category"]: dict(row) for row in rows}
+
+        # 총 스캔 이력 수
+        cursor2 = await self.db.execute(
+            "SELECT COUNT(*) as cnt FROM category_scan_history"
+        )
+        total = await cursor2.fetchone()
+        stats["_total_scanned"] = total["cnt"] if total else 0
+
+        # 크림 매칭 성공 수
+        cursor3 = await self.db.execute(
+            "SELECT COUNT(*) as cnt FROM category_scan_history WHERE kream_matched = 1"
+        )
+        matched = await cursor3.fetchone()
+        stats["_total_matched"] = matched["cnt"] if matched else 0
+
+        return stats

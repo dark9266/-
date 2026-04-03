@@ -244,6 +244,114 @@ class MusinsaCrawler:
         finally:
             await page.close()
 
+    # 카테고리 코드 (API 호출로 확인된 코드 사용)
+    CATEGORY_CODES: dict[str, str] = {
+        "스니커즈": "003",
+        "러닝화": "018",
+        "구두": "005",
+        "샌들": "104",
+        "슬리퍼": "105",
+        "신발전체": "017",
+    }
+
+    async def fetch_category_listing(
+        self,
+        category: str,
+        page_num: int = 1,
+        size: int = 60,
+        sort: str = "POPULAR",
+    ) -> list[dict]:
+        """무신사 카테고리 리스팅 API 호출.
+
+        브라우저 페이지의 fetch()를 사용하여 세션 쿠키 포함.
+
+        Args:
+            category: 카테고리 코드 (예: "003", "017")
+            page_num: 페이지 번호 (1부터)
+            size: 페이지당 상품 수 (최대 60)
+            sort: 정렬 기준 (POPULAR, NEW, PRICE_ASC, PRICE_DESC)
+
+        Returns:
+            [{"goodsNo": str, "goodsName": str, "brand": str,
+              "price": int, "saleRate": int, "isSoldOut": bool}, ...]
+        """
+        ctx = await self.connect()
+        page = await ctx.new_page()
+
+        try:
+            # 먼저 무신사 메인 페이지 방문 (세션 쿠키 활성화)
+            await page.goto(
+                f"{MUSINSA_BASE}/categories/item/{category}",
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+
+            api_url = (
+                f"https://api.musinsa.com/api2/dp/v2/plp/goods"
+                f"?gf=A&sortCode={sort}&category={category}"
+                f"&size={size}&page={page_num}&caller=CATEGORY"
+            )
+
+            # page.evaluate(fetch) 사용 — 브라우저 세션 쿠키 자동 포함
+            response = await page.evaluate(
+                """async (url) => {
+                    try {
+                        const res = await fetch(url, {credentials: 'include'});
+                        if (!res.ok) return {error: res.status};
+                        return await res.json();
+                    } catch (e) {
+                        return {error: e.message};
+                    }
+                }""",
+                api_url,
+            )
+
+            if not response or "error" in response:
+                logger.warning(
+                    "카테고리 리스팅 API 실패: category=%s page=%d error=%s",
+                    category, page_num, response.get("error") if response else "no response",
+                )
+                return []
+
+            # 응답 구조: {"data": {"list": [...]}} 또는 {"data": {"goods": [...]}}
+            data = response.get("data", {})
+            goods_list = data.get("list") or data.get("goods") or []
+
+            if not isinstance(goods_list, list):
+                logger.warning(
+                    "카테고리 리스팅 예상 외 구조: category=%s keys=%s",
+                    category, list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                )
+                return []
+
+            results = []
+            for item in goods_list:
+                if not isinstance(item, dict):
+                    continue
+                goods_no = str(item.get("goodsNo") or item.get("goodsId") or "")
+                if not goods_no:
+                    continue
+                results.append({
+                    "goodsNo": goods_no,
+                    "goodsName": item.get("goodsName") or item.get("goodsNm") or "",
+                    "brand": item.get("brand") or item.get("brandName") or "",
+                    "price": item.get("price") or item.get("normalPrice") or 0,
+                    "saleRate": item.get("saleRate") or item.get("discountRate") or 0,
+                    "isSoldOut": bool(item.get("isSoldOut", False)),
+                })
+
+            logger.info(
+                "카테고리 리스팅: category=%s page=%d → %d건",
+                category, page_num, len(results),
+            )
+            return results
+
+        except Exception as e:
+            logger.error("카테고리 리스팅 실패: category=%s page=%d error=%s", category, page_num, e)
+            return []
+        finally:
+            await page.close()
+
     async def get_product_detail(self, product_id: str) -> RetailProduct | None:
         """상품 상세 페이지에서 정보 수집 (모델번호, 할인가, 사이즈 재고).
 

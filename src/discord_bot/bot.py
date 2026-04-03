@@ -13,6 +13,7 @@ from src.crawlers.musinsa import musinsa_crawler
 from src.discord_bot.formatter import (
     format_auto_scan_alert,
     format_auto_scan_summary,
+    format_category_scan_summary,
     format_daily_report,
     format_help,
     format_price_change_alert,
@@ -562,6 +563,149 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
             await ctx.send(f"❌ 역방향 스캔 실패: {e}")
 
     _reverse_scan_task = asyncio.create_task(run_reverse())
+
+
+# 카테고리스캔 태스크 추적
+_category_scan_task: asyncio.Task | None = None
+
+
+@bot.command(name="카테고리스캔")
+async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
+    """카테고리 기반 전체 상품 스캔.
+
+    사용법:
+        !카테고리스캔              → 스니커즈 30페이지
+        !카테고리스캔 50           → 스니커즈 50페이지
+        !카테고리스캔 신발전체 20   → 신발전체 20페이지
+        !카테고리스캔 상태          → 스캔 진행 현황
+        !카테고리스캔 초기화        → 스캔 이력 초기화 (처음부터 다시)
+    """
+    global _category_scan_task
+
+    parts = args.strip().split()
+
+    # 상태 조회
+    if parts and parts[0] == "상태":
+        stats = await bot.db.get_category_scan_stats()
+        total = stats.pop("_total_scanned", 0)
+        matched = stats.pop("_total_matched", 0)
+        lines = [
+            f"📂 **카테고리 스캔 현황**",
+            f"• 총 스캔: {total}건 / 크림 매칭: {matched}건",
+        ]
+        for cat, info in stats.items():
+            lines.append(
+                f"• `{cat}`: {info['last_scanned_page']}페이지, "
+                f"{info['total_items_scanned']}건 "
+                f"(마지막: {info['last_scan_at'][:16]})"
+            )
+        if not stats:
+            lines.append("• 아직 스캔 이력 없음")
+        await ctx.send("\n".join(lines))
+        return
+
+    if _category_scan_task and not _category_scan_task.done():
+        await ctx.send("⚠️ 카테고리 스캔이 이미 실행 중입니다.")
+        return
+
+    # 인자 파싱
+    max_pages = 30
+    category_name = "스니커즈"
+    resume = True
+
+    for part in parts:
+        if part == "초기화":
+            resume = False
+        elif part in musinsa_crawler.CATEGORY_CODES:
+            category_name = part
+        else:
+            try:
+                max_pages = int(part)
+            except ValueError:
+                pass
+
+    category_code = musinsa_crawler.CATEGORY_CODES.get(category_name, "003")
+
+    progress_msg = await ctx.send(
+        f"📂 **카테고리 스캔 시작** [{category_name}] ({category_code})\n"
+        f"• 최대 {max_pages}페이지 ({max_pages * 60}건)\n"
+        f"• 4단계 필터: 품절→이미스캔→브랜드→이름매칭\n"
+        f"• {'이전 이어서' if resume else '처음부터'} 스캔"
+    )
+
+    async def on_opportunity(opportunity):
+        try:
+            await bot.send_auto_scan_alert(opportunity)
+        except Exception as e:
+            logger.error("카테고리스캔 알림 콜백 실패: %s", e)
+
+    async def on_progress(message):
+        try:
+            await progress_msg.edit(content=f"📂 {message}")
+        except Exception:
+            pass
+
+    async def run_category():
+        try:
+            result = await bot.scanner.run_category_scan(
+                categories=[category_code],
+                max_pages=max_pages,
+                on_opportunity=on_opportunity,
+                on_progress=on_progress,
+                resume=resume,
+            )
+
+            # 통계 업데이트
+            bot.daily_stats["scan_count"] += 1
+            bot.daily_stats["product_count"] += result.detail_fetched
+
+            elapsed = 0.0
+            if result.finished_at and result.started_at:
+                elapsed = (result.finished_at - result.started_at).total_seconds()
+
+            summary_embed = format_category_scan_summary(
+                listing_fetched=result.listing_fetched,
+                sold_out_skipped=result.sold_out_skipped,
+                already_scanned=result.already_scanned,
+                brand_filtered=result.brand_filtered,
+                name_matched=result.name_matched,
+                name_no_match=result.name_no_match,
+                detail_fetched=result.detail_fetched,
+                detail_matched=result.detail_matched,
+                confirmed_count=result.confirmed_count,
+                estimated_count=result.estimated_count,
+                total_opportunities=len(result.opportunities),
+                pages_scanned=result.pages_scanned,
+                elapsed_seconds=elapsed,
+                errors=len(result.errors),
+            )
+            await ctx.send(embed=summary_embed)
+
+            # 개별 수익 알림 전송
+            sent_count = 0
+            for op in result.opportunities:
+                try:
+                    await bot.send_auto_scan_alert(op)
+                    sent_count += 1
+                except Exception as e:
+                    logger.error("카테고리 개별 알림 실패: %s", e)
+
+            await progress_msg.edit(
+                content=(
+                    f"✅ **카테고리 스캔 완료** [{category_name}] — "
+                    f"리스팅 {result.listing_fetched}건 → "
+                    f"상세 {result.detail_fetched}건 → "
+                    f"수익기회 {len(result.opportunities)}건 "
+                    f"(확정 {result.confirmed_count} / 예상 {result.estimated_count}) "
+                    f"| 알림 {sent_count}건 전송"
+                )
+            )
+
+        except Exception as e:
+            logger.error("카테고리 스캔 실패: %s", e)
+            await ctx.send(f"❌ 카테고리 스캔 실패: {e}")
+
+    _category_scan_task = asyncio.create_task(run_category())
 
 
 @bot.command(name="크림")

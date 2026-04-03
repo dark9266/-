@@ -505,6 +505,73 @@ def format_reverse_scan_summary(
     return embed
 
 
+def format_category_scan_summary(
+    listing_fetched: int,
+    sold_out_skipped: int,
+    already_scanned: int,
+    brand_filtered: int,
+    name_matched: int,
+    name_no_match: int,
+    detail_fetched: int,
+    detail_matched: int,
+    confirmed_count: int,
+    estimated_count: int,
+    total_opportunities: int,
+    pages_scanned: int,
+    elapsed_seconds: float,
+    errors: int = 0,
+) -> discord.Embed:
+    """카테고리 스캔 완료 요약 Embed."""
+    embed = discord.Embed(
+        title="📂 카테고리 스캔 완료",
+        description="무신사 카테고리 리스팅 → 크림 DB 전수 대조",
+        color=0x2ECC71,
+        timestamp=datetime.now(),
+    )
+
+    embed.add_field(
+        name="수집 & 필터링",
+        value=(
+            f"**리스팅 조회:** {listing_fetched}건 ({pages_scanned}페이지)\n"
+            f"**품절 스킵:** {sold_out_skipped}건\n"
+            f"**이미 스캔:** {already_scanned}건\n"
+            f"**브랜드 필터:** {brand_filtered}건"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="매칭",
+        value=(
+            f"**이름 매칭:** {name_matched}건\n"
+            f"**이름 미매칭:** {name_no_match}건\n"
+            f"**상세 방문:** {detail_fetched}건\n"
+            f"**DB 매칭:** {detail_matched}건"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="수익 기회",
+        value=(
+            f"**전체:** {total_opportunities}건\n"
+            f"🔴 **확정 수익:** {confirmed_count}건\n"
+            f"🟠 **예상 수익:** {estimated_count}건\n"
+            f"**소요 시간:** {elapsed_seconds:.0f}초"
+        ),
+        inline=True,
+    )
+
+    if errors > 0:
+        embed.add_field(
+            name="오류",
+            value=f"⚠️ {errors}건",
+            inline=True,
+        )
+
+    return embed
+
+
 def format_status(
     is_chrome_connected: bool,
     is_kream_logged_in: bool,
