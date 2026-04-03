@@ -176,10 +176,12 @@ class KreamBot(commands.Bot):
 
     async def send_auto_scan_alert(self, opportunity) -> None:
         """자동스캔 수익 알림 전송 (중복 방지 적용)."""
-        if not settings.channel_profit_alert:
-            return
-
         kream_product = opportunity.kream_product
+        product_name = kream_product.name[:30] if kream_product else "?"
+
+        if not settings.channel_profit_alert:
+            logger.warning("매수알림 채널 미설정: %s", product_name)
+            return
 
         # 중복 알림 체크
         best_profit = max(
@@ -194,14 +196,23 @@ class KreamBot(commands.Bot):
             cooldown_hours=1,
         )
         if not should_send:
+            logger.debug("중복 알림 스킵: %s", product_name)
             return
 
         channel = self.get_channel(settings.channel_profit_alert)
         if not channel:
+            logger.warning(
+                "매수알림 채널 찾기 실패: id=%s", settings.channel_profit_alert,
+            )
             return
 
-        embed = format_auto_scan_alert(opportunity)
-        msg = await channel.send(embed=embed)
+        try:
+            embed = format_auto_scan_alert(opportunity)
+            msg = await channel.send(embed=embed)
+            logger.info("매수알림 전송: %s (수익 %+d원)", product_name, best_profit)
+        except Exception as e:
+            logger.error("매수알림 전송 실패: %s — %s", product_name, e)
+            return
 
         await self.db.save_alert(
             kream_product_id=kream_product.product_id,
@@ -261,7 +272,10 @@ async def cmd_auto_scan(ctx: commands.Context):
 
     async def on_opportunity(opportunity):
         """수익 기회 발견 즉시 알림."""
-        await bot.send_auto_scan_alert(opportunity)
+        try:
+            await bot.send_auto_scan_alert(opportunity)
+        except Exception as e:
+            logger.error("자동스캔 알림 콜백 실패: %s", e)
 
     async def on_progress(message):
         """진행 상황 업데이트."""
@@ -378,7 +392,10 @@ async def cmd_batch_scan(ctx: commands.Context, *, args: str = ""):
     progress_msg = await ctx.send("🗂️ **배치스캔 시작** — 전체 DB 순회 중...")
 
     async def on_opportunity(opportunity):
-        await bot.send_auto_scan_alert(opportunity)
+        try:
+            await bot.send_auto_scan_alert(opportunity)
+        except Exception as e:
+            logger.error("배치스캔 알림 콜백 실패: %s", e)
 
     async def on_progress(message):
         try:
@@ -476,7 +493,10 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
     )
 
     async def on_opportunity(opportunity):
-        await bot.send_auto_scan_alert(opportunity)
+        try:
+            await bot.send_auto_scan_alert(opportunity)
+        except Exception as e:
+            logger.error("역방향스캔 알림 콜백 실패: %s", e)
 
     async def on_progress(message):
         try:

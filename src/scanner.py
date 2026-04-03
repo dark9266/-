@@ -1171,14 +1171,20 @@ class Scanner:
                         image_url=retail_product.image_url,
                     )
 
-                    # 실시간 알림
+                    # 실시간 알림 (콜백 실패해도 opportunity 반환에 영향 없음)
                     ct = settings.auto_scan_confirmed_roi
                     et = settings.auto_scan_estimated_roi
                     if on_opportunity and (
                         opportunity.best_confirmed_roi >= ct
                         or opportunity.best_estimated_roi >= et
                     ):
-                        await on_opportunity(opportunity)
+                        try:
+                            await on_opportunity(opportunity)
+                        except Exception as e:
+                            logger.error(
+                                "역방향 알림 콜백 실패: %s — %s",
+                                kream_product.name[:30], e,
+                            )
 
                     return opportunity
 
