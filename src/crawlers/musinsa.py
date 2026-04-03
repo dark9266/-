@@ -260,12 +260,21 @@ class MusinsaCrawler:
             nonlocal options_data, inventory_data
             try:
                 url = resp.url
-                if (
-                    re.search(r"/api2?/goods/\d+/options", url)
+                # 순서 중요: inventory를 먼저 체크 (URL에 /options도 포함됨)
+                if "prioritized-inventories" in url and resp.ok:
+                    body = await resp.json()
+                    if isinstance(body, dict):
+                        inventory_data = body.get("data", [])
+                    elif isinstance(body, list):
+                        inventory_data = body
+                    logger.debug("인터셉트 재고 캡처: url=%s", url[:100])
+                elif (
+                    re.search(r"/api2?/goods/\d+/options\b", url)
+                    and "inventories" not in url
                     and resp.ok
                 ):
                     body = await resp.json()
-                    # 유효한 구조일 때만 저장 (다른 응답으로 덮어쓰기 방지)
+                    # 유효한 구조일 때만 저장
                     if isinstance(body, dict):
                         d = body.get("data")
                         if isinstance(d, dict) and isinstance(
@@ -275,12 +284,6 @@ class MusinsaCrawler:
                             logger.debug(
                                 "인터셉트 옵션 캡처: url=%s", url[:100],
                             )
-                elif "prioritized-inventories" in url and resp.ok:
-                    body = await resp.json()
-                    if isinstance(body, dict):
-                        inventory_data = body.get("data", [])
-                    elif isinstance(body, list):
-                        inventory_data = body
             except Exception:
                 pass
 
@@ -499,19 +502,31 @@ class MusinsaCrawler:
                 for val_no in item.get("optionValueNos", []):
                     deactivated.add(val_no)
 
+        # optionItem.no → optionValueNos 역매핑 (productVariantId 폴백용)
+        variant_to_values: dict[int, list[int]] = {}
+        for item in option_items:
+            if isinstance(item, dict):
+                variant_to_values[item["no"]] = item.get("optionValueNos", [])
+
         # inventory_data에서 품절 매핑 구축
         inventory_stock: dict[int, bool] = {}
         if inventory_data and isinstance(inventory_data, list):
             for inv in inventory_data:
                 if not isinstance(inv, dict):
                     continue
+                in_stock = not inv.get("outOfStock", False)
+                # 방법 1: relatedOption.optionValueNo로 매핑
                 related = inv.get("relatedOption")
                 if isinstance(related, dict):
                     val_no = related.get("optionValueNo")
                     if val_no is not None:
-                        inventory_stock[val_no] = not inv.get(
-                            "outOfStock", False
-                        )
+                        inventory_stock[val_no] = in_stock
+                        continue
+                # 방법 2: productVariantId → optionItem.no → optionValueNos
+                variant_id = inv.get("productVariantId")
+                if variant_id and variant_id in variant_to_values:
+                    for val_no in variant_to_values[variant_id]:
+                        inventory_stock[val_no] = in_stock
 
         sizes: list[RetailSizeInfo] = []
         for ov in option_values:
@@ -675,17 +690,25 @@ class MusinsaCrawler:
 
         prioritized-inventories 엔드포인트는 인증 필요 → 브라우저 컨텍스트 사용.
         """
-        api_url = (
+        # v2 URL 우선, 실패 시 구 URL 폴백
+        urls = [
             f"https://goods-detail.musinsa.com/api2/goods/"
-            f"{product_id}/prioritized-inventories"
-        )
+            f"{product_id}/options/v2/prioritized-inventories",
+            f"https://goods-detail.musinsa.com/api2/goods/"
+            f"{product_id}/prioritized-inventories",
+        ]
         try:
             ctx = page.context
-            resp = await ctx.request.get(api_url)
-            if not resp.ok:
+            resp = None
+            for api_url in urls:
+                resp = await ctx.request.get(api_url)
+                if resp.ok:
+                    break
                 logger.debug(
-                    "재고 API 실패: pid=%s status=%s", product_id, resp.status,
+                    "재고 API 시도 실패: pid=%s url=%s status=%s",
+                    product_id, api_url.split("/")[-1], resp.status,
                 )
+            if not resp or not resp.ok:
                 return None
             body = await resp.json()
             if isinstance(body, dict):
