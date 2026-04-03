@@ -533,12 +533,22 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
             )
             await ctx.send(embed=summary_embed)
 
+            # 개별 수익 알림 전송 (모든 수익기회)
+            sent_count = 0
+            for op in result.opportunities:
+                try:
+                    await bot.send_auto_scan_alert(op)
+                    sent_count += 1
+                except Exception as e:
+                    logger.error("역방향 개별 알림 실패: %s", e)
+
             await progress_msg.edit(
                 content=(
                     f"✅ **역방향 스캔 완료** — "
                     f"검색 {result.sale_collected}건 → DB매칭 {result.db_matched}건 → "
                     f"수익기회 {len(result.opportunities)}건 "
-                    f"(확정 {result.confirmed_count} / 예상 {result.estimated_count})"
+                    f"(확정 {result.confirmed_count} / 예상 {result.estimated_count}) "
+                    f"| 알림 {sent_count}건 전송"
                 )
             )
 
