@@ -358,6 +358,12 @@ class MusinsaCrawler:
             # ---- 사이즈별 재고: 3단계 폴백 ----
             sizes: list[RetailSizeInfo] = []
 
+            # 직접 재고 API 호출 (인터셉트보다 신뢰성 높음)
+            if not inventory_data:
+                inventory_data = await self._fetch_inventories_api(
+                    page, product_id,
+                )
+
             # Tier 1: 직접 API 호출 (가장 신뢰성 높음)
             direct_options = await self._fetch_options_api(page, product_id)
             if direct_options:
@@ -480,23 +486,32 @@ class MusinsaCrawler:
         if not isinstance(option_values, list):
             return []
 
-        # optionItems에서 재고(activated) 매핑 구축
+        # optionItems에서 비활성(activated=False) 매핑 구축
+        # 주의: activated=True는 재고 보장 아님! 실제 재고는 inventory에서 확인
         option_items = data.get("optionItems", [])
         if not isinstance(option_items, list):
             option_items = []
-        # optionValueNo → activated 매핑
-        activated_map: dict[int, bool] = {}
+        deactivated: set[int] = set()
         for item in option_items:
             if not isinstance(item, dict):
                 continue
             if not item.get("activated", True):
-                # 비활성 아이템의 모든 옵션값을 품절 처리
                 for val_no in item.get("optionValueNos", []):
-                    activated_map[val_no] = False
-            else:
-                for val_no in item.get("optionValueNos", []):
-                    if val_no not in activated_map:
-                        activated_map[val_no] = True
+                    deactivated.add(val_no)
+
+        # inventory_data에서 품절 매핑 구축
+        inventory_stock: dict[int, bool] = {}
+        if inventory_data and isinstance(inventory_data, list):
+            for inv in inventory_data:
+                if not isinstance(inv, dict):
+                    continue
+                related = inv.get("relatedOption")
+                if isinstance(related, dict):
+                    val_no = related.get("optionValueNo")
+                    if val_no is not None:
+                        inventory_stock[val_no] = not inv.get(
+                            "outOfStock", False
+                        )
 
         sizes: list[RetailSizeInfo] = []
         for ov in option_values:
@@ -508,20 +523,17 @@ class MusinsaCrawler:
 
             ov_no = ov.get("no")
 
-            # 재고 여부 판단: optionItems.activated > inventory > isDeleted
-            in_stock = True
-            if activated_map and ov_no is not None:
-                in_stock = activated_map.get(ov_no, False)
+            # 재고 여부 판단:
+            # 1) activated=False → 확정 품절
+            # 2) inventory 데이터 있으면 → outOfStock 기준
+            # 3) 둘 다 없으면 → isDeleted 폴백
+            if ov_no in deactivated:
+                in_stock = False
+            elif inventory_stock:
+                in_stock = inventory_stock.get(ov_no, False)
             elif inventory_data:
-                matched_inv = False
-                for inv in inventory_data:
-                    related = inv.get("relatedOption")
-                    if related and related.get("optionValueNo") == ov_no:
-                        in_stock = not inv.get("outOfStock", False)
-                        matched_inv = True
-                        break
-                if not matched_inv:
-                    in_stock = False
+                # inventory 데이터가 있지만 이 사이즈 매핑 없음 → 품절
+                in_stock = False
             else:
                 in_stock = not ov.get("isDeleted", False)
 
@@ -654,6 +666,39 @@ class MusinsaCrawler:
             "옵션 직접 API 구조 비정상: pid=%s keys=%s",
             product_id, list(result.keys())[:5],
         )
+        return None
+
+    async def _fetch_inventories_api(
+        self, page: Page, product_id: str,
+    ) -> list | None:
+        """직접 API 호출로 재고 데이터 가져오기.
+
+        prioritized-inventories 엔드포인트는 인증 필요 → 브라우저 컨텍스트 사용.
+        """
+        api_url = (
+            f"https://goods-detail.musinsa.com/api2/goods/"
+            f"{product_id}/prioritized-inventories"
+        )
+        try:
+            ctx = page.context
+            resp = await ctx.request.get(api_url)
+            if not resp.ok:
+                logger.debug(
+                    "재고 API 실패: pid=%s status=%s", product_id, resp.status,
+                )
+                return None
+            body = await resp.json()
+            if isinstance(body, dict):
+                data = body.get("data", [])
+                if isinstance(data, list) and data:
+                    logger.debug(
+                        "재고 직접 API 성공: pid=%s %d개", product_id, len(data),
+                    )
+                    return data
+            elif isinstance(body, list):
+                return body
+        except Exception as e:
+            logger.debug("재고 API 예외: pid=%s %s", product_id, e)
         return None
 
     @staticmethod
