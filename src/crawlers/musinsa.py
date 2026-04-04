@@ -470,14 +470,46 @@ class MusinsaCrawler:
             # ---- 사이즈별 재고: 3단계 폴백 ----
             sizes: list[RetailSizeInfo] = []
 
+            # 옵션 API를 먼저 호출 (다중 옵션 감지용)
+            direct_options = await self._fetch_options_api(page, product_id)
+
             # 직접 재고 API 호출 (인터셉트보다 신뢰성 높음)
             if not inventory_data:
                 inventory_data = await self._fetch_inventories_api(
                     page, product_id,
                 )
 
+            # 다중 옵션(Color+Size) 상품: 색상 선택값으로 재고 API 재시도
+            if not inventory_data:
+                color_values = self._get_color_option_values(
+                    direct_options or options_data,
+                )
+                if color_values:
+                    inventory_data = await self._fetch_inventories_api(
+                        page, product_id,
+                        selected_option_values=color_values[:1],
+                    )
+                    if not inventory_data:
+                        # API 실패 → 페이지에서 색상 클릭하여 인터셉트 시도
+                        for sel in [
+                            "[class*='ColorChip']", "[class*='color-chip']",
+                            "[class*='ColorOption'] button",
+                            "[class*='optionColor']",
+                            "[class*='OptionValue'][class*='color']",
+                            "[role='option']",
+                        ]:
+                            chip = await page.query_selector(sel)
+                            if chip:
+                                await chip.click()
+                                await asyncio.sleep(1.5)
+                                if inventory_data:
+                                    logger.debug(
+                                        "색상 클릭 후 재고 인터셉트 성공: pid=%s",
+                                        product_id,
+                                    )
+                                break
+
             # Tier 1: 직접 API 호출 (가장 신뢰성 높음)
-            direct_options = await self._fetch_options_api(page, product_id)
             if direct_options:
                 sizes = self._parse_sizes_from_api(
                     direct_options, inventory_data,
@@ -812,18 +844,27 @@ class MusinsaCrawler:
 
     async def _fetch_inventories_api(
         self, page: Page, product_id: str,
+        selected_option_values: list[int] | None = None,
     ) -> list | None:
         """직접 API 호출로 재고 데이터 가져오기.
 
         prioritized-inventories 엔드포인트는 인증 필요 → 브라우저 컨텍스트 사용.
+        다중 옵션(Color+Size) 상품은 selectedOptionValueNos 파라미터 필요.
         """
-        # v2 URL 우선, 실패 시 구 URL 폴백
-        urls = [
+        base_urls = [
             f"https://goods-detail.musinsa.com/api2/goods/"
             f"{product_id}/options/v2/prioritized-inventories",
             f"https://goods-detail.musinsa.com/api2/goods/"
             f"{product_id}/prioritized-inventories",
         ]
+        # 다중 옵션이면 선택값 쿼리 파라미터 추가
+        if selected_option_values:
+            qs = "&".join(
+                f"selectedOptionValueNos={v}" for v in selected_option_values
+            )
+            urls = [f"{u}?{qs}" for u in base_urls]
+        else:
+            urls = base_urls
         try:
             ctx = page.context
             resp = None
@@ -854,6 +895,30 @@ class MusinsaCrawler:
         except Exception as e:
             logger.debug("재고 API 예외: pid=%s %s", product_id, e)
         return None
+
+    @staticmethod
+    def _get_color_option_values(options_data: dict | None) -> list[int]:
+        """다중 옵션(Color+Size) 상품에서 첫 번째 색상 optionValue no 추출."""
+        if not isinstance(options_data, dict):
+            return []
+        data = options_data.get("data")
+        if not isinstance(data, dict):
+            return []
+        basics = data.get("basic", [])
+        if not isinstance(basics, list) or len(basics) < 2:
+            return []  # 단일 옵션 → 색상 선택 불필요
+
+        _COLOR_STD_NOS = {1, 2}  # standardOptionNo 1,2 = 컬러 계열
+        _COLOR_NAMES = {"c", "color", "색상", "컬러"}
+        for opt in basics:
+            if not isinstance(opt, dict):
+                continue
+            name_lower = (opt.get("name") or "").strip().lower()
+            std_no = opt.get("standardOptionNo")
+            if std_no in _COLOR_STD_NOS or name_lower in _COLOR_NAMES:
+                values = opt.get("optionValues", [])
+                return [v["no"] for v in values if isinstance(v, dict) and "no" in v]
+        return []
 
     @staticmethod
     def _is_musinsa_sku(model: str) -> bool:
