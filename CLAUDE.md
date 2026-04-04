@@ -118,6 +118,12 @@ WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges th
 - 커밋: 작업 완료 시 git commit + 디스코드 웹훅 알림
 - 웹훅 URL: https://discord.com/api/webhooks/1488503869183889446/PEqriAS5fVPkdeGsqqzDASVsbd_yYMDy01e5rDIBHh03RbagsvNeb5LClRsuKCpY5ty6
 
+### 버그 수정 원칙
+- 3회 실패 시 방법 지정 금지 — 문제+제약+실패이력만 제공, 최적 방법은 Claude Code가 탐색
+- 단위 테스트만으로 검증 완료 금지 — 실환경과 동일한 조건으로 검증 (curl 실제 API 호출 → 파싱 → 결과 출력)
+- "134 tests passed"는 검증이 아님 — 해당 버그를 재현하는 테스트가 통과해야 검증
+- 검증 실패 시 사람 개입 없이 재수정 후 재검증
+
 ### 자동 검증 루프
 코드 수정 후 커밋 전 반드시 아래 순서로 자동 검증. 사람 개입 없이 실패→재수정→재검증 반복.
 

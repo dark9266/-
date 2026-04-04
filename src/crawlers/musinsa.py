@@ -664,6 +664,31 @@ class MusinsaCrawler:
             if isinstance(item, dict):
                 variant_to_values[item["no"]] = item.get("optionValueNos", [])
 
+        # 다중 옵션(Color+Size) 상품: optionItems에 매핑되지 않는 사이즈 = 품절
+        # 예: basic[S]에 17개 사이즈가 있지만 optionItems에 15개만 있으면 2개는 구매 불가
+        is_multi_option = len(basic_options) > 1
+        valid_size_nos: set[int] = set()
+        if is_multi_option and option_items:
+            size_opt_no = size_option.get("no")  # 사이즈 옵션의 no
+            for item in option_items:
+                if not isinstance(item, dict):
+                    continue
+                # optionValues에서 사이즈 옵션에 해당하는 값 추출
+                item_opt_values = item.get("optionValues", [])
+                for iov in item_opt_values:
+                    if isinstance(iov, dict) and iov.get("optionNo") == size_opt_no:
+                        valid_size_nos.add(iov["no"])
+                        break
+                else:
+                    # optionValues가 없으면 optionValueNos로 폴백
+                    for vno in item.get("optionValueNos", []):
+                        valid_size_nos.add(vno)
+            if valid_size_nos:
+                logger.debug(
+                    "다중옵션 사이즈 필터: basic=%d개, optionItems 매핑=%d개",
+                    len(option_values), len(valid_size_nos),
+                )
+
         # inventory_data에서 품절 매핑 구축
         inventory_stock: dict[int, bool] = {}
         if inventory_data and isinstance(inventory_data, list):
@@ -698,10 +723,13 @@ class MusinsaCrawler:
             ov_no = ov.get("no")
 
             # 재고 여부 판단:
+            # 0) 다중옵션: optionItems에 없는 사이즈 → 확정 품절
             # 1) activated=False → 확정 품절
             # 2) inventory 데이터 있으면 → outOfStock 기준
             # 3) 둘 다 없으면 → isDeleted 폴백
-            if ov_no in deactivated:
+            if valid_size_nos and ov_no not in valid_size_nos:
+                in_stock = False
+            elif ov_no in deactivated:
                 in_stock = False
             elif inventory_stock:
                 in_stock = inventory_stock.get(ov_no, False)
