@@ -282,7 +282,7 @@ def verify_init_command():
 def verify_collab_matching():
     print("\n[6] 콜라보 매칭 검증")
 
-    from src.matcher import _COLLAB_KEYWORDS, _pick_best_kream_match
+    from src.matcher import _COLLAB_KEYWORDS, _pick_best_kream_match, _warn_collab_mismatch
 
     # 콜라보 키워드 존재 확인
     check(
@@ -323,6 +323,33 @@ def verify_collab_matching():
         "find_kream_all_by_model 메서드 존재",
         "find_kream_all_by_model" in source,
         "database.py에 find_kream_all_by_model 없음",
+    )
+
+    # 6-d) 콜라보 불일치 경고 함수 정상 동작
+    _warn_collab_mismatch("에어 포스 1 07 화이트", "나이키 x 트래비스 스캇 AF1")
+    check("콜라보 불일치 경고 함수 정상 동작", True, "")
+
+    # 6-e) 한국어 콜라보 키워드 포함
+    check(
+        "한국어 콜라보 키워드 포함 (트래비스 스캇, 유토피아)",
+        "트래비스 스캇" in _COLLAB_KEYWORDS and "유토피아" in _COLLAB_KEYWORDS,
+        "한국어 키워드 누락",
+    )
+
+    # 6-f) 유토피아 에디션 vs 일반 AF1 선택
+    utopia_row = MockRow(
+        {"name": "나이키 x 트래비스 스캇 에어포스 1 유토피아", "product_id": "156663"}
+    )
+    normal_af1 = MockRow(
+        {"name": "나이키 에어포스 1 '07 로우 화이트", "product_id": "12831"}
+    )
+    result3 = _pick_best_kream_match(
+        [utopia_row, normal_af1], "에어 포스 1 07 M 화이트"
+    )
+    check(
+        "유토피아 vs 일반 AF1 → 일반 선택",
+        result3["product_id"] == "12831",
+        f"got {result3['product_id']}, expected 12831",
     )
 
 

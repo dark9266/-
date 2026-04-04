@@ -1281,6 +1281,24 @@ class Scanner:
                     if not musinsa_sizes:
                         return None
 
+                    # 가격 이상치 체크: 크림 최고가가 무신사의 200% 이상이면 오매칭 의심
+                    max_kream = max(
+                        (sp.sell_now_price for sp in kream_product.size_prices
+                         if sp.sell_now_price),
+                        default=0,
+                    )
+                    min_musinsa = min(
+                        musinsa_sizes.values(), key=lambda x: x[0],
+                    )[0] if musinsa_sizes else 0
+                    if (max_kream > 0 and min_musinsa > 0
+                            and max_kream > min_musinsa * 2):
+                        logger.warning(
+                            "가격 이상치: %s — 무신사 %s원 vs 크림 %s원 (%.0f%%)",
+                            kream_product.name[:30],
+                            f"{min_musinsa:,}", f"{max_kream:,}",
+                            max_kream / min_musinsa * 100,
+                        )
+
                     # 수익 분석 (할인가든 정가든 크림보다 싸면 수익기회)
                     opportunity = analyze_auto_scan_opportunity(
                         kream_product=kream_product,

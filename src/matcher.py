@@ -135,17 +135,40 @@ def _row_to_kream_product(row) -> KreamProduct:
 
 # 콜라보 키워드 — 일반 상품과 구분 필요한 브랜드/디자이너
 _COLLAB_KEYWORDS = frozenset({
+    # 영문
     "travis scott", "supreme", "off-white", "off white", "sacai", "dior",
     "louis vuitton", "fragment", "union", "ambush", "stussy", "peaceminusone",
     "clot", "undercover", "comme des garcons", "cdg", "parra", "undefeated",
     "atmos", "j balvin", "cactus jack", "billie eilish", "tiffany",
+    # 한국어 (크림 상품명에 사용)
+    "트래비스 스캇", "슈프림", "오프화이트", "사카이", "디올",
+    "프라그먼트", "유니온", "앰부쉬", "스투시", "유토피아",
+    "캑터스", "언더커버",
 })
+
+
+def _warn_collab_mismatch(retail_name: str, kream_name: str) -> bool:
+    """리테일=일반 + 크림=콜라보 불일치 경고. 불일치면 True 반환."""
+    retail_lower = retail_name.lower()
+    kream_lower = kream_name.lower()
+    retail_has_collab = any(kw in retail_lower for kw in _COLLAB_KEYWORDS)
+    kream_has_collab = any(kw in kream_lower for kw in _COLLAB_KEYWORDS)
+    if not retail_has_collab and kream_has_collab:
+        logger.warning(
+            "콜라보 불일치: retail='%s' vs kream='%s' — 오매칭 가능성",
+            retail_name[:40], kream_name[:40],
+        )
+        return True
+    return False
 
 
 def _pick_best_kream_match(rows: list, retail_name: str = ""):
     """복수 크림 매칭 중 최적 상품 선택. 콜라보보다 일반 상품 우선."""
     if len(rows) <= 1:
-        return rows[0] if rows else None
+        row = rows[0] if rows else None
+        if row and retail_name:
+            _warn_collab_mismatch(retail_name, row["name"] or "")
+        return row
 
     normal = []
     collab = []
@@ -164,7 +187,11 @@ def _pick_best_kream_match(rows: list, retail_name: str = ""):
             )
         return normal[0]
 
-    # 전부 콜라보 — 리테일 이름과 가장 유사한 것 선택
+    # 전부 콜라보인데 retail은 일반 → 경고
+    if retail_name:
+        _warn_collab_mismatch(retail_name, collab[0]["name"] if collab else "")
+
+    # 리테일 이름과 가장 유사한 것 선택
     if retail_name and len(collab) > 1:
         retail_lower = retail_name.lower()
         for c in collab:
