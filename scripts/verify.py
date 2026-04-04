@@ -514,6 +514,41 @@ def verify_brand_filter():
 
 
 # ───────────────────────────────────────────
+# [10] 자동스캔 카테고리 통합 검증
+# ───────────────────────────────────────────
+def verify_auto_scan_category_integration():
+    print("\n[10] 자동스캔 카테고리 통합")
+
+    sched = open("src/scheduler.py").read()
+
+    check(
+        "auto_scan_loop에 run_category_scan 호출 존재",
+        "run_category_scan" in sched,
+        "auto_scan_loop에서 카테고리스캔 호출 누락",
+    )
+    check(
+        "auto_scan_loop에 on_cat_opportunity 콜백 존재",
+        "on_cat_opportunity" in sched,
+        "카테고리스캔 알림 콜백 누락",
+    )
+    check(
+        "auto_scan_loop에 resume=True 설정",
+        "resume=True" in sched,
+        "카테고리스캔 이력 유지 설정 누락",
+    )
+    check(
+        "daily_report에 clear_category_scan_history 호출 존재",
+        "clear_category_scan_history" in sched,
+        "일일 카테고리 이력 초기화 누락",
+    )
+    check(
+        "카테고리스캔 완료 로그에 brand_filtered 포함",
+        "brand_filtered" in sched and "cat_result.brand_filtered" in sched,
+        "카테고리스캔 완료 로그에 브랜드필터 통계 누락",
+    )
+
+
+# ───────────────────────────────────────────
 # 메인
 # ───────────────────────────────────────────
 def main():
@@ -530,6 +565,7 @@ def main():
     verify_chrome_ssh_fallback()
     verify_quick_test_data_flow()
     verify_brand_filter()
+    verify_auto_scan_category_integration()
 
     print("\n" + "=" * 50)
     if FAIL == 0:

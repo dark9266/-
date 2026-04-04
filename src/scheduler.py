@@ -224,6 +224,10 @@ class Scheduler:
             }
             error_aggregator.clear()
 
+            # 카테고리스캔 이력 초기화 (하루 1회 전수 스캔 보장)
+            await self.bot.scanner.db.clear_category_scan_history()
+            logger.info("카테고리스캔 이력 초기화 (일일 리셋)")
+
             logger.info("일일 리포트 전송 완료, 통계 리셋")
 
         except Exception as e:
@@ -251,12 +255,44 @@ class Scheduler:
 
     @tasks.loop(minutes=settings.auto_scan_interval_minutes)
     async def auto_scan_loop(self) -> None:
-        """크림 인기상품 기준 자동스캔 (기본 30분)."""
+        """카테고리스캔 + 역방향스캔 통합 자동스캔."""
         logger.info("=== 자동스캔 루프 실행 ===")
 
         try:
-            # 배치스캔은 aiohttp만 사용하므로 Chrome 상태 체크 불필요
+            # ── 1단계: 카테고리스캔 (Playwright headless, Chrome CDP 불필요) ──
+            async def on_cat_opportunity(opportunity):
+                if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    return
+                await self.bot.send_auto_scan_alert(opportunity)
 
+            async def on_cat_progress(message):
+                logger.info("카테고리스캔 진행: %s", message)
+
+            cat_result = await self.bot.scanner.run_category_scan(
+                categories=["103"],  # 스니커즈
+                max_pages=30,
+                on_opportunity=on_cat_opportunity,
+                on_progress=on_cat_progress,
+                resume=True,  # 이력 유지 (이미 스캔한 상품 스킵)
+            )
+
+            cat_elapsed = 0.0
+            if cat_result.finished_at and cat_result.started_at:
+                cat_elapsed = (cat_result.finished_at - cat_result.started_at).total_seconds()
+
+            await self.bot.log_to_channel(
+                f"카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
+                f"리스팅 {cat_result.listing_fetched} → "
+                f"브랜드필터 {cat_result.brand_filtered} / "
+                f"상세 {cat_result.detail_fetched} → "
+                f"수익기회 {len(cat_result.opportunities)}"
+            )
+
+            # 통계 업데이트
+            self.bot.daily_stats["scan_count"] += 1
+            self.bot.daily_stats["product_count"] += cat_result.detail_fetched
+
+            # ── 2단계: 역방향스캔 (기존 auto_scan) ──
             async def on_opportunity(opportunity: AutoScanOpportunity):
                 """수익 기회 발견 즉시 디스코드 알림 (BUY 이상만)."""
                 if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
@@ -264,7 +300,6 @@ class Scheduler:
                 await self.bot.send_auto_scan_alert(opportunity)
                 # 확정 수익이면 집중 추적 추가
                 if opportunity.best_confirmed_roi >= settings.auto_scan_confirmed_roi:
-                    # AutoScanOpportunity를 ProfitOpportunity로 래핑하여 추적
                     from src.models.product import ProfitOpportunity as PO
                     tracking_op = PO(
                         kream_product=opportunity.kream_product,
@@ -278,7 +313,7 @@ class Scheduler:
 
             async def on_progress(message: str):
                 """진행 상황 로그."""
-                logger.info("자동스캔 진행: %s", message)
+                logger.info("역방향스캔 진행: %s", message)
 
             result = await self.bot.scanner.auto_scan(
                 on_opportunity=on_opportunity,
@@ -286,26 +321,21 @@ class Scheduler:
             )
 
             # 통계 업데이트
-            self.bot.daily_stats["scan_count"] += 1
             self.bot.daily_stats["product_count"] += result.kream_scanned
 
-            # 완료 요약 로그 채널에 전송
             elapsed = 0.0
             if result.finished_at and result.started_at:
                 elapsed = (result.finished_at - result.started_at).total_seconds()
 
             await self.bot.log_to_channel(
-                f"자동스캔 완료 ({elapsed:.0f}초) | "
+                f"역방향스캔 완료 ({elapsed:.0f}초) | "
                 f"크림 {result.kream_scanned} → 매칭 {result.matched} → "
                 f"수익기회 {len(result.opportunities)} "
                 f"(확정 {result.confirmed_count} / 예상 {result.estimated_count}) | "
                 f"에러 {len(result.errors)}"
             )
 
-            logger.info(
-                "=== 자동스캔 루프 완료: 수익기회 %d건 ===",
-                len(result.opportunities),
-            )
+            logger.info("=== 자동스캔 루프 완료 ===")
 
         except Exception as e:
             error_aggregator.add("auto_scan_loop", e)
