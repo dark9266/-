@@ -574,6 +574,11 @@ class Scanner:
                         opportunity.signal = signal
                         if on_opportunity and signal in (Signal.STRONG_BUY, Signal.BUY):
                             await on_opportunity(opportunity)
+                        elif signal in (Signal.WATCH, Signal.NOT_RECOMMENDED):
+                            logger.debug(
+                                "알림 스킵: signal=%s profit=%s",
+                                signal.value, opportunity.best_confirmed_profit,
+                            )
 
                         return opportunity
 
@@ -697,6 +702,11 @@ class Scanner:
                         opportunity.signal = signal
                         if on_opportunity and signal in (Signal.STRONG_BUY, Signal.BUY):
                             await on_opportunity(opportunity)
+                        elif signal in (Signal.WATCH, Signal.NOT_RECOMMENDED):
+                            logger.debug(
+                                "알림 스킵: signal=%s profit=%s",
+                                signal.value, opportunity.best_confirmed_profit,
+                            )
                         return opportunity
 
                 except Exception as e:
@@ -1226,6 +1236,12 @@ class Scanner:
                                 kream_product.name[:30], e,
                             )
 
+                    elif signal in (Signal.WATCH, Signal.NOT_RECOMMENDED):
+                        logger.debug(
+                            "알림 스킵: signal=%s profit=%s",
+                            signal.value, opportunity.best_confirmed_profit,
+                        )
+
                     return opportunity
 
                 except Exception as e:
@@ -1571,6 +1587,11 @@ class Scanner:
                             logger.error(
                                 "카테고리 스캔 알림 콜백 실패: %s", e,
                             )
+                    elif signal in (Signal.WATCH, Signal.NOT_RECOMMENDED):
+                        logger.debug(
+                            "알림 스킵: signal=%s profit=%s",
+                            signal.value, opportunity.best_confirmed_profit,
+                        )
 
                 except Exception as e:
                     result.errors.append(

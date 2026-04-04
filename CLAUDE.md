@@ -68,6 +68,29 @@ Environment variables in `.env` (see `.env.example`):
 
 WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges the two via `localhost:9222`.
 
+## 현재 명령어 체계
+
+- `!역방향스캔` — 브랜드별 무신사 검색 → 크림 DB 매칭 (TOP 20 브랜드, 테스트 모드 5개)
+- `!역방향스캔 전체` — 전체 브랜드 무제한
+- `!카테고리스캔 [카테고리] [페이지]` — 무신사 카테고리 페이지 전수 대조 (개발 중)
+- `!자동스캔` — 30분 주기 자동 실행
+- `!배치스캔` — 크림 DB 순회 스캔 (Chrome 의존성 제거 필요)
+
+## 역방향 스캔 동작 흐름
+
+1. 브랜드별 무신사 검색 API (aiohttp) → 상품 리스트
+2. 상품별 상세 조회 (Playwright) → 사이즈+가격
+3. 사이즈 파싱: 3단계 폴백 (직접API → 인터셉트 → DOM)
+4. 품절 필터: inventory v2 API + productVariantId 매핑
+5. 크림 DB SQLite 매칭 (모델번호 인덱스) → 없으면 크림 API 호출
+6. 수수료 차감 후 수익 계산 → 디스코드 알림
+
+## 카테고리 스캔 (개발 중)
+
+- 무신사 카테고리 리스팅 API → 모델번호 추출 → 크림 DB 전수 대조
+- 상세 페이지 방문은 매칭 성공 시에만 (속도 최적화)
+- 목표: 브랜드 제한 없이 전체 크롤링 (캐찹매니아 방식)
+
 ## Project Rules (실수 방지용 — 반드시 준수)
 
 ### 크롤링 안전
@@ -94,3 +117,12 @@ WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges th
 - 검증: 수정 후 반드시 !역방향스캔 테스트로 수치 검증 (수집 건수, 매칭률, 에러 수)
 - 커밋: 작업 완료 시 git commit + 디스코드 웹훅 알림
 - 웹훅 URL: https://discord.com/api/webhooks/1488503869183889446/PEqriAS5fVPkdeGsqqzDASVsbd_yYMDy01e5rDIBHh03RbagsvNeb5LClRsuKCpY5ty6
+
+### 자동 검증 루프
+코드 수정 후 커밋 전 반드시 아래 순서로 자동 검증. 사람 개입 없이 실패→재수정→재검증 반복.
+
+1. **pytest 전체 통과**: `pytest tests/ -v` — 실패 시 원인 분석 후 코드 재수정, 재실행
+2. **import 검증**: `python3 -c "import ast; ast.parse(open('<수정파일>').read())"` — 문법 오류 시 즉시 수정
+3. **단위 테스트 실행**: 수정 로직 관련 테스트 파일 개별 실행 (`pytest tests/test_<모듈>.py -v`)
+4. **검증 성공 시에만** git commit + 디스코드 웹훅 전송
+5. **디스코드 실제 테스트** (!역방향스캔, !카테고리스캔 등 실환경 검증)만 사람이 직접 실행
