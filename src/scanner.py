@@ -510,6 +510,13 @@ class Scanner:
                 diag["error"] = "크림 매칭 상품 없음"
                 return diag
 
+            # find_kream_match는 DB 기본 정보만 반환 (sizes/volume 없음)
+            # 시세+거래량 수집을 위해 풀 데이터 가져오기
+            if not kream_product.size_prices:
+                full_product = await self._get_kream_with_cache(kream_product.product_id)
+                if full_product:
+                    kream_product = full_product
+
             diag["kream_matched"] = True
             diag["kream_name"] = kream_product.name
             diag["kream_volume_7d"] = kream_product.volume_7d

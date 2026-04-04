@@ -29,6 +29,12 @@ def check(name: str, condition: bool, detail: str = ""):
         print(f"  ✗ {name} — {detail}")
 
 
+class MockRow(dict):
+    """sqlite3.Row를 흉내내는 딕셔너리. 없는 키는 빈 문자열 반환."""
+    def __getitem__(self, key):
+        return self.get(key, "")
+
+
 # ───────────────────────────────────────────
 # 1) 알림 필터 검증
 # ───────────────────────────────────────────
@@ -292,10 +298,6 @@ def verify_collab_matching():
     )
 
     # mock rows: 일반 + 콜라보
-    class MockRow(dict):
-        def __getitem__(self, key):
-            return self.get(key, "")
-
     normal_row = MockRow({"name": "Nike Air Force 1 07", "product_id": "1"})
     collab_row = MockRow(
         {"name": "Nike x Travis Scott Air Force 1 Cactus Jack", "product_id": "2"}
@@ -400,6 +402,45 @@ def verify_chrome_ssh_fallback():
 
 
 # ───────────────────────────────────────────
+# [8] 빠른테스트 데이터 흐름 검증
+# ───────────────────────────────────────────
+def verify_quick_test_data_flow():
+    print("\n[8] 빠른테스트 데이터 흐름 검증")
+
+    from src.matcher import _row_to_kream_product
+
+    # 8-a) _row_to_kream_product는 size_prices 없음 확인
+    mock_row = MockRow({
+        "product_id": "12831", "name": "테스트", "model_number": "CW2288-111",
+        "brand": "Nike", "category": "sneakers", "image_url": "", "url": "",
+    })
+    basic_product = _row_to_kream_product(mock_row)
+    check(
+        "DB-only KreamProduct에 size_prices 없음",
+        len(basic_product.size_prices) == 0,
+        f"expected 0, got {len(basic_product.size_prices)}",
+    )
+    check(
+        "DB-only KreamProduct에 volume_7d=0",
+        basic_product.volume_7d == 0,
+        f"expected 0, got {basic_product.volume_7d}",
+    )
+
+    # 8-b) quick_test에서 _get_kream_with_cache 호출 경로 확인
+    src = inspect.getsource(__import__("src.scanner", fromlist=["Scanner"]).Scanner.quick_test)
+    check(
+        "quick_test에 _get_kream_with_cache 호출 존재",
+        "_get_kream_with_cache" in src,
+        "find_kream_match 후 풀 데이터 가져오기 로직 누락",
+    )
+    check(
+        "quick_test에 size_prices 확인 분기 존재",
+        "size_prices" in src,
+        "size_prices 비어있을 때 풀 데이터 가져오기 분기 누락",
+    )
+
+
+# ───────────────────────────────────────────
 # 메인
 # ───────────────────────────────────────────
 def main():
@@ -414,6 +455,7 @@ def main():
     verify_init_command()
     verify_collab_matching()
     verify_chrome_ssh_fallback()
+    verify_quick_test_data_flow()
 
     print("\n" + "=" * 50)
     if FAIL == 0:
