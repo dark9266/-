@@ -655,8 +655,8 @@ class MusinsaCrawler:
                 in_stock = False
             elif inventory_stock:
                 in_stock = inventory_stock.get(ov_no, False)
-            elif inventory_data:
-                # inventory 데이터가 있지만 이 사이즈 매핑 없음 → 품절
+            elif inventory_data is not None:
+                # inventory API 응답 왔지만 매핑 실패 or 빈 리스트 → 품절
                 in_stock = False
             else:
                 in_stock = not ov.get("isDeleted", False)

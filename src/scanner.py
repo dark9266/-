@@ -29,7 +29,7 @@ from src.models.product import (
     Signal,
 )
 from src.price_tracker import PriceChange, PriceTracker
-from src.profit_calculator import analyze_auto_scan_opportunity, analyze_opportunity
+from src.profit_calculator import analyze_auto_scan_opportunity, analyze_opportunity, determine_signal
 from src.utils.logging import setup_logger
 
 logger = setup_logger("scanner")
@@ -1211,13 +1211,15 @@ class Scanner:
                         image_url=retail_product.image_url,
                     )
 
-                    # 실시간 알림 (콜백 실패해도 opportunity 반환에 영향 없음)
-                    ct = settings.auto_scan_confirmed_roi
-                    et = settings.auto_scan_estimated_roi
-                    if on_opportunity and (
-                        opportunity.best_confirmed_roi >= ct
-                        or opportunity.best_estimated_roi >= et
-                    ):
+                    # 시그널 판정
+                    signal = determine_signal(
+                        opportunity.best_confirmed_profit,
+                        opportunity.volume_7d,
+                    )
+                    opportunity.signal = signal
+
+                    # 실시간 알림 — BUY 이상만 전송
+                    if on_opportunity and signal in (Signal.STRONG_BUY, Signal.BUY):
                         try:
                             await on_opportunity(opportunity)
                         except Exception as e:
@@ -1301,7 +1303,7 @@ class Scanner:
 
         # 1단계: 사전 데이터 로딩
         # 브랜드 화이트리스트 — slug 형식 + 영문 소문자 모두 포함
-        kream_brands = await self.db.get_brands_min_count(min_count=10)
+        kream_brands = await self.db.get_brands_min_count(min_count=1)
         kream_brand_set: set[str] = set()
         for b in kream_brands:
             b_lower = b.lower()
@@ -1309,6 +1311,7 @@ class Scanner:
             # slug 변환: "New Balance" → "newbalance", "The North Face" → "thenorthface"
             slug = b_lower.replace(" ", "").replace("'", "").replace(".", "")
             kream_brand_set.add(slug)
+        logger.info("카테고리스캔 브랜드 화이트리스트: %d개 (크림 DB)", len(kream_brands))
 
         # 역매핑: 한글 브랜드명 → 영문 slug (브랜드 필터용)
         musinsa_kr_to_slug: dict[str, str] = {}
@@ -1376,6 +1379,7 @@ class Scanner:
             # 4단계 필터링
             detail_queue: list[dict] = []
             name_match_queue: list[tuple[dict, str]] = []
+            filtered_brands: dict[str, int] = {}  # 필터된 브랜드별 건수
 
             for item in listing:
                 goods_no = item["goodsNo"]
@@ -1402,6 +1406,7 @@ class Scanner:
 
                 if not brand_matched:
                     result.brand_filtered += 1
+                    filtered_brands[brand_slug] = filtered_brands.get(brand_slug, 0) + 1
                     await self.db.save_category_scan(
                         goods_no=goods_no,
                         category=category,
@@ -1445,6 +1450,12 @@ class Scanner:
                 result.brand_filtered, result.name_matched,
                 result.name_no_match, len(detail_queue),
             )
+            if filtered_brands:
+                top_filtered = sorted(filtered_brands.items(), key=lambda x: -x[1])[:5]
+                logger.info(
+                    "브랜드 필터 상위 5개: %s",
+                    ", ".join(f"{b}({c}건)" for b, c in top_filtered),
+                )
 
             if on_progress:
                 await on_progress(

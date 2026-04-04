@@ -142,5 +142,7 @@ class AutoScanOpportunity:
     price_trend: str = ""  # 상승/하락/횡보
     bid_ask_spread: int = 0  # 즉시구매가-최근거래가 차이 (클수록 불안정)
     detected_at: datetime = field(default_factory=datetime.now)
+    # 시그널 판정 결과
+    signal: Signal = Signal.NOT_RECOMMENDED
     # 소싱처별 최저가 {"무신사": 109000, "29CM": 105000}
     source_prices: dict[str, int] = field(default_factory=dict)

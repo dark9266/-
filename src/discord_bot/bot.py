@@ -24,6 +24,7 @@ from src.discord_bot.formatter import (
 )
 from src.kream_db_builder import build_kream_db, CATEGORIES
 from src.models.database import Database
+from src.models.product import Signal
 from src.profit_calculator import analyze_opportunity
 from src.scanner import Scanner
 from src.scheduler import Scheduler
@@ -539,9 +540,11 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
             )
             await ctx.send(embed=summary_embed)
 
-            # 개별 수익 알림 전송 (모든 수익기회)
+            # 개별 수익 알림 전송 (BUY 이상만)
             sent_count = 0
             for op in result.opportunities:
+                if op.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    continue
                 try:
                     await bot.send_auto_scan_alert(op)
                     sent_count += 1
