@@ -209,26 +209,37 @@ def _pick_best_kream_match(rows: list, retail_name: str = ""):
 async def _find_in_db(
     normalized: str, original: str, db: Database, retail_name: str = "",
 ):
-    """DB에서 모델번호로 크림 상품을 검색한다 (다단계 시도)."""
-    # 1) 정규화된 모델번호로 정확 검색 (복수 매칭 대응)
-    rows = await db.find_kream_all_by_model(normalized)
-    if rows:
-        if len(rows) > 1:
-            logger.info("복수 크림 매칭 발견: model=%s (%d건)", normalized, len(rows))
-        return _pick_best_kream_match(rows, retail_name)
+    """DB에서 모델번호로 크림 상품을 검색한다.
 
-    # 2) 원본 모델번호로 정확 검색
+    정확 검색 + LIKE 검색 결과를 합산하여 콜라보 필터로 최적 선택.
+    예: CW2288-111 → 정확(트래비스 1건) + LIKE(일반AF1 + 트래비스) → 합산 2건 → 일반 선택
+    """
+    # 1) 정확 검색
+    exact_rows = list(await db.find_kream_all_by_model(normalized))
+
+    # 2) 원본으로 정확 검색
     if normalized != original:
-        rows = await db.find_kream_all_by_model(original)
-        if rows:
-            return _pick_best_kream_match(rows, retail_name)
+        exact_rows += list(await db.find_kream_all_by_model(original))
 
     # 3) LIKE 검색 (슬래시 구분 모델번호 대응: "315122-111/CW2288-111")
-    row = await db.search_kream_by_model_like(normalized)
-    if row:
-        return row
+    like_rows = await db.search_kream_all_by_model_like(normalized)
 
-    return None
+    # 중복 제거 후 합산
+    seen_ids: set[str] = set()
+    all_rows = []
+    for row in exact_rows + list(like_rows):
+        pid = row["product_id"]
+        if pid not in seen_ids:
+            seen_ids.add(pid)
+            all_rows.append(row)
+
+    if not all_rows:
+        return None
+
+    if len(all_rows) > 1:
+        logger.info("복수 크림 매칭 발견: model=%s (%d건)", normalized, len(all_rows))
+
+    return _pick_best_kream_match(all_rows, retail_name)
 
 
 async def find_kream_match(

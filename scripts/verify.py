@@ -352,6 +352,25 @@ def verify_collab_matching():
         f"got {result3['product_id']}, expected 12831",
     )
 
+    # 6-g) 정확+LIKE 합산 시나리오 (CW2288-111 실제 DB 구조)
+    # 정확 검색: 트래비스만 매칭 (model=CW2288-111)
+    # LIKE 검색: 일반AF1도 매칭 (model=315122-111/CW2288-111)
+    # 합산 후 콜라보 필터 → 일반 선택
+    exact_only = MockRow(
+        {"name": "나이키 x 트래비스 스캇 에어포스 1 캑터스 잭 유토피아", "product_id": "156663"}
+    )
+    slash_model = MockRow(
+        {"name": "나이키 에어포스 1 '07 로우 화이트", "product_id": "12831"}
+    )
+    combined = _pick_best_kream_match(
+        [exact_only, slash_model], "에어 포스 1 07 M 화이트"
+    )
+    check(
+        "정확+LIKE 합산 → 일반 AF1(12831) 선택",
+        combined["product_id"] == "12831",
+        f"got {combined['product_id']}, expected 12831",
+    )
+
 
 # ───────────────────────────────────────────
 # 7) Chrome SSH 폴백 검증

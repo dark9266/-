@@ -242,6 +242,16 @@ class Database:
         )
         return await cursor.fetchone()
 
+    async def search_kream_all_by_model_like(self, model_number: str) -> list[aiosqlite.Row]:
+        """모델번호 유연 검색 — 전체 결과 반환 (복수 매칭 대응)."""
+        if not model_number:
+            return []
+        cursor = await self.db.execute(
+            "SELECT * FROM kream_products WHERE model_number LIKE ?",
+            (f"%{model_number}%",),
+        )
+        return await cursor.fetchall()
+
     # -- 리테일 상품 --
 
     async def upsert_retail_product(
