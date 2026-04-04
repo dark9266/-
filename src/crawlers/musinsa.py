@@ -623,7 +623,10 @@ class MusinsaCrawler:
             for inv in inventory_data:
                 if not isinstance(inv, dict):
                     continue
-                in_stock = not inv.get("outOfStock", False)
+                out_of_stock = inv.get("outOfStock", False)
+                quantity = inv.get("quantity", -1)
+                # outOfStock 플래그 OR 수량 0이면 품절
+                in_stock = not out_of_stock and quantity != 0
                 # 방법 1: relatedOption.optionValueNo로 매핑
                 related = inv.get("relatedOption")
                 if isinstance(related, dict):

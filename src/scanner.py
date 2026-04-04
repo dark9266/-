@@ -566,16 +566,14 @@ class Scanner:
                             url=kream_product.url,
                         )
 
-                        # 수익 기회 발견 즉시 알림 (전체 완료 안 기다림)
-                        confirmed_threshold = settings.auto_scan_confirmed_roi
-                        estimated_threshold = settings.auto_scan_estimated_roi
-
-                        if (
-                            opportunity.best_confirmed_roi >= confirmed_threshold
-                            or opportunity.best_estimated_roi >= estimated_threshold
-                        ):
-                            if on_opportunity:
-                                await on_opportunity(opportunity)
+                        # 시그널 판정 + BUY 이상만 알림
+                        signal = determine_signal(
+                            opportunity.best_confirmed_profit,
+                            opportunity.volume_7d,
+                        )
+                        opportunity.signal = signal
+                        if on_opportunity and signal in (Signal.STRONG_BUY, Signal.BUY):
+                            await on_opportunity(opportunity)
 
                         return opportunity
 
@@ -692,14 +690,13 @@ class Scanner:
                         opportunity.best_confirmed_profit > 0
                         or opportunity.best_estimated_profit > 0
                     ):
-                        if on_opportunity:
-                            confirmed_threshold = settings.auto_scan_confirmed_roi
-                            estimated_threshold = settings.auto_scan_estimated_roi
-                            if (
-                                opportunity.best_confirmed_roi >= confirmed_threshold
-                                or opportunity.best_estimated_roi >= estimated_threshold
-                            ):
-                                await on_opportunity(opportunity)
+                        signal = determine_signal(
+                            opportunity.best_confirmed_profit,
+                            opportunity.volume_7d,
+                        )
+                        opportunity.signal = signal
+                        if on_opportunity and signal in (Signal.STRONG_BUY, Signal.BUY):
+                            await on_opportunity(opportunity)
                         return opportunity
 
                 except Exception as e:
@@ -908,14 +905,15 @@ class Scanner:
                                     opportunity.best_confirmed_profit > 0
                                     or opportunity.best_estimated_profit > 0
                                 ):
-                                    if on_opportunity:
-                                        ct = settings.auto_scan_confirmed_roi
-                                        et = settings.auto_scan_estimated_roi
-                                        if (
-                                            opportunity.best_confirmed_roi >= ct
-                                            or opportunity.best_estimated_roi >= et
-                                        ):
-                                            await on_opportunity(opportunity)
+                                    signal = determine_signal(
+                                        opportunity.best_confirmed_profit,
+                                        opportunity.volume_7d,
+                                    )
+                                    opportunity.signal = signal
+                                    if on_opportunity and signal in (
+                                        Signal.STRONG_BUY, Signal.BUY,
+                                    ):
+                                        await on_opportunity(opportunity)
                                     return opportunity
                         except Exception as e:
                             logger.error(
@@ -1600,9 +1598,17 @@ class Scanner:
                         image_url=retail_product.image_url,
                     )
 
+                    # 시그널 판정
+                    signal = determine_signal(
+                        opportunity.best_confirmed_profit,
+                        opportunity.volume_7d,
+                    )
+                    opportunity.signal = signal
+
                     result.opportunities.append(opportunity)
 
-                    if on_opportunity:
+                    # BUY 이상만 알림 전송
+                    if on_opportunity and signal in (Signal.STRONG_BUY, Signal.BUY):
                         try:
                             await on_opportunity(opportunity)
                         except Exception as e:
