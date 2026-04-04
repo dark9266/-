@@ -1430,15 +1430,9 @@ class Scanner:
                         result.name_matched += 1
                         name_match_queue.append((item, name_model))
                     else:
+                        # 이름에서 추출한 모델번호가 DB에 없으면 상세 페이지에서 재시도
                         result.name_no_match += 1
-                        await self.db.save_category_scan(
-                            goods_no=goods_no, category=category,
-                            brand=brand_slug, goods_name=goods_name,
-                            model_number=name_model,
-                            price=item.get("price", 0),
-                        )
-                        scanned_set.add(goods_no)
-                        continue
+                        detail_queue.append(item)
                 else:
                     detail_queue.append(item)
 
