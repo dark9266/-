@@ -133,18 +133,68 @@ def _row_to_kream_product(row) -> KreamProduct:
     )
 
 
-async def _find_in_db(normalized: str, original: str, db: Database):
+# 콜라보 키워드 — 일반 상품과 구분 필요한 브랜드/디자이너
+_COLLAB_KEYWORDS = frozenset({
+    "travis scott", "supreme", "off-white", "off white", "sacai", "dior",
+    "louis vuitton", "fragment", "union", "ambush", "stussy", "peaceminusone",
+    "clot", "undercover", "comme des garcons", "cdg", "parra", "undefeated",
+    "atmos", "j balvin", "cactus jack", "billie eilish", "tiffany",
+})
+
+
+def _pick_best_kream_match(rows: list, retail_name: str = ""):
+    """복수 크림 매칭 중 최적 상품 선택. 콜라보보다 일반 상품 우선."""
+    if len(rows) <= 1:
+        return rows[0] if rows else None
+
+    normal = []
+    collab = []
+    for row in rows:
+        name_lower = (row["name"] or "").lower()
+        if any(kw in name_lower for kw in _COLLAB_KEYWORDS):
+            collab.append(row)
+        else:
+            normal.append(row)
+
+    if normal:
+        if len(normal) > 1:
+            logger.info(
+                "복수 일반 매칭 %d건 중 첫 번째 선택: %s",
+                len(normal), normal[0]["name"],
+            )
+        return normal[0]
+
+    # 전부 콜라보 — 리테일 이름과 가장 유사한 것 선택
+    if retail_name and len(collab) > 1:
+        retail_lower = retail_name.lower()
+        for c in collab:
+            kream_lower = (c["name"] or "").lower()
+            if any(w in kream_lower for w in retail_lower.split() if len(w) > 3):
+                return c
+
+    logger.info(
+        "복수 매칭 전부 콜라보 (%d건), 첫 번째 선택: %s",
+        len(collab), collab[0]["name"] if collab else "?",
+    )
+    return (collab or rows)[0]
+
+
+async def _find_in_db(
+    normalized: str, original: str, db: Database, retail_name: str = "",
+):
     """DB에서 모델번호로 크림 상품을 검색한다 (다단계 시도)."""
-    # 1) 정규화된 모델번호로 정확 검색
-    row = await db.find_kream_by_model(normalized)
-    if row:
-        return row
+    # 1) 정규화된 모델번호로 정확 검색 (복수 매칭 대응)
+    rows = await db.find_kream_all_by_model(normalized)
+    if rows:
+        if len(rows) > 1:
+            logger.info("복수 크림 매칭 발견: model=%s (%d건)", normalized, len(rows))
+        return _pick_best_kream_match(rows, retail_name)
 
     # 2) 원본 모델번호로 정확 검색
     if normalized != original:
-        row = await db.find_kream_by_model(original)
-        if row:
-            return row
+        rows = await db.find_kream_all_by_model(original)
+        if rows:
+            return _pick_best_kream_match(rows, retail_name)
 
     # 3) LIKE 검색 (슬래시 구분 모델번호 대응: "315122-111/CW2288-111")
     row = await db.search_kream_by_model_like(normalized)
@@ -179,7 +229,7 @@ async def find_kream_match(
     logger.info("크림 매칭 시도: %s (정규화: %s)", model_number, normalized)
 
     # 1단계: DB에서 검색 (API 호출 없이 즉시 반환)
-    row = await _find_in_db(normalized, model_number, db)
+    row = await _find_in_db(normalized, model_number, db, retail_name=retail_product.name)
     if row:
         logger.info("DB에서 매칭 발견: %s (product_id: %s)", row["name"], row["product_id"])
         return _row_to_kream_product(row)

@@ -645,6 +645,12 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
 
     category_code = musinsa_crawler.CATEGORY_CODES.get(category_name, "103")
 
+    # "초기화" 명령 — 이력만 삭제하고 즉시 리턴 (스캔 실행 안 함)
+    if not resume:
+        await bot.scanner.db.clear_category_scan_history()
+        await ctx.send("✅ 카테고리 스캔 이력이 초기화되었습니다. 다음 스캔은 처음부터 시작됩니다.")
+        return
+
     progress_msg = await ctx.send(
         f"📂 **카테고리 스캔 시작** [{category_name}] ({category_code})\n"
         f"• 최대 {max_pages}페이지 ({max_pages * 60}건)\n"
@@ -684,6 +690,22 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
             if result.finished_at and result.started_at:
                 elapsed = (result.finished_at - result.started_at).total_seconds()
 
+            # 개별 수익 알림 전송 (BUY 이상만) — embed 생성 전에 실행하여 sent_count 반영
+            sent_count = 0
+            for op in result.opportunities:
+                if op.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    logger.debug(
+                        "카테고리 알림 스킵: signal=%s profit=%d %s",
+                        op.signal.value, op.best_confirmed_profit,
+                        op.kream_product.name[:30],
+                    )
+                    continue
+                try:
+                    if await bot.send_auto_scan_alert(op):
+                        sent_count += 1
+                except Exception as e:
+                    logger.error("카테고리 개별 알림 실패: %s", e)
+
             summary_embed = format_category_scan_summary(
                 listing_fetched=result.listing_fetched,
                 sold_out_skipped=result.sold_out_skipped,
@@ -699,24 +721,9 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
                 pages_scanned=result.pages_scanned,
                 elapsed_seconds=elapsed,
                 errors=len(result.errors),
+                alert_sent=sent_count,
             )
             await ctx.send(embed=summary_embed)
-
-            # 개별 수익 알림 전송 (BUY 이상만)
-            sent_count = 0
-            for op in result.opportunities:
-                if op.signal not in (Signal.STRONG_BUY, Signal.BUY):
-                    logger.debug(
-                        "카테고리 알림 스킵: signal=%s profit=%d %s",
-                        op.signal.value, op.best_confirmed_profit,
-                        op.kream_product.name[:30],
-                    )
-                    continue
-                try:
-                    if await bot.send_auto_scan_alert(op):
-                        sent_count += 1
-                except Exception as e:
-                    logger.error("카테고리 개별 알림 실패: %s", e)
 
             await progress_msg.edit(
                 content=(

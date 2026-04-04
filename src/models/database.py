@@ -221,6 +221,13 @@ class Database:
         )
         return await cursor.fetchone()
 
+    async def find_kream_all_by_model(self, model_number: str) -> list[aiosqlite.Row]:
+        """모델번호로 크림 상품 전체 검색 (복수 매칭 대응)."""
+        cursor = await self.db.execute(
+            "SELECT * FROM kream_products WHERE model_number = ?", (model_number,)
+        )
+        return await cursor.fetchall()
+
     async def search_kream_by_model_like(self, model_number: str) -> aiosqlite.Row | None:
         """모델번호 유연 검색 (슬래시 구분 모델번호 등 대응).
 

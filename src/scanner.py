@@ -15,6 +15,7 @@ from src.crawlers.kream import kream_crawler
 from src.crawlers.musinsa import musinsa_crawler
 from src.crawlers.twentynine_cm import twentynine_cm_crawler
 from src.matcher import (
+    _pick_best_kream_match,
     extract_model_from_name,
     find_kream_match,
     model_numbers_match,
@@ -1249,9 +1250,11 @@ class Scanner:
                         return None
                     seen_models.add(normalized)
 
-                    # 크림 DB 매칭 (SQLite only, API 호출 없음)
-                    row = await self.db.find_kream_by_model(normalized)
-                    if not row:
+                    # 크림 DB 매칭 (복수 매칭 시 콜라보 제외)
+                    rows = await self.db.find_kream_all_by_model(normalized)
+                    if rows:
+                        row = _pick_best_kream_match(rows, retail_product.name)
+                    else:
                         row = await self.db.search_kream_by_model_like(normalized)
                     if not row:
                         return None
@@ -1490,8 +1493,10 @@ class Scanner:
                 name_model = extract_model_from_name(goods_name)
 
                 if name_model:
-                    row = await self.db.find_kream_by_model(name_model)
-                    if not row:
+                    rows = await self.db.find_kream_all_by_model(name_model)
+                    if rows:
+                        row = _pick_best_kream_match(rows, goods_name)
+                    else:
                         row = await self.db.search_kream_by_model_like(name_model)
 
                     if row:
@@ -1574,8 +1579,10 @@ class Scanner:
                         continue
                     seen_models.add(model)
 
-                    row = await self.db.find_kream_by_model(model)
-                    if not row:
+                    rows = await self.db.find_kream_all_by_model(model)
+                    if rows:
+                        row = _pick_best_kream_match(rows, goods_name)
+                    else:
                         row = await self.db.search_kream_by_model_like(model)
                     if not row:
                         await self.db.save_category_scan(

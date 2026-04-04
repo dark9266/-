@@ -520,6 +520,7 @@ def format_category_scan_summary(
     pages_scanned: int,
     elapsed_seconds: float,
     errors: int = 0,
+    alert_sent: int = 0,
 ) -> discord.Embed:
     """카테고리 스캔 완료 요약 Embed."""
     embed = discord.Embed(
@@ -556,6 +557,7 @@ def format_category_scan_summary(
             f"**전체:** {total_opportunities}건\n"
             f"🔴 **확정 수익:** {confirmed_count}건\n"
             f"🟠 **예상 수익:** {estimated_count}건\n"
+            f"**알림 전송:** {alert_sent}건\n"
             f"**소요 시간:** {elapsed_seconds:.0f}초"
         ),
         inline=True,

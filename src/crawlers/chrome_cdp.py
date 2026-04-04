@@ -6,6 +6,7 @@ Playwright가 CDP로 연결하여 조종하는 방식.
 """
 
 import asyncio
+import shutil
 import subprocess
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
@@ -166,19 +167,42 @@ class ChromeCDPManager:
         return await self.connect()
 
     async def _kill_debug_chrome(self) -> None:
-        """디버그 모드 Chrome만 종료 (일반 Chrome은 건드리지 않음)."""
+        """디버그 모드 Chrome만 종료 (일반 Chrome은 건드리지 않음).
+
+        환경에 따라 3단계 폴백:
+        1) powershell.exe — 디버그 포트 기준 정밀 종료 (WSL 데스크톱)
+        2) taskkill.exe — 전체 chrome.exe 종료 (SSH + Windows PATH 일부)
+        3) pkill — WSL 네이티브 폴백 (SSH 세션)
+        """
+        port = settings.chrome_debug_port
         try:
-            # Windows의 디버그 Chrome 프로세스만 종료
-            subprocess.run(
-                [
-                    "powershell.exe",
-                    "-Command",
-                    f"Get-Process chrome | Where-Object {{$_.CommandLine -like '*--remote-debugging-port={settings.chrome_debug_port}*'}} | Stop-Process -Force",
-                ],
-                capture_output=True,
-                timeout=10,
-            )
-            logger.info("디버그 Chrome 프로세스 종료 완료")
+            if shutil.which("powershell.exe"):
+                subprocess.run(
+                    [
+                        "powershell.exe",
+                        "-Command",
+                        f"Get-Process chrome | Where-Object "
+                        f"{{$_.CommandLine -like '*--remote-debugging-port={port}*'}} "
+                        f"| Stop-Process -Force",
+                    ],
+                    capture_output=True,
+                    timeout=10,
+                )
+                logger.info("디버그 Chrome 종료 완료 (powershell)")
+            elif shutil.which("taskkill.exe"):
+                subprocess.run(
+                    ["taskkill.exe", "/F", "/IM", "chrome.exe"],
+                    capture_output=True,
+                    timeout=10,
+                )
+                logger.info("Chrome 종료 완료 (taskkill)")
+            else:
+                subprocess.run(
+                    ["pkill", "-f", f"chrome.*--remote-debugging-port={port}"],
+                    capture_output=True,
+                    timeout=10,
+                )
+                logger.info("디버그 Chrome 종료 완료 (pkill)")
         except Exception as e:
             logger.warning("디버그 Chrome 종료 실패: %s", e)
 

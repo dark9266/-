@@ -74,9 +74,9 @@ def verify_alert_filter():
                 signal_checks += 1
 
     check(
-        "on_opportunity 콜백에 signal 체크 분기 존재",
-        signal_checks >= 4,
-        f"found {signal_checks} signal checks, expected ≥4",
+        "on_opportunity 콜백 + 배치루프 signal 체크 ≥6곳",
+        signal_checks >= 6,
+        f"found {signal_checks} signal checks, expected ≥6",
     )
 
 
@@ -205,6 +205,14 @@ def verify_category_scan():
         "name_matched 카운터가 scanner.py에 없음",
     )
 
+    # 3-d) embed에 alert_sent 파라미터 존재 확인
+    fmt_source = open("src/discord_bot/formatter.py").read()
+    check(
+        "format_category_scan_summary에 alert_sent 파라미터",
+        "alert_sent" in fmt_source,
+        "formatter.py에 alert_sent 파라미터 없음",
+    )
+
 
 # ───────────────────────────────────────────
 # 4) 수수료 계산 검증
@@ -247,6 +255,105 @@ def verify_fee_calculation():
 
 
 # ───────────────────────────────────────────
+# 5) 초기화 명령어 검증
+# ───────────────────────────────────────────
+def verify_init_command():
+    print("\n[5] 초기화 명령어 검증")
+
+    source = open("src/discord_bot/bot.py").read()
+
+    # "초기화" 파싱 후 early return 존재 확인
+    check(
+        "카테고리스캔 초기화 시 early return 존재",
+        "if not resume:" in source and "초기화" in source,
+        "초기화 분기 후 early return 로직이 없음",
+    )
+
+    check(
+        "초기화 완료 메시지 존재",
+        "초기화되었습니다" in source or "초기화 완료" in source,
+        "초기화 완료 메시지가 없음",
+    )
+
+
+# ───────────────────────────────────────────
+# 6) 콜라보 매칭 검증
+# ───────────────────────────────────────────
+def verify_collab_matching():
+    print("\n[6] 콜라보 매칭 검증")
+
+    from src.matcher import _COLLAB_KEYWORDS, _pick_best_kream_match
+
+    # 콜라보 키워드 존재 확인
+    check(
+        "콜라보 키워드 세트 존재 (≥10개)",
+        len(_COLLAB_KEYWORDS) >= 10,
+        f"got {len(_COLLAB_KEYWORDS)} keywords, expected ≥10",
+    )
+
+    # mock rows: 일반 + 콜라보
+    class MockRow(dict):
+        def __getitem__(self, key):
+            return self.get(key, "")
+
+    normal_row = MockRow({"name": "Nike Air Force 1 07", "product_id": "1"})
+    collab_row = MockRow(
+        {"name": "Nike x Travis Scott Air Force 1 Cactus Jack", "product_id": "2"}
+    )
+
+    # 6-a) 일반+콜라보 → 일반 우선
+    result = _pick_best_kream_match([collab_row, normal_row])
+    check(
+        "일반+콜라보 → 일반 상품 우선 선택",
+        result["product_id"] == "1",
+        f"got product_id={result['product_id']}, expected '1' (normal)",
+    )
+
+    # 6-b) 단일 결과 → 그대로 반환
+    result2 = _pick_best_kream_match([collab_row])
+    check(
+        "단일 결과 → 그대로 반환",
+        result2["product_id"] == "2",
+        f"got product_id={result2['product_id']}, expected '2'",
+    )
+
+    # 6-c) find_kream_all_by_model 메서드 존재 확인
+    source = open("src/models/database.py").read()
+    check(
+        "find_kream_all_by_model 메서드 존재",
+        "find_kream_all_by_model" in source,
+        "database.py에 find_kream_all_by_model 없음",
+    )
+
+
+# ───────────────────────────────────────────
+# 7) Chrome SSH 폴백 검증
+# ───────────────────────────────────────────
+def verify_chrome_ssh_fallback():
+    print("\n[7] Chrome SSH 폴백 검증")
+
+    source = open("src/crawlers/chrome_cdp.py").read()
+
+    check(
+        "shutil.which 폴백 로직 존재",
+        "shutil.which" in source,
+        "chrome_cdp.py에 shutil.which 없음",
+    )
+
+    check(
+        "pkill 폴백 존재 (WSL 네이티브)",
+        "pkill" in source,
+        "chrome_cdp.py에 pkill 폴백 없음",
+    )
+
+    check(
+        "import shutil 존재",
+        "import shutil" in source,
+        "chrome_cdp.py에 shutil import 없음",
+    )
+
+
+# ───────────────────────────────────────────
 # 메인
 # ───────────────────────────────────────────
 def main():
@@ -258,6 +365,9 @@ def main():
     verify_stock_filter()
     verify_category_scan()
     verify_fee_calculation()
+    verify_init_command()
+    verify_collab_matching()
+    verify_chrome_ssh_fallback()
 
     print("\n" + "=" * 50)
     if FAIL == 0:
