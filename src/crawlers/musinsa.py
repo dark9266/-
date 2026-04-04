@@ -364,9 +364,10 @@ class MusinsaCrawler:
         # API 응답 캡처용 변수
         options_data: dict | None = None
         inventory_data: list | None = None
+        numeric_goods_no: str | None = None  # 숫자 상품 ID (API용)
 
         async def on_response(resp: Response) -> None:
-            nonlocal options_data, inventory_data
+            nonlocal options_data, inventory_data, numeric_goods_no
             try:
                 url = resp.url
                 # 순서 중요: inventory를 먼저 체크 (URL에 /options도 포함됨)
@@ -382,6 +383,10 @@ class MusinsaCrawler:
                     and "inventories" not in url
                     and resp.ok
                 ):
+                    # URL에서 숫자 goodsNo 추출
+                    m = re.search(r"/goods/(\d+)/options", url)
+                    if m and not numeric_goods_no:
+                        numeric_goods_no = m.group(1)
                     body = await resp.json()
                     # 유효한 구조일 때만 저장
                     if isinstance(body, dict):
@@ -470,13 +475,32 @@ class MusinsaCrawler:
             # ---- 사이즈별 재고: 3단계 폴백 ----
             sizes: list[RetailSizeInfo] = []
 
+            # API용 숫자 ID 결정 (문자열 ID → 숫자 ID 변환)
+            api_id = numeric_goods_no or product_id
+
             # 옵션 API를 먼저 호출 (다중 옵션 감지용)
-            direct_options = await self._fetch_options_api(page, product_id)
+            direct_options = await self._fetch_options_api(page, api_id)
+            if not direct_options and api_id == product_id and numeric_goods_no:
+                # 문자열 ID로 실패했으면 숫자 ID로 재시도
+                direct_options = await self._fetch_options_api(
+                    page, numeric_goods_no,
+                )
+
+            # 숫자 ID를 options 응답에서도 추출 시도
+            if not numeric_goods_no:
+                opts = direct_options or options_data
+                if isinstance(opts, dict):
+                    items = (opts.get("data") or {}).get("optionItems", [])
+                    if items and isinstance(items[0], dict):
+                        gn = items[0].get("goodsNo")
+                        if gn:
+                            numeric_goods_no = str(gn)
+                            api_id = numeric_goods_no
 
             # 직접 재고 API 호출 (인터셉트보다 신뢰성 높음)
             if not inventory_data:
                 inventory_data = await self._fetch_inventories_api(
-                    page, product_id,
+                    page, api_id,
                 )
 
             # 다중 옵션(Color+Size) 상품: 색상 선택값으로 재고 API 재시도
@@ -485,8 +509,12 @@ class MusinsaCrawler:
                     direct_options or options_data,
                 )
                 if color_values:
+                    logger.debug(
+                        "다중 옵션 감지: pid=%s api_id=%s color=%s",
+                        product_id, api_id, color_values[:1],
+                    )
                     inventory_data = await self._fetch_inventories_api(
-                        page, product_id,
+                        page, api_id,
                         selected_option_values=color_values[:1],
                     )
                     if not inventory_data:
