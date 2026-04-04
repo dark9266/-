@@ -443,6 +443,98 @@ class Scanner:
 
         return analyze_opportunity(kream_product, retail_products)
 
+    async def quick_test(self, model_number: str) -> dict:
+        """단건 빠른 테스트 — 전체 파이프라인 검증용.
+
+        무신사 검색 → 상세 조회(품절 필터) → 크림 매칭 → 수익 계산 → 시그널 판정.
+        진단 정보를 포함한 dict 반환.
+        """
+        import time
+        start = time.monotonic()
+        diag: dict = {
+            "model_number": model_number,
+            "musinsa_found": False,
+            "musinsa_pid": None,
+            "musinsa_name": None,
+            "total_sizes": 0,
+            "in_stock_sizes": 0,
+            "stock_filter_applied": "없음",
+            "kream_matched": False,
+            "kream_name": None,
+            "kream_volume_7d": 0,
+            "best_profit": 0,
+            "best_roi": 0.0,
+            "signal": None,
+            "alert_sent": False,
+            "elapsed_sec": 0.0,
+            "error": None,
+        }
+        try:
+            normalized = normalize_model_number(model_number)
+
+            # 1) 무신사 검색
+            musinsa_results = await musinsa_crawler.search_products(model_number)
+            if not musinsa_results:
+                diag["error"] = "무신사 검색 결과 없음"
+                return diag
+
+            # 모델번호 매칭되는 첫 상품 상세 조회
+            retail_product = None
+            for mr in musinsa_results[:5]:
+                detail = await musinsa_crawler.get_product_detail(mr["product_id"])
+                if detail and detail.model_number:
+                    if model_numbers_match(detail.model_number, model_number):
+                        retail_product = detail
+                        break
+
+            if not retail_product:
+                diag["error"] = "무신사에서 모델번호 매칭 실패"
+                return diag
+
+            diag["musinsa_found"] = True
+            diag["musinsa_pid"] = retail_product.product_id
+            diag["musinsa_name"] = retail_product.name
+            diag["total_sizes"] = len(retail_product.sizes)
+            diag["in_stock_sizes"] = sum(1 for s in retail_product.sizes if s.in_stock)
+
+            # 품절 필터 진단
+            if diag["total_sizes"] != diag["in_stock_sizes"]:
+                diag["stock_filter_applied"] = "API 또는 DOM 크로스체크"
+            elif diag["total_sizes"] > 0:
+                diag["stock_filter_applied"] = "전체 재고있음 (필터 불필요 또는 미적용)"
+
+            # 2) 크림 매칭
+            kream_product = await find_kream_match(retail_product, self.db)
+            if not kream_product:
+                diag["error"] = "크림 매칭 상품 없음"
+                return diag
+
+            diag["kream_matched"] = True
+            diag["kream_name"] = kream_product.name
+            diag["kream_volume_7d"] = kream_product.volume_7d
+
+            # 3) 수익 분석
+            opportunity = analyze_opportunity(kream_product, [retail_product])
+            if not opportunity or not opportunity.size_profits:
+                diag["error"] = "수익 분석 실패 (사이즈 매칭 없음)"
+                return diag
+
+            # 4) 시그널 판정
+            signal = determine_signal(opportunity.best_profit, kream_product.volume_7d)
+            opportunity.signal = signal
+            diag["best_profit"] = opportunity.best_profit
+            diag["best_roi"] = opportunity.best_roi
+            diag["signal"] = signal.value
+            diag["opportunity"] = opportunity
+
+        except Exception as e:
+            diag["error"] = str(e)
+            logger.error("빠른테스트 실패 (%s): %s", model_number, e)
+        finally:
+            diag["elapsed_sec"] = round(time.monotonic() - start, 1)
+
+        return diag
+
     # ─── 자동스캔 (크림 기준 역방향 파이프라인) ───────────────
 
     async def auto_scan(

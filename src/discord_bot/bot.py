@@ -795,6 +795,98 @@ async def cmd_compare(ctx: commands.Context, *, model_number: str = ""):
         await ctx.send(f"❌ 비교 실패: {e}")
 
 
+@bot.command(name="빠른테스트")
+async def cmd_quick_test(ctx: commands.Context, *, model_number: str = ""):
+    """모델번호 1건 전체 파이프라인 검증 (품절필터+알림필터)."""
+    if not model_number:
+        await ctx.send("사용법: `!빠른테스트 <모델번호>` (예: `!빠른테스트 MT410CK5`)")
+        return
+
+    msg = await ctx.send(f"⚡ 빠른테스트 시작... (`{model_number}`)")
+
+    try:
+        diag = await bot.scanner.quick_test(model_number)
+
+        # 진단 임베드
+        embed = discord.Embed(
+            title=f"⚡ 빠른테스트: {model_number}",
+            color=0x00FF00 if not diag.get("error") else 0xFF0000,
+        )
+
+        # 무신사
+        if diag["musinsa_found"]:
+            embed.add_field(
+                name="🛒 무신사",
+                value=(
+                    f"**{diag['musinsa_name']}**\n"
+                    f"PID: `{diag['musinsa_pid']}`\n"
+                    f"사이즈: {diag['in_stock_sizes']}개 재고 / {diag['total_sizes']}개 전체\n"
+                    f"품절필터: {diag['stock_filter_applied']}"
+                ),
+                inline=False,
+            )
+        else:
+            embed.add_field(name="🛒 무신사", value="❌ 미발견", inline=False)
+
+        # 크림
+        if diag["kream_matched"]:
+            embed.add_field(
+                name="🏷️ 크림",
+                value=(
+                    f"**{diag['kream_name']}**\n"
+                    f"7일 거래량: {diag['kream_volume_7d']}건"
+                ),
+                inline=False,
+            )
+
+        # 수익/시그널
+        if diag.get("signal"):
+            signal_emoji = {
+                "강력매수": "��", "매수": "🟠", "관망": "🟡", "비추천": "⚪",
+            }.get(diag["signal"], "⚪")
+            embed.add_field(
+                name="📊 분석",
+                value=(
+                    f"시그널: {signal_emoji} **{diag['signal']}**\n"
+                    f"최고수익: {diag['best_profit']:,}원\n"
+                    f"ROI: {diag['best_roi']:.1f}%"
+                ),
+                inline=False,
+            )
+
+            # 알림 전송 시도
+            opportunity = diag.get("opportunity")
+            if opportunity and diag["signal"] in ("강력매수", "매수"):
+                embed.add_field(
+                    name="🔔 알림",
+                    value="✅ BUY 이상 → 알림 전송 대상",
+                    inline=False,
+                )
+                # 실제 알림 전송
+                if opportunity.size_profits:
+                    alert_embed = format_profit_alert(opportunity)
+                    await ctx.send(embed=alert_embed)
+            else:
+                embed.add_field(
+                    name="🔔 알림",
+                    value=f"⏭️ 스킵 (signal={diag['signal']})",
+                    inline=False,
+                )
+
+        # 에러
+        if diag.get("error"):
+            embed.add_field(
+                name="❌ 에러", value=diag["error"], inline=False,
+            )
+
+        embed.set_footer(text=f"소요시간: {diag['elapsed_sec']}초")
+        await msg.edit(content=None, embed=embed)
+
+    except Exception as e:
+        logger.error("빠른테스트 실패: %s", e)
+        await ctx.send(f"❌ 빠른테스트 실패: {e}")
+
+
 @bot.command(name="무신사")
 async def cmd_musinsa_search(ctx: commands.Context, *, keyword: str = ""):
     """무신사 상품 검색."""
