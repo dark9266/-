@@ -423,6 +423,12 @@ class Database:
 
     # -- 카테고리 스캔 --
 
+    async def clear_category_scan_history(self) -> None:
+        """카테고리 스캔 이력 전체 삭제 (초기화)."""
+        await self.db.execute("DELETE FROM category_scan_history")
+        await self.db.execute("DELETE FROM category_scan_progress")
+        await self.db.commit()
+
     async def load_scanned_goods_nos(self, category: str = "") -> set[str]:
         """카테고리 스캔 이력에서 goods_no 집합 로딩 (메모리 SET)."""
         if category:

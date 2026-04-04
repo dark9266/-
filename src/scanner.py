@@ -1319,7 +1319,12 @@ class Scanner:
                 musinsa_kr_to_slug[q.lower()] = slug
 
         # 이미 스캔한 상품 SET
-        scanned_set = await self.db.load_scanned_goods_nos()
+        if not resume:
+            await self.db.clear_category_scan_history()
+            scanned_set: set[str] = set()
+            logger.info("카테고리 스캔 이력 초기화 완료")
+        else:
+            scanned_set = await self.db.load_scanned_goods_nos()
 
         logger.info(
             "=== 카테고리 스캔 시작: 카테고리 %s, 최대 %d페이지, "
