@@ -563,18 +563,32 @@ class MusinsaCrawler:
 
             # inventory API 실패 시 DOM 크로스체크로 품절 필터링
             if sizes and not inventory_data:
-                dom_sizes = await self._extract_sizes(
-                    page, sale_price, original_price, discount_type, discount_rate,
+                is_multi = bool(
+                    self._get_color_option_values(direct_options or options_data)
                 )
-                if dom_sizes:
-                    dom_in_stock = {s.size for s in dom_sizes if s.in_stock}
-                    before = len(sizes)
-                    sizes = [s for s in sizes if s.size in dom_in_stock]
-                    if len(sizes) < before:
+                if is_multi:
+                    # 다중 옵션: 색상 클릭 → 사이즈 드롭다운 열기 → 재고 확인
+                    dom_in_stock = await self._check_multi_option_stock(page)
+                    if dom_in_stock:
+                        before = len(sizes)
+                        sizes = [s for s in sizes if s.size in dom_in_stock]
                         logger.info(
-                            "DOM 품절 크로스체크: pid=%s %d→%d개",
+                            "다중옵션 DOM 품절 크로스체크: pid=%s %d→%d개",
                             product_id, before, len(sizes),
                         )
+                else:
+                    dom_sizes = await self._extract_sizes(
+                        page, sale_price, original_price, discount_type, discount_rate,
+                    )
+                    if dom_sizes:
+                        dom_in_stock_set = {s.size for s in dom_sizes if s.in_stock}
+                        before = len(sizes)
+                        sizes = [s for s in sizes if s.size in dom_in_stock_set]
+                        if len(sizes) < before:
+                            logger.info(
+                                "DOM 품절 크로스체크: pid=%s %d→%d개",
+                                product_id, before, len(sizes),
+                            )
 
             # Tier 3: DOM 폴백 + 원인별 진단 로깅
             if not sizes:
@@ -1159,6 +1173,97 @@ class MusinsaCrawler:
             sale_price = original_price
 
         return original_price, sale_price, discount_type, discount_rate
+
+    async def _check_multi_option_stock(self, page: Page) -> set[str]:
+        """다중 옵션(Color+Size) 상품의 DOM에서 재고 있는 사이즈명 반환.
+
+        색상 칩 클릭 → 사이즈 드롭다운 열기 → 각 옵션의 품절 상태 확인.
+        """
+        in_stock: set[str] = set()
+        try:
+            # 1단계: 색상 칩 클릭 (이미 선택돼 있을 수 있지만 확실히)
+            for sel in [
+                "[class*='ColorChip'] button", "[class*='ColorChip'] a",
+                "[class*='color-chip']", "[class*='ColorOption'] button",
+                "[class*='optionColor']",
+            ]:
+                chip = await page.query_selector(sel)
+                if chip:
+                    await chip.click()
+                    await asyncio.sleep(0.5)
+                    break
+
+            # 2단계: 사이즈 드롭다운 트리거 클릭
+            # 2단 옵션에서 사이즈는 두 번째 OptionItem
+            size_trigger = None
+            for sel in [
+                "button:has-text('사이즈')", "button:has-text('SIZE')",
+                "button:has-text('S ')",
+                # nth-child로 두 번째 옵션 아이템 선택
+                "[class*='OptionItem']:nth-child(2)",
+                "[class*='option_select']:nth-child(2)",
+                "[class*='ProductOption']:nth-child(2)",
+            ]:
+                el = await page.query_selector(sel)
+                if el:
+                    size_trigger = el
+                    break
+
+            # 첫 번째 트리거가 색상이면 두 번째를 찾기
+            if not size_trigger:
+                triggers = await page.query_selector_all(
+                    "[class*='OptionItem'], [class*='option_select'], "
+                    "[class*='FilterOption'], [class*='ProductOption']"
+                )
+                if len(triggers) >= 2:
+                    size_trigger = triggers[1]  # 두 번째 = 사이즈
+
+            if size_trigger:
+                await size_trigger.click()
+                await asyncio.sleep(0.5)
+
+            # 3단계: 사이즈 옵션 항목 읽기
+            for item_sel in [
+                "[role='option']", "[role='listbox'] li",
+                "[class*='OptionValue']", "[class*='option_value']",
+                "[class*='FilterValue']",
+            ]:
+                items = await page.query_selector_all(item_sel)
+                if len(items) < 2:
+                    continue
+
+                found_sizes = False
+                for item in items:
+                    text = (await item.inner_text()).strip()
+                    if not text or len(text) > 15:
+                        continue
+                    # 숫자(사이즈)가 아닌 항목(색상명 등) 건너뜀
+                    size_text = re.sub(r"\s*[\(\[].*?[\)\]]", "", text).strip()
+                    if not re.match(r"\d{2,3}", size_text):
+                        continue
+                    found_sizes = True
+
+                    classes = await item.get_attribute("class") or ""
+                    aria_disabled = await item.get_attribute("aria-disabled")
+                    is_available = (
+                        "sold" not in classes.lower()
+                        and "disabled" not in classes.lower()
+                        and aria_disabled != "true"
+                        and "품절" not in text
+                        and "재입고" not in text
+                    )
+                    if is_available:
+                        in_stock.add(size_text)
+                    else:
+                        logger.debug("다중옵션 DOM 품절: %s", size_text)
+
+                if found_sizes:
+                    break
+
+        except Exception as e:
+            logger.debug("다중옵션 DOM 재고 체크 실패: %s", e)
+
+        return in_stock
 
     async def _extract_sizes(
         self,
