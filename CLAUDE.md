@@ -132,3 +132,6 @@ WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges th
 3. **단위 테스트 실행**: 수정 로직 관련 테스트 파일 개별 실행 (`pytest tests/test_<모듈>.py -v`)
 4. **검증 성공 시에만** git commit + 디스코드 웹훅 전송
 5. **디스코드 실제 테스트** (!역방향스캔, !카테고리스캔 등 실환경 검증)만 사람이 직접 실행
+
+### Known Issues
+- MFS(다중재고) 상품 품절 필터 한계 — inventory API 근본 미작동, 15/17까지만 축소 가능 (MT410CK5 등)

@@ -278,7 +278,9 @@ async def cmd_auto_scan(ctx: commands.Context):
     progress_msg = await ctx.send("🔄 **자동스캔 시작** — 크림 인기상품 수집 중...")
 
     async def on_opportunity(opportunity):
-        """수익 기회 발견 즉시 알림."""
+        """수익 기회 발견 즉시 알림 (BUY 이상만)."""
+        if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+            return
         try:
             await bot.send_auto_scan_alert(opportunity)
         except Exception as e:
@@ -399,6 +401,8 @@ async def cmd_batch_scan(ctx: commands.Context, *, args: str = ""):
     progress_msg = await ctx.send("🗂️ **배치스캔 시작** — 전체 DB 순회 중...")
 
     async def on_opportunity(opportunity):
+        if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+            return
         try:
             await bot.send_auto_scan_alert(opportunity)
         except Exception as e:
@@ -505,6 +509,8 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
     )
 
     async def on_opportunity(opportunity):
+        if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+            return
         try:
             await bot.send_auto_scan_alert(opportunity)
         except Exception as e:
@@ -647,6 +653,8 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
     )
 
     async def on_opportunity(opportunity):
+        if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+            return
         try:
             await bot.send_auto_scan_alert(opportunity)
         except Exception as e:
