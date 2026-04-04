@@ -190,12 +190,11 @@ def verify_category_scan():
 
     source = open("src/scanner.py").read()
 
-    # 3-a) 브랜드 필터 제거 확인 — 카테고리 스캔 메서드에 brand_filter가 없어야 함
-    # run_category_scan 메서드의 "3단계 필터링" 부분에 "브랜드 필터 제거" 코멘트 확인
+    # 3-a) 스마트 브랜드 필터 확인 — 크림 DB 기반 브랜드 필터
     check(
-        "카테고리스캔 브랜드 필터 제거 확인",
-        "브랜드 필터 제거" in source,
-        "run_category_scan에 '브랜드 필터 제거' 주석이 없음",
+        "카테고리스캔 스마트 브랜드 필터 확인",
+        "kream_brand_slugs" in source,
+        "run_category_scan에 크림 브랜드 셋 기반 필터가 없음",
     )
 
     # 3-b) 이름 매칭 로직 존재 확인

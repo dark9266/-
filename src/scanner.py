@@ -1501,7 +1501,20 @@ class Scanner:
                     (item.get("goodsName") or "")[:40],
                 )
 
-            # 3단계 필터링 (브랜드 필터 제거 — 모델번호 매칭으로만 판단)
+            # 브랜드 분포 진단 로그
+            unique_brands = set(
+                re.sub(r"[^a-z0-9]", "", (i.get("brand") or "").lower())
+                for i in listing
+            )
+            unique_brands.discard("")
+            kream_matched_brands = unique_brands & kream_brand_slugs
+            logger.info(
+                "브랜드 분석: 고유 %d개 중 크림등록 %d개 (필터대상 %d개)",
+                len(unique_brands), len(kream_matched_brands),
+                len(unique_brands) - len(kream_matched_brands),
+            )
+
+            # 3단계 필터링
             detail_queue: list[dict] = []
             name_match_queue: list[tuple[dict, str]] = []
 
