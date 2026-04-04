@@ -1300,24 +1300,6 @@ class Scanner:
             categories = ["103"]  # 기본: 신발
 
         # 1단계: 사전 데이터 로딩
-        # 브랜드 화이트리스트 — slug 형식 + 영문 소문자 모두 포함
-        kream_brands = await self.db.get_brands_min_count(min_count=1)
-        kream_brand_set: set[str] = set()
-        for b in kream_brands:
-            b_lower = b.lower()
-            kream_brand_set.add(b_lower)
-            # slug 변환: "New Balance" → "newbalance", "The North Face" → "thenorthface"
-            slug = b_lower.replace(" ", "").replace("'", "").replace(".", "")
-            kream_brand_set.add(slug)
-        logger.info("카테고리스캔 브랜드 화이트리스트: %d개 (크림 DB)", len(kream_brands))
-
-        # 역매핑: 한글 브랜드명 → 영문 slug (브랜드 필터용)
-        musinsa_kr_to_slug: dict[str, str] = {}
-        for eng, queries in self._BRAND_SEARCH_QUERIES.items():
-            slug = eng.lower().replace(" ", "").replace("'", "").replace(".", "")
-            for q in queries:
-                musinsa_kr_to_slug[q.lower()] = slug
-
         # 이미 스캔한 상품 SET
         if not resume:
             await self.db.clear_category_scan_history()
@@ -1328,9 +1310,8 @@ class Scanner:
 
         logger.info(
             "=== 카테고리 스캔 시작: 카테고리 %s, 최대 %d페이지, "
-            "크림 브랜드 %d개 (slug %d개), 이미스캔 %d건 ===",
-            categories, max_pages, len(kream_brands),
-            len(kream_brand_set), len(scanned_set),
+            "이미스캔 %d건 ===",
+            categories, max_pages, len(scanned_set),
         )
 
         if on_progress:
@@ -1379,10 +1360,9 @@ class Scanner:
                     (item.get("goodsName") or "")[:40],
                 )
 
-            # 4단계 필터링
+            # 3단계 필터링 (브랜드 필터 제거 — 모델번호 매칭으로만 판단)
             detail_queue: list[dict] = []
             name_match_queue: list[tuple[dict, str]] = []
-            filtered_brands: dict[str, int] = {}  # 필터된 브랜드별 건수
 
             for item in listing:
                 goods_no = item["goodsNo"]
@@ -1395,32 +1375,9 @@ class Scanner:
                     result.already_scanned += 1
                     continue
 
-                # Layer 2: 브랜드 필터
-                # 무신사: brand="newbalance" (slug), brandName="뉴발란스" (한글)
                 brand_slug = (item.get("brand") or "").strip().lower()
-                brand_kr = (item.get("brandName") or "").strip().lower()
 
-                # 매칭 시도: slug 직접 → 한글→slug 변환 → 원본 비교
-                brand_matched = (
-                    brand_slug in kream_brand_set
-                    or musinsa_kr_to_slug.get(brand_kr, "") in kream_brand_set
-                    or brand_kr in kream_brand_set
-                )
-
-                if not brand_matched:
-                    result.brand_filtered += 1
-                    filtered_brands[brand_slug] = filtered_brands.get(brand_slug, 0) + 1
-                    await self.db.save_category_scan(
-                        goods_no=goods_no,
-                        category=category,
-                        brand=brand_slug,
-                        goods_name=item.get("goodsName", ""),
-                        price=item.get("price", 0),
-                    )
-                    scanned_set.add(goods_no)
-                    continue
-
-                # Layer 3: 상품명에서 모델번호 추출
+                # Layer 2: 상품명에서 모델번호 추출
                 goods_name = item.get("goodsName", "")
                 name_model = extract_model_from_name(goods_name)
 
@@ -1441,23 +1398,17 @@ class Scanner:
 
             logger.info(
                 "카테고리 %s 필터 결과: 총 %d → 품절 %d / 이미스캔 %d / "
-                "브랜드 %d / 이름매칭 %d / 이름미매칭 %d / 상세필요 %d",
+                "이름매칭 %d / 이름미매칭 %d / 상세필요 %d",
                 category, len(listing),
                 result.sold_out_skipped, result.already_scanned,
-                result.brand_filtered, result.name_matched,
+                result.name_matched,
                 result.name_no_match, len(detail_queue),
             )
-            if filtered_brands:
-                top_filtered = sorted(filtered_brands.items(), key=lambda x: -x[1])[:5]
-                logger.info(
-                    "브랜드 필터 상위 5개: %s",
-                    ", ".join(f"{b}({c}건)" for b, c in top_filtered),
-                )
 
             if on_progress:
                 await on_progress(
                     f"카테고리 [{category}] 필터 완료\n"
-                    f"• 리스팅 {len(listing)}건 → 브랜드필터 {result.brand_filtered} / "
+                    f"• 리스팅 {len(listing)}건 → "
                     f"품절 {result.sold_out_skipped} / 이미스캔 {result.already_scanned}\n"
                     f"• 이름매칭 {result.name_matched}건 + "
                     f"상세방문 대기 {len(detail_queue)}건"
@@ -1641,14 +1592,13 @@ class Scanner:
         elapsed = (result.finished_at - result.started_at).total_seconds()
         logger.info(
             "=== 카테고리 스캔 완료 (%.0f초) | 리스팅 %d → "
-            "품절 %d / 이미스캔 %d / 브랜드필터 %d / "
+            "품절 %d / 이미스캔 %d / "
             "이름매칭 %d / 상세 %d → DB매칭 %d → "
             "수익기회 %d (확정 %d / 예상 %d) | 에러 %d ===",
             elapsed,
             result.listing_fetched,
             result.sold_out_skipped,
             result.already_scanned,
-            result.brand_filtered,
             result.name_matched,
             result.detail_fetched,
             result.detail_matched,

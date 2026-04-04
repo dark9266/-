@@ -258,7 +258,9 @@ class Scheduler:
             # 배치스캔은 aiohttp만 사용하므로 Chrome 상태 체크 불필요
 
             async def on_opportunity(opportunity: AutoScanOpportunity):
-                """수익 기회 발견 즉시 디스코드 알림."""
+                """수익 기회 발견 즉시 디스코드 알림 (BUY 이상만)."""
+                if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    return
                 await self.bot.send_auto_scan_alert(opportunity)
                 # 확정 수익이면 집중 추적 추가
                 if opportunity.best_confirmed_roi >= settings.auto_scan_confirmed_roi:

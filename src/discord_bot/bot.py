@@ -549,6 +549,11 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
             sent_count = 0
             for op in result.opportunities:
                 if op.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    logger.debug(
+                        "역방향 알림 스킵: signal=%s profit=%d %s",
+                        op.signal.value, op.best_confirmed_profit,
+                        op.kream_product.name[:30],
+                    )
                     continue
                 try:
                     if await bot.send_auto_scan_alert(op):
@@ -637,7 +642,7 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
     progress_msg = await ctx.send(
         f"📂 **카테고리 스캔 시작** [{category_name}] ({category_code})\n"
         f"• 최대 {max_pages}페이지 ({max_pages * 60}건)\n"
-        f"• 4단계 필터: 품절→이미스캔→브랜드→이름매칭\n"
+        f"• 3단계 필터: 품절→이미스캔→모델번호매칭\n"
         f"• {'이전 이어서' if resume else '처음부터'} 스캔"
     )
 
@@ -675,7 +680,7 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
                 listing_fetched=result.listing_fetched,
                 sold_out_skipped=result.sold_out_skipped,
                 already_scanned=result.already_scanned,
-                brand_filtered=result.brand_filtered,
+                brand_filtered=0,
                 name_matched=result.name_matched,
                 name_no_match=result.name_no_match,
                 detail_fetched=result.detail_fetched,
@@ -689,12 +694,19 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
             )
             await ctx.send(embed=summary_embed)
 
-            # 개별 수익 알림 전송
+            # 개별 수익 알림 전송 (BUY 이상만)
             sent_count = 0
             for op in result.opportunities:
+                if op.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    logger.debug(
+                        "카테고리 알림 스킵: signal=%s profit=%d %s",
+                        op.signal.value, op.best_confirmed_profit,
+                        op.kream_product.name[:30],
+                    )
+                    continue
                 try:
-                    await bot.send_auto_scan_alert(op)
-                    sent_count += 1
+                    if await bot.send_auto_scan_alert(op):
+                        sent_count += 1
                 except Exception as e:
                     logger.error("카테고리 개별 알림 실패: %s", e)
 
