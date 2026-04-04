@@ -127,11 +127,12 @@ WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges th
 ### 자동 검증 루프
 코드 수정 후 커밋 전 반드시 아래 순서로 자동 검증. 사람 개입 없이 실패→재수정→재검증 반복.
 
-1. **pytest 전체 통과**: `pytest tests/ -v` — 실패 시 원인 분석 후 코드 재수정, 재실행
-2. **import 검증**: `python3 -c "import ast; ast.parse(open('<수정파일>').read())"` — 문법 오류 시 즉시 수정
-3. **단위 테스트 실행**: 수정 로직 관련 테스트 파일 개별 실행 (`pytest tests/test_<모듈>.py -v`)
-4. **검증 성공 시에만** git commit + 디스코드 웹훅 전송
-5. **디스코드 실제 테스트** (!역방향스캔, !카테고리스캔 등 실환경 검증)만 사람이 직접 실행
+1. **파이프라인 검증**: `PYTHONPATH=. python scripts/verify.py` — 알림필터/품절필터/카테고리스캔/수수료 자동 검증
+2. **pytest 전체 통과**: `pytest tests/ -v` — 실패 시 원인 분석 후 코드 재수정, 재실행
+3. **import 검증**: `python3 -c "import ast; ast.parse(open('<수정파일>').read())"` — 문법 오류 시 즉시 수정
+4. **단위 테스트 실행**: 수정 로직 관련 테스트 파일 개별 실행 (`pytest tests/test_<모듈>.py -v`)
+5. **검증 성공 시에만** git commit + 디스코드 웹훅 전송
+6. **디스코드 실제 테스트** (!역방향스캔, !카테고리스캔 등 실환경 검증)만 사람이 직접 실행
 
 ### Known Issues
 - MFS(다중재고) 상품 품절 필터 한계 — inventory API 근본 미작동, 15/17까지만 축소 가능 (MT410CK5 등)
