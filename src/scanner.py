@@ -1572,169 +1572,207 @@ class Scanner:
                 (item, "") for item in detail_queue
             ]
 
-            for idx, (item, pre_model) in enumerate(all_detail_items):
-                goods_no = item["goodsNo"]
-                goods_name = item.get("goodsName", "")
-                brand_slug = (item.get("brand") or "").strip()
+            # 병렬 상세 방문 (동시 3건으로 무신사 차단 방지)
+            DETAIL_CONCURRENT = 3
+            DETAIL_BATCH = DETAIL_CONCURRENT * 3  # 9건씩 배치
+            detail_sem = asyncio.Semaphore(DETAIL_CONCURRENT)
 
-                try:
-                    result.detail_fetched += 1
+            async def _fetch_detail(gno: str):
+                async with detail_sem:
+                    return await musinsa_crawler.get_product_detail(gno)
 
-                    # 진행 보고
-                    if on_progress and idx > 0 and idx % 10 == 0:
-                        await on_progress(
-                            f"카테고리 [{category}] 상세 조회 {idx}/{len(all_detail_items)}\n"
-                            f"• DB매칭 {result.detail_matched}건 / "
-                            f"수익기회 {len(result.opportunities)}건"
-                        )
+            total_items = len(all_detail_items)
+            processed = 0
 
-                    retail_product = await musinsa_crawler.get_product_detail(
-                        goods_no,
-                    )
-                    if not retail_product:
-                        await self.db.save_category_scan(
-                            goods_no=goods_no, category=category,
-                            brand=brand_slug, goods_name=goods_name,
-                            price=item.get("price", 0),
-                        )
-                        scanned_set.add(goods_no)
-                        continue
+            for batch_start in range(0, total_items, DETAIL_BATCH):
+                batch = all_detail_items[batch_start:batch_start + DETAIL_BATCH]
 
-                    model = pre_model or normalize_model_number(
-                        retail_product.model_number,
-                    )
-                    if not model:
-                        await self.db.save_category_scan(
-                            goods_no=goods_no, category=category,
-                            brand=brand_slug, goods_name=goods_name,
-                            price=item.get("price", 0),
-                        )
-                        scanned_set.add(goods_no)
-                        continue
-
-                    if model in seen_models:
-                        scanned_set.add(goods_no)
-                        continue
-                    seen_models.add(model)
-
-                    rows = await self.db.find_kream_all_by_model(model)
-                    if rows:
-                        row = _pick_best_kream_match(rows, goods_name)
-                    else:
-                        row = await self.db.search_kream_by_model_like(model)
-                    if not row:
-                        await self.db.save_category_scan(
-                            goods_no=goods_no, category=category,
-                            brand=brand_slug, goods_name=goods_name,
-                            model_number=model,
-                            price=item.get("price", 0),
-                        )
-                        scanned_set.add(goods_no)
-                        continue
-
-                    result.detail_matched += 1
-
-                    row = dict(row)
-                    kream_product = await self._get_kream_from_db_or_api(
-                        row["product_id"], row,
-                    )
-                    if not kream_product or not kream_product.size_prices:
-                        await self.db.save_category_scan(
-                            goods_no=goods_no, category=category,
-                            brand=brand_slug, goods_name=goods_name,
-                            model_number=model, kream_matched=True,
-                            kream_product_id=row["product_id"],
-                            price=item.get("price", 0),
-                        )
-                        scanned_set.add(goods_no)
-                        continue
-
-                    musinsa_sizes: dict[str, tuple[int, bool]] = {}
-                    for s in retail_product.sizes:
-                        if s.in_stock and s.price > 0:
-                            ns = _normalize_size(s.size)
-                            if ns not in musinsa_sizes or s.price < musinsa_sizes[ns][0]:
-                                musinsa_sizes[ns] = (s.price, True)
-
-                    if not musinsa_sizes:
-                        await self.db.save_category_scan(
-                            goods_no=goods_no, category=category,
-                            brand=brand_slug, goods_name=goods_name,
-                            model_number=model, kream_matched=True,
-                            kream_product_id=row["product_id"],
-                            price=item.get("price", 0),
-                        )
-                        scanned_set.add(goods_no)
-                        continue
-
-                    opportunity = analyze_auto_scan_opportunity(
-                        kream_product=kream_product,
-                        musinsa_sizes=musinsa_sizes,
-                        musinsa_url=retail_product.url,
-                        musinsa_name=retail_product.name,
-                        musinsa_product_id=goods_no,
+                # 진행 보고
+                if on_progress and processed > 0:
+                    await on_progress(
+                        f"카테고리 [{category}] 상세 조회 "
+                        f"{processed}/{total_items}\n"
+                        f"• DB매칭 {result.detail_matched}건 / "
+                        f"수익기회 {len(result.opportunities)}건"
                     )
 
-                    await self.db.save_category_scan(
-                        goods_no=goods_no, category=category,
-                        brand=brand_slug, goods_name=goods_name,
-                        model_number=model, kream_matched=True,
-                        kream_product_id=row["product_id"],
-                        price=item.get("price", 0),
-                    )
-                    scanned_set.add(goods_no)
+                # 병렬로 상세 페이지 수집
+                fetch_tasks = [
+                    _fetch_detail(item["goodsNo"]) for item, _ in batch
+                ]
+                fetch_results = await asyncio.gather(
+                    *fetch_tasks, return_exceptions=True,
+                )
 
-                    if not opportunity:
-                        continue
+                # 순차적으로 후처리 (DB 매칭, 수익 분석)
+                for (item, pre_model), retail_or_exc in zip(batch, fetch_results):
+                    goods_no = item["goodsNo"]
+                    goods_name = item.get("goodsName", "")
+                    brand_slug = (item.get("brand") or "").strip()
+                    processed += 1
 
-                    opportunity.source_prices = {"무신사": min(
-                        p for p, _ in musinsa_sizes.values()
-                    )}
+                    try:
+                        result.detail_fetched += 1
 
-                    if (
-                        opportunity.best_confirmed_profit <= 0
-                        and opportunity.best_estimated_profit <= 0
-                    ):
-                        continue
+                        # gather 에러 처리
+                        if isinstance(retail_or_exc, Exception):
+                            raise retail_or_exc
+                        retail_product = retail_or_exc
 
-                    await self.db.upsert_retail_product(
-                        source="musinsa",
-                        product_id=goods_no,
-                        name=retail_product.name,
-                        model_number=model,
-                        brand=brand_slug,
-                        url=retail_product.url,
-                        image_url=retail_product.image_url,
-                    )
-
-                    # 시그널 판정
-                    signal = determine_signal(
-                        opportunity.best_confirmed_profit,
-                        opportunity.volume_7d,
-                    )
-                    opportunity.signal = signal
-
-                    result.opportunities.append(opportunity)
-
-                    # BUY 이상만 알림 전송
-                    if on_opportunity and signal in (Signal.STRONG_BUY, Signal.BUY):
-                        try:
-                            await on_opportunity(opportunity)
-                        except Exception as e:
-                            logger.error(
-                                "카테고리 스캔 알림 콜백 실패: %s", e,
+                        if not retail_product:
+                            await self.db.save_category_scan(
+                                goods_no=goods_no, category=category,
+                                brand=brand_slug, goods_name=goods_name,
+                                price=item.get("price", 0),
                             )
-                    elif signal in (Signal.WATCH, Signal.NOT_RECOMMENDED):
-                        logger.debug(
-                            "알림 스킵: signal=%s profit=%s",
-                            signal.value, opportunity.best_confirmed_profit,
+                            scanned_set.add(goods_no)
+                            continue
+
+                        model = pre_model or normalize_model_number(
+                            retail_product.model_number,
+                        )
+                        if not model:
+                            await self.db.save_category_scan(
+                                goods_no=goods_no, category=category,
+                                brand=brand_slug, goods_name=goods_name,
+                                price=item.get("price", 0),
+                            )
+                            scanned_set.add(goods_no)
+                            continue
+
+                        if model in seen_models:
+                            scanned_set.add(goods_no)
+                            continue
+                        seen_models.add(model)
+
+                        rows = await self.db.find_kream_all_by_model(model)
+                        if rows:
+                            row = _pick_best_kream_match(rows, goods_name)
+                        else:
+                            row = await self.db.search_kream_by_model_like(
+                                model,
+                            )
+                        if not row:
+                            await self.db.save_category_scan(
+                                goods_no=goods_no, category=category,
+                                brand=brand_slug, goods_name=goods_name,
+                                model_number=model,
+                                price=item.get("price", 0),
+                            )
+                            scanned_set.add(goods_no)
+                            continue
+
+                        result.detail_matched += 1
+
+                        row = dict(row)
+                        kream_product = await self._get_kream_from_db_or_api(
+                            row["product_id"], row,
+                        )
+                        if not kream_product or not kream_product.size_prices:
+                            await self.db.save_category_scan(
+                                goods_no=goods_no, category=category,
+                                brand=brand_slug, goods_name=goods_name,
+                                model_number=model, kream_matched=True,
+                                kream_product_id=row["product_id"],
+                                price=item.get("price", 0),
+                            )
+                            scanned_set.add(goods_no)
+                            continue
+
+                        musinsa_sizes: dict[str, tuple[int, bool]] = {}
+                        for s in retail_product.sizes:
+                            if s.in_stock and s.price > 0:
+                                ns = _normalize_size(s.size)
+                                if ns not in musinsa_sizes or s.price < musinsa_sizes[ns][0]:
+                                    musinsa_sizes[ns] = (s.price, True)
+
+                        if not musinsa_sizes:
+                            await self.db.save_category_scan(
+                                goods_no=goods_no, category=category,
+                                brand=brand_slug, goods_name=goods_name,
+                                model_number=model, kream_matched=True,
+                                kream_product_id=row["product_id"],
+                                price=item.get("price", 0),
+                            )
+                            scanned_set.add(goods_no)
+                            continue
+
+                        opportunity = analyze_auto_scan_opportunity(
+                            kream_product=kream_product,
+                            musinsa_sizes=musinsa_sizes,
+                            musinsa_url=retail_product.url,
+                            musinsa_name=retail_product.name,
+                            musinsa_product_id=goods_no,
                         )
 
-                except Exception as e:
-                    result.errors.append(
-                        f"상세 처리 실패 ({goods_no}): {e}"
-                    )
-                    logger.error("카테고리 스캔 상품 처리 실패 (%s): %s", goods_no, e)
+                        await self.db.save_category_scan(
+                            goods_no=goods_no, category=category,
+                            brand=brand_slug, goods_name=goods_name,
+                            model_number=model, kream_matched=True,
+                            kream_product_id=row["product_id"],
+                            price=item.get("price", 0),
+                        )
+                        scanned_set.add(goods_no)
+
+                        if not opportunity:
+                            continue
+
+                        opportunity.source_prices = {"무신사": min(
+                            p for p, _ in musinsa_sizes.values()
+                        )}
+
+                        if (
+                            opportunity.best_confirmed_profit <= 0
+                            and opportunity.best_estimated_profit <= 0
+                        ):
+                            continue
+
+                        await self.db.upsert_retail_product(
+                            source="musinsa",
+                            product_id=goods_no,
+                            name=retail_product.name,
+                            model_number=model,
+                            brand=brand_slug,
+                            url=retail_product.url,
+                            image_url=retail_product.image_url,
+                        )
+
+                        # 시그널 판정
+                        signal = determine_signal(
+                            opportunity.best_confirmed_profit,
+                            opportunity.volume_7d,
+                        )
+                        opportunity.signal = signal
+
+                        result.opportunities.append(opportunity)
+
+                        # BUY 이상만 알림 전송
+                        if on_opportunity and signal in (
+                            Signal.STRONG_BUY, Signal.BUY,
+                        ):
+                            try:
+                                await on_opportunity(opportunity)
+                            except Exception as e:
+                                logger.error(
+                                    "카테고리 스캔 알림 콜백 실패: %s", e,
+                                )
+                        elif signal in (
+                            Signal.WATCH, Signal.NOT_RECOMMENDED,
+                        ):
+                            logger.debug(
+                                "알림 스킵: signal=%s profit=%s",
+                                signal.value,
+                                opportunity.best_confirmed_profit,
+                            )
+
+                    except Exception as e:
+                        result.errors.append(
+                            f"상세 처리 실패 ({goods_no}): {e}"
+                        )
+                        logger.error(
+                            "카테고리 스캔 상품 처리 실패 (%s): %s",
+                            goods_no, e,
+                        )
 
             # 진행 상황 DB 저장
             await self.db.update_category_progress(

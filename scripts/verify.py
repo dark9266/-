@@ -496,6 +496,23 @@ def verify_brand_filter():
         "브랜드 필터 카운트 누락",
     )
 
+    # 9-d) 병렬 상세 방문 구조 확인
+    check(
+        "카테고리스캔에 asyncio.gather 병렬 처리 존재",
+        "asyncio.gather" in src,
+        "병렬 상세 방문 로직 누락",
+    )
+    check(
+        "카테고리스캔에 Semaphore 동시 제한 존재",
+        "Semaphore" in src,
+        "동시 접속 제한 누락 (무신사 차단 위험)",
+    )
+    check(
+        "카테고리스캔에 return_exceptions=True 존재",
+        "return_exceptions=True" in src,
+        "gather 에러 격리 미적용",
+    )
+
 
 # ───────────────────────────────────────────
 # 메인
