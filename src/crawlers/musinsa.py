@@ -501,6 +501,21 @@ class MusinsaCrawler:
                         product_id, len(sizes),
                     )
 
+            # inventory API 실패 시 DOM 크로스체크로 품절 필터링
+            if sizes and not inventory_data:
+                dom_sizes = await self._extract_sizes(
+                    page, sale_price, original_price, discount_type, discount_rate,
+                )
+                if dom_sizes:
+                    dom_in_stock = {s.size for s in dom_sizes if s.in_stock}
+                    before = len(sizes)
+                    sizes = [s for s in sizes if s.size in dom_in_stock]
+                    if len(sizes) < before:
+                        logger.info(
+                            "DOM 품절 크로스체크: pid=%s %d→%d개",
+                            product_id, before, len(sizes),
+                        )
+
             # Tier 3: DOM 폴백 + 원인별 진단 로깅
             if not sizes:
                 self._log_size_parse_failure(
@@ -821,6 +836,10 @@ class MusinsaCrawler:
                     product_id, api_url.split("/")[-1], resp.status,
                 )
             if not resp or not resp.ok:
+                logger.debug(
+                    "재고 API 모두 실패: pid=%s status=%s → DOM 폴백 예정",
+                    product_id, resp.status if resp else "no_resp",
+                )
                 return None
             body = await resp.json()
             if isinstance(body, dict):
