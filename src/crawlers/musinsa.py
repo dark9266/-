@@ -503,40 +503,6 @@ class MusinsaCrawler:
                     page, api_id,
                 )
 
-            # 다중 옵션(Color+Size) 상품: 색상 선택값으로 재고 API 재시도
-            if not inventory_data:
-                color_values = self._get_color_option_values(
-                    direct_options or options_data,
-                )
-                if color_values:
-                    logger.debug(
-                        "다중 옵션 감지: pid=%s api_id=%s color=%s",
-                        product_id, api_id, color_values[:1],
-                    )
-                    inventory_data = await self._fetch_inventories_api(
-                        page, api_id,
-                        selected_option_values=color_values[:1],
-                    )
-                    if not inventory_data:
-                        # API 실패 → 페이지에서 색상 클릭하여 인터셉트 시도
-                        for sel in [
-                            "[class*='ColorChip']", "[class*='color-chip']",
-                            "[class*='ColorOption'] button",
-                            "[class*='optionColor']",
-                            "[class*='OptionValue'][class*='color']",
-                            "[role='option']",
-                        ]:
-                            chip = await page.query_selector(sel)
-                            if chip:
-                                await chip.click()
-                                await asyncio.sleep(1.5)
-                                if inventory_data:
-                                    logger.debug(
-                                        "색상 클릭 후 재고 인터셉트 성공: pid=%s",
-                                        product_id,
-                                    )
-                                break
-
             # Tier 1: 직접 API 호출 (가장 신뢰성 높음)
             if direct_options:
                 sizes = self._parse_sizes_from_api(
@@ -561,34 +527,26 @@ class MusinsaCrawler:
                         product_id, len(sizes),
                     )
 
-            # inventory API 실패 시 DOM 크로스체크로 품절 필터링
+            # ── 품절 후처리: inventory 검증 안 된 사이즈 → page.evaluate(fetch)로 확인 ──
             if sizes and not inventory_data:
-                is_multi = bool(
-                    self._get_color_option_values(direct_options or options_data)
+                inv = await self._fetch_inventory_via_page_eval(
+                    page, api_id, direct_options or options_data,
                 )
-                if is_multi:
-                    # 다중 옵션: 색상 클릭 → 사이즈 드롭다운 열기 → 재고 확인
-                    dom_in_stock = await self._check_multi_option_stock(page)
-                    if dom_in_stock:
-                        before = len(sizes)
-                        sizes = [s for s in sizes if s.size in dom_in_stock]
-                        logger.info(
-                            "다중옵션 DOM 품절 크로스체크: pid=%s %d→%d개",
-                            product_id, before, len(sizes),
+                if inv:
+                    inventory_data = inv
+                    # inventory로 재파싱
+                    opts = direct_options or options_data
+                    if opts:
+                        resized = self._parse_sizes_from_api(
+                            opts, inventory_data,
+                            sale_price, original_price, discount_type, discount_rate,
                         )
-                else:
-                    dom_sizes = await self._extract_sizes(
-                        page, sale_price, original_price, discount_type, discount_rate,
-                    )
-                    if dom_sizes:
-                        dom_in_stock_set = {s.size for s in dom_sizes if s.in_stock}
-                        before = len(sizes)
-                        sizes = [s for s in sizes if s.size in dom_in_stock_set]
-                        if len(sizes) < before:
+                        if resized:
                             logger.info(
-                                "DOM 품절 크로스체크: pid=%s %d→%d개",
-                                product_id, before, len(sizes),
+                                "품절 후처리(page.eval): pid=%s %d→%d개",
+                                product_id, len(sizes), len(resized),
                             )
+                            sizes = resized
 
             # Tier 3: DOM 폴백 + 원인별 진단 로깅
             if not sizes:
@@ -938,6 +896,73 @@ class MusinsaCrawler:
             logger.debug("재고 API 예외: pid=%s %s", product_id, e)
         return None
 
+    async def _fetch_inventory_via_page_eval(
+        self,
+        page: Page,
+        goods_no: str,
+        options_data: dict | None,
+    ) -> list | None:
+        """page.evaluate(fetch)로 브라우저 컨텍스트에서 재고 API 호출.
+
+        ctx.request.get()과 달리 브라우저의 쿠키/세션/CORS를 그대로 사용.
+        다중 옵션(Color+Size)이면 자동으로 selectedOptionValueNos 포함.
+        """
+        color_values = self._get_color_option_values(options_data)
+        qs = ""
+        if color_values:
+            qs = "?" + "&".join(
+                f"selectedOptionValueNos={v}" for v in color_values[:1]
+            )
+
+        urls = [
+            f"https://goods-detail.musinsa.com/api2/goods/"
+            f"{goods_no}/options/v2/prioritized-inventories{qs}",
+            f"https://goods-detail.musinsa.com/api2/goods/"
+            f"{goods_no}/prioritized-inventories{qs}",
+        ]
+        # selectedOptionValueNos 없이도 시도 (단일 옵션 상품)
+        if qs:
+            urls.extend([
+                f"https://goods-detail.musinsa.com/api2/goods/"
+                f"{goods_no}/options/v2/prioritized-inventories",
+                f"https://goods-detail.musinsa.com/api2/goods/"
+                f"{goods_no}/prioritized-inventories",
+            ])
+
+        for api_url in urls:
+            try:
+                result = await page.evaluate(
+                    """async (url) => {
+                        try {
+                            const resp = await fetch(url, {
+                                method: 'GET',
+                                credentials: 'include',
+                                headers: { 'Accept': 'application/json' }
+                            });
+                            if (!resp.ok) return { __error: resp.status };
+                            return await resp.json();
+                        } catch (e) {
+                            return { __error: e.message };
+                        }
+                    }""",
+                    api_url,
+                )
+                if isinstance(result, dict) and "__error" not in result:
+                    data = result.get("data", [])
+                    if isinstance(data, list) and data:
+                        logger.info(
+                            "page.eval 재고 API 성공: goods_no=%s %d개 url=%s",
+                            goods_no, len(data),
+                            api_url.split("/")[-1][:60],
+                        )
+                        return data
+                elif isinstance(result, list) and result:
+                    return result
+            except Exception:
+                continue
+        logger.debug("page.eval 재고 API 모두 실패: goods_no=%s", goods_no)
+        return None
+
     @staticmethod
     def _get_color_option_values(options_data: dict | None) -> list[int]:
         """다중 옵션(Color+Size) 상품에서 첫 번째 색상 optionValue no 추출."""
@@ -1173,97 +1198,6 @@ class MusinsaCrawler:
             sale_price = original_price
 
         return original_price, sale_price, discount_type, discount_rate
-
-    async def _check_multi_option_stock(self, page: Page) -> set[str]:
-        """다중 옵션(Color+Size) 상품의 DOM에서 재고 있는 사이즈명 반환.
-
-        색상 칩 클릭 → 사이즈 드롭다운 열기 → 각 옵션의 품절 상태 확인.
-        """
-        in_stock: set[str] = set()
-        try:
-            # 1단계: 색상 칩 클릭 (이미 선택돼 있을 수 있지만 확실히)
-            for sel in [
-                "[class*='ColorChip'] button", "[class*='ColorChip'] a",
-                "[class*='color-chip']", "[class*='ColorOption'] button",
-                "[class*='optionColor']",
-            ]:
-                chip = await page.query_selector(sel)
-                if chip:
-                    await chip.click()
-                    await asyncio.sleep(0.5)
-                    break
-
-            # 2단계: 사이즈 드롭다운 트리거 클릭
-            # 2단 옵션에서 사이즈는 두 번째 OptionItem
-            size_trigger = None
-            for sel in [
-                "button:has-text('사이즈')", "button:has-text('SIZE')",
-                "button:has-text('S ')",
-                # nth-child로 두 번째 옵션 아이템 선택
-                "[class*='OptionItem']:nth-child(2)",
-                "[class*='option_select']:nth-child(2)",
-                "[class*='ProductOption']:nth-child(2)",
-            ]:
-                el = await page.query_selector(sel)
-                if el:
-                    size_trigger = el
-                    break
-
-            # 첫 번째 트리거가 색상이면 두 번째를 찾기
-            if not size_trigger:
-                triggers = await page.query_selector_all(
-                    "[class*='OptionItem'], [class*='option_select'], "
-                    "[class*='FilterOption'], [class*='ProductOption']"
-                )
-                if len(triggers) >= 2:
-                    size_trigger = triggers[1]  # 두 번째 = 사이즈
-
-            if size_trigger:
-                await size_trigger.click()
-                await asyncio.sleep(0.5)
-
-            # 3단계: 사이즈 옵션 항목 읽기
-            for item_sel in [
-                "[role='option']", "[role='listbox'] li",
-                "[class*='OptionValue']", "[class*='option_value']",
-                "[class*='FilterValue']",
-            ]:
-                items = await page.query_selector_all(item_sel)
-                if len(items) < 2:
-                    continue
-
-                found_sizes = False
-                for item in items:
-                    text = (await item.inner_text()).strip()
-                    if not text or len(text) > 15:
-                        continue
-                    # 숫자(사이즈)가 아닌 항목(색상명 등) 건너뜀
-                    size_text = re.sub(r"\s*[\(\[].*?[\)\]]", "", text).strip()
-                    if not re.match(r"\d{2,3}", size_text):
-                        continue
-                    found_sizes = True
-
-                    classes = await item.get_attribute("class") or ""
-                    aria_disabled = await item.get_attribute("aria-disabled")
-                    is_available = (
-                        "sold" not in classes.lower()
-                        and "disabled" not in classes.lower()
-                        and aria_disabled != "true"
-                        and "품절" not in text
-                        and "재입고" not in text
-                    )
-                    if is_available:
-                        in_stock.add(size_text)
-                    else:
-                        logger.debug("다중옵션 DOM 품절: %s", size_text)
-
-                if found_sizes:
-                    break
-
-        except Exception as e:
-            logger.debug("다중옵션 DOM 재고 체크 실패: %s", e)
-
-        return in_stock
 
     async def _extract_sizes(
         self,
