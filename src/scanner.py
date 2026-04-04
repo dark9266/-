@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import re
 from datetime import datetime, timedelta
 
 from src.config import settings
@@ -1465,6 +1466,10 @@ class Scanner:
 
         seen_models: set[str] = set()
 
+        # 크림 브랜드 셋 로드 (1회) — 브랜드 필터용
+        kream_brand_slugs = await self.db.get_all_kream_brand_slugs()
+        logger.info("크림 브랜드 셋 로드: %d개", len(kream_brand_slugs))
+
         for category in categories:
             # 스크롤+인터셉트로 전체 리스팅 수집 (한 번에)
             if on_progress:
@@ -1513,6 +1518,13 @@ class Scanner:
 
                 brand_slug = (item.get("brand") or "").strip().lower()
 
+                # Layer 1.5: 브랜드 필터 (크림 DB에 없는 브랜드 스킵)
+                brand_normalized = re.sub(r"[^a-z0-9]", "", brand_slug)
+                if brand_normalized and brand_normalized not in kream_brand_slugs:
+                    result.brand_filtered += 1
+                    scanned_set.add(goods_no)
+                    continue
+
                 # Layer 2: 상품명에서 모델번호 추출
                 goods_name = item.get("goodsName", "")
                 name_model = extract_model_from_name(goods_name)
@@ -1536,10 +1548,10 @@ class Scanner:
 
             logger.info(
                 "카테고리 %s 필터 결과: 총 %d → 품절 %d / 이미스캔 %d / "
-                "이름매칭 %d / 이름미매칭 %d / 상세필요 %d",
+                "브랜드필터 %d / 이름매칭 %d / 이름미매칭 %d / 상세필요 %d",
                 category, len(listing),
                 result.sold_out_skipped, result.already_scanned,
-                result.name_matched,
+                result.brand_filtered, result.name_matched,
                 result.name_no_match, len(detail_queue),
             )
 
@@ -1547,7 +1559,8 @@ class Scanner:
                 await on_progress(
                     f"카테고리 [{category}] 필터 완료\n"
                     f"• 리스팅 {len(listing)}건 → "
-                    f"품절 {result.sold_out_skipped} / 이미스캔 {result.already_scanned}\n"
+                    f"품절 {result.sold_out_skipped} / 이미스캔 {result.already_scanned} / "
+                    f"브랜드필터 {result.brand_filtered}\n"
                     f"• 이름매칭 {result.name_matched}건 + "
                     f"상세방문 대기 {len(detail_queue)}건"
                 )
@@ -1737,13 +1750,14 @@ class Scanner:
         elapsed = (result.finished_at - result.started_at).total_seconds()
         logger.info(
             "=== 카테고리 스캔 완료 (%.0f초) | 리스팅 %d → "
-            "품절 %d / 이미스캔 %d / "
+            "품절 %d / 이미스캔 %d / 브랜드필터 %d / "
             "이름매칭 %d / 상세 %d → DB매칭 %d → "
             "수익기회 %d (확정 %d / 예상 %d) | 에러 %d ===",
             elapsed,
             result.listing_fetched,
             result.sold_out_skipped,
             result.already_scanned,
+            result.brand_filtered,
             result.name_matched,
             result.detail_fetched,
             result.detail_matched,

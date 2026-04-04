@@ -441,6 +441,63 @@ def verify_quick_test_data_flow():
 
 
 # ───────────────────────────────────────────
+# [9] 카테고리스캔 브랜드 필터 검증
+# ───────────────────────────────────────────
+def verify_brand_filter():
+    print("\n[9] 카테고리스캔 브랜드 필터 검증")
+    import re
+
+    # 9-a) get_all_kream_brand_slugs 메서드 존재
+    from src.models.database import Database
+    check(
+        "get_all_kream_brand_slugs 메서드 존재",
+        hasattr(Database, "get_all_kream_brand_slugs"),
+        "database.py에 메서드 누락",
+    )
+
+    # 9-b) 브랜드 정규화 로직 검증
+    def normalize_brand(b: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", b.lower())
+
+    check(
+        "정규화: 'new balance' → 'newbalance'",
+        normalize_brand("new balance") == "newbalance",
+        f"got {normalize_brand('new balance')}",
+    )
+    arcteryx_result = normalize_brand("arc'teryx")
+    check(
+        "정규화: 'arc'teryx' → 'arcteryx'",
+        arcteryx_result == "arcteryx",
+        f"got {arcteryx_result}",
+    )
+    check(
+        "정규화: 'the north face' → 'thenorthface'",
+        normalize_brand("the north face") == "thenorthface",
+        f"got {normalize_brand('the north face')}",
+    )
+    check(
+        "정규화: 'carhartt wip' → 'carhartwip' (동일 slug)",
+        normalize_brand("carhartt wip") == "carharttwip",
+        f"got {normalize_brand('carhartt wip')}",
+    )
+
+    # 9-c) scanner.py에 브랜드 필터 로직 존재
+    src = inspect.getsource(
+        __import__("src.scanner", fromlist=["Scanner"]).Scanner.run_category_scan
+    )
+    check(
+        "카테고리스캔에 kream_brand_slugs 로드 존재",
+        "kream_brand_slugs" in src,
+        "브랜드 셋 로드 로직 누락",
+    )
+    check(
+        "카테고리스캔에 brand_filtered 카운트 존재",
+        "brand_filtered" in src,
+        "브랜드 필터 카운트 누락",
+    )
+
+
+# ───────────────────────────────────────────
 # 메인
 # ───────────────────────────────────────────
 def main():
@@ -456,6 +513,7 @@ def main():
     verify_collab_matching()
     verify_chrome_ssh_fallback()
     verify_quick_test_data_flow()
+    verify_brand_filter()
 
     print("\n" + "=" * 50)
     if FAIL == 0:

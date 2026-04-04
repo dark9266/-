@@ -535,7 +535,8 @@ def format_category_scan_summary(
         value=(
             f"**리스팅 조회:** {listing_fetched}건 ({pages_scanned}페이지)\n"
             f"**품절 스킵:** {sold_out_skipped}건\n"
-            f"**이미 스캔:** {already_scanned}건"
+            f"**이미 스캔:** {already_scanned}건\n"
+            f"**브랜드 필터:** {brand_filtered}건"
         ),
         inline=True,
     )

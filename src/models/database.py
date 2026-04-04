@@ -1,5 +1,7 @@
 """SQLite 데이터베이스 매니저."""
 
+import re
+
 import aiosqlite
 
 from src.config import settings
@@ -401,6 +403,23 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [row["brand"] for row in rows]
+
+    async def get_all_kream_brand_slugs(self) -> set[str]:
+        """크림 DB의 모든 브랜드를 정규화된 slug 셋으로 반환.
+
+        공백/하이픈/아포스트로피를 제거하여 무신사 brand slug와 비교 가능하게 한다.
+        예: "new balance" → "newbalance", "arc'teryx" → "arcteryx"
+        """
+        cursor = await self.db.execute(
+            "SELECT DISTINCT LOWER(brand) FROM kream_products WHERE brand != ''"
+        )
+        rows = await cursor.fetchall()
+        slugs = set()
+        for row in rows:
+            slug = re.sub(r"[^a-z0-9]", "", row[0])
+            if slug:
+                slugs.add(slug)
+        return slugs
 
     async def get_brands_min_count(self, min_count: int = 10) -> list[str]:
         """상품 수가 min_count 이상인 모든 브랜드 반환 (상품 수 내림차순)."""
