@@ -176,14 +176,18 @@ class KreamBot(commands.Bot):
                 )
 
 
-    async def send_auto_scan_alert(self, opportunity) -> None:
-        """자동스캔 수익 알림 전송 (중복 방지 적용)."""
+    async def send_auto_scan_alert(self, opportunity) -> bool:
+        """자동스캔 수익 알림 전송 (중복 방지 적용).
+
+        Returns:
+            True면 실제 전송됨, False면 스킵 또는 실패.
+        """
         kream_product = opportunity.kream_product
         product_name = kream_product.name[:30] if kream_product else "?"
 
         if not settings.channel_profit_alert:
             logger.warning("매수알림 채널 미설정: %s", product_name)
-            return
+            return False
 
         # 중복 알림 체크
         best_profit = max(
@@ -199,14 +203,14 @@ class KreamBot(commands.Bot):
         )
         if not should_send:
             logger.debug("중복 알림 스킵: %s", product_name)
-            return
+            return False
 
         channel = self.get_channel(settings.channel_profit_alert)
         if not channel:
             logger.warning(
                 "매수알림 채널 찾기 실패: id=%s", settings.channel_profit_alert,
             )
-            return
+            return False
 
         try:
             embed = format_auto_scan_alert(opportunity)
@@ -214,7 +218,7 @@ class KreamBot(commands.Bot):
             logger.info("매수알림 전송: %s (수익 %+d원)", product_name, best_profit)
         except Exception as e:
             logger.error("매수알림 전송 실패: %s — %s", product_name, e)
-            return
+            return False
 
         await self.db.save_alert(
             kream_product_id=kream_product.product_id,
@@ -223,6 +227,7 @@ class KreamBot(commands.Bot):
             signal="확정" if opportunity.best_confirmed_roi >= 5 else "예상",
             message_id=str(msg.id),
         )
+        return True
 
 
 # --- 봇 인스턴스 및 명령어 등록 ---
@@ -546,8 +551,8 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
                 if op.signal not in (Signal.STRONG_BUY, Signal.BUY):
                     continue
                 try:
-                    await bot.send_auto_scan_alert(op)
-                    sent_count += 1
+                    if await bot.send_auto_scan_alert(op):
+                        sent_count += 1
                 except Exception as e:
                     logger.error("역방향 개별 알림 실패: %s", e)
 
