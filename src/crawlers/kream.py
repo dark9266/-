@@ -165,7 +165,7 @@ class KreamCrawler:
     - get_sell_prices() / get_buy_prices(): 사이즈별 시세
     - get_trade_history(): 체결 내역
     - get_full_product_info(): 전체 정보 한번에 수집
-    - ensure_login(): CDP 로그인 + 인증 쿠키 확보
+    - ensure_login(): (비활성 — pinia 전용 모드)
     """
 
     def __init__(self):
@@ -220,10 +220,10 @@ class KreamCrawler:
             self._logged_in = False
             logger.info("크림 크롤러 세션 종료")
 
-    # ─── 로그인 (CDP 제거 — pinia 전용 모드) ─────────────
+    # ─── 로그인 (pinia 전용 모드) ────────────────────────
 
     async def ensure_login(self) -> bool:
-        """Pinia 전용 모드 — CDP 로그인 비활성화.
+        """Pinia 전용 모드 — 로그인 비활성.
 
         Returns: False (인증 불필요, pinia 데이터로 충분).
         """

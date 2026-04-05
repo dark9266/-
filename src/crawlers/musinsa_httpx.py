@@ -1,7 +1,6 @@
 """무신사(Musinsa) httpx 기반 크롤러.
 
-Playwright/Chrome 의존성 완전 제거.
-세션 쿠키는 data/musinsa_session.json에서 로드 (Playwright storage_state 호환).
+세션 쿠키는 data/musinsa_session.json에서 로드.
 """
 
 import asyncio

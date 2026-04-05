@@ -1,94 +1,74 @@
-"""ABC마트 크롤러 단위 테스트 — HTML 파싱 순수 함수."""
+"""ABC마트 크롤러 단위 테스트 — JSON API 파싱 순수 함수."""
 
 from src.crawlers.abcmart import (
     AbcMartCrawler,
-    _extract_model_number,
-    _parse_products_from_html,
-    _parse_schema_org,
+    _build_model_number,
+    _parse_option_inline,
 )
 
 
-class TestExtractModelNumber:
-    """모델번호 추출 테스트."""
+class TestBuildModelNumber:
+    """모델번호 조합 테스트."""
 
-    def test_hyphen_pattern(self):
-        """하이픈 포함 모델번호 추출."""
-        assert _extract_model_number("나이키 덩크 로우 DQ8423-100") == "DQ8423-100"
+    def test_style_with_3digit_color(self):
+        """STYLE_INFO + 3자리 COLOR_ID → 하이픈 조합."""
+        assert _build_model_number("IB7746", "001") == "IB7746-001"
 
-    def test_alpha_num_pattern(self):
-        """알파벳+숫자 모델번호 추출."""
-        assert _extract_model_number("아디다스 삼바 IG1025 화이트") == "IG1025"
+    def test_style_with_rgb_color(self):
+        """COLOR_ID가 RGB 값이면 style_info만 반환."""
+        assert _build_model_number("IB7746", "FF0000") == "IB7746"
 
-    def test_no_model(self):
-        """모델번호 없는 문자열 → 빈 문자열."""
-        assert _extract_model_number("일반 상품 이름만 있음") == ""
+    def test_style_only(self):
+        """COLOR_ID 없으면 style_info만 반환."""
+        assert _build_model_number("DQ8423", "") == "DQ8423"
 
+    def test_empty_style(self):
+        """style_info가 빈 문자열이면 빈 문자열."""
+        assert _build_model_number("", "001") == ""
 
-class TestParseSchemaOrg:
-    """schema.org JSON-LD 파싱 테스트."""
-
-    def test_parse_product(self):
-        """Product 타입 JSON-LD 파싱."""
-        html = '''
-        <script type="application/ld+json">
-        {"@type": "Product", "name": "나이키 에어포스", "brand": {"name": "Nike"},
-         "offers": {"price": "119000"}}
-        </script>
-        '''
-        data = _parse_schema_org(html)
-        assert data["name"] == "나이키 에어포스"
-        assert data["offers"]["price"] == "119000"
-
-    def test_parse_no_product(self):
-        """Product가 아닌 JSON-LD → 빈 dict."""
-        html = '''
-        <script type="application/ld+json">
-        {"@type": "Organization", "name": "ABC마트"}
-        </script>
-        '''
-        assert _parse_schema_org(html) == {}
+    def test_color_id_non_numeric(self):
+        """COLOR_ID가 숫자 3자리가 아니면 style_info만."""
+        assert _build_model_number("AB1234", "AB") == "AB1234"
 
 
-class TestParseProductsFromHtml:
-    """검색 결과 HTML 파싱 테스트."""
+class TestParseOptionInline:
+    """PRDT_OPTION_INLINE 파싱 테스트."""
 
-    def test_parse_item_list(self):
-        """schema.org ItemList에서 상품 추출."""
-        html = '''
-        <script type="application/ld+json">
-        {"@type": "ItemList", "itemListElement": [
-            {"item": {"@type": "Product", "name": "덩크 로우 DQ8423-100",
-             "url": "https://abcmart.a-rt.com/product/12345",
-             "offers": {"price": "139000"}, "brand": {"name": "Nike"}}}
-        ]}
-        </script>
-        '''
-        results = _parse_products_from_html(html)
-        assert len(results) == 1
-        assert results[0]["product_id"] == "12345"
-        assert results[0]["model_number"] == "DQ8423-100"
-        assert results[0]["price"] == 139000
+    def test_normal_inline(self):
+        """정상 인라인 파싱."""
+        inline = "240,168,10001/245,59,10001/250,0,10001/"
+        sizes = _parse_option_inline(inline)
+        assert len(sizes) == 3
+        assert sizes[0] == {"size": "240", "stock": 168, "in_stock": True}
+        assert sizes[1] == {"size": "245", "stock": 59, "in_stock": True}
+        assert sizes[2] == {"size": "250", "stock": 0, "in_stock": False}
 
-    def test_parse_empty_html(self):
-        """상품 없는 HTML → 빈 리스트."""
-        assert _parse_products_from_html("<html><body></body></html>") == []
+    def test_empty_inline(self):
+        """빈 문자열 → 빈 리스트."""
+        assert _parse_option_inline("") == []
+
+    def test_none_inline(self):
+        """None → 빈 리스트."""
+        assert _parse_option_inline(None) == []
+
+    def test_single_size(self):
+        """사이즈 1개."""
+        sizes = _parse_option_inline("270,5,10002")
+        assert len(sizes) == 1
+        assert sizes[0]["size"] == "270"
+        assert sizes[0]["stock"] == 5
+        assert sizes[0]["in_stock"] is True
+
+    def test_trailing_slash(self):
+        """끝에 슬래시만 있으면 무시."""
+        sizes = _parse_option_inline("/")
+        assert sizes == []
 
 
-class TestAbcMartParseSizes:
-    """사이즈 파싱 테스트."""
+class TestAbcMartCrawlerInit:
+    """크롤러 초기화 테스트."""
 
-    def setup_method(self):
-        self.crawler = AbcMartCrawler()
-
-    def test_parse_sold_out_excluded(self):
-        """품절 사이즈 제외."""
-        html = '''
-        <option value="1" data-size="260" data-stock="5">260</option>
-        <option value="2" data-size="270" data-stock="0">270 (품절)</option>
-        <option value="3" data-size="280" data-stock="3">280</option>
-        '''
-        sizes = self.crawler._parse_sizes_from_html(html, 139000)
-        assert len(sizes) == 2
-        assert sizes[0].size == "260"
-        assert sizes[1].size == "280"
-        assert all(s.in_stock for s in sizes)
+    def test_init(self):
+        """인스턴스 생성."""
+        crawler = AbcMartCrawler()
+        assert crawler._client is None

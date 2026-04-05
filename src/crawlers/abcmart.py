@@ -1,11 +1,9 @@
 """ABC마트 (a-rt.com) 크롤러.
 
-ABC마트 온라인몰(a-rt.com) 상품 페이지 HTML 파싱으로 상품 정보를 수집한다.
-검색: a-rt.com/product?keyword={query} HTML 파싱
-상세: a-rt.com/product/{goodsCd} HTML 파싱 (schema.org JSON-LD + 사이즈 옵션)
+검색: /display/search-word/result-total/list (JSON API, channel=10002 for GrandStage)
+상세: /product/info?prdtNo={id} (JSON API, 사이즈/재고/가격 포함)
 """
 
-import json
 import random
 import re
 from datetime import datetime
@@ -20,8 +18,12 @@ from src.utils.rate_limiter import AsyncRateLimiter
 logger = setup_logger("abcmart_crawler")
 
 BASE_URL = "https://abcmart.a-rt.com"
-SEARCH_URL = BASE_URL + "/product?keyword={query}"
-PRODUCT_URL = BASE_URL + "/product/{goods_cd}"
+SEARCH_URL = BASE_URL + "/display/search-word/result-total/list"
+DETAIL_URL = BASE_URL + "/product/info"
+PRODUCT_PAGE_URL = BASE_URL + "/product/new?prdtNo={prdt_no}"
+
+# GrandStage 채널 (신발/스니커즈 위주)
+GS_CHANNEL = "10002"
 
 USER_AGENTS = [
     (
@@ -39,103 +41,41 @@ def _random_ua() -> str:
     return random.choice(USER_AGENTS)
 
 
-def _extract_model_number(name: str) -> str:
-    """상품명에서 모델번호 추출.
+def _build_model_number(style_info: str, color_id: str) -> str:
+    """STYLE_INFO + COLOR_ID에서 모델번호 조합.
 
-    패턴: "나이키 덩크 로우 DQ8423-100" 또는 "아디다스 삼바 IG1025"
+    style_info: "IB7746", color_id: "001" → "IB7746-001"
+    color_id가 없거나 RGB 값이면 style_info만 반환.
     """
-    # 하이픈 포함 패턴 (DQ8423-100)
-    m = re.search(r'\b([A-Z]{1,5}\d{3,5}[-]\d{2,4})\b', name.upper())
-    if m:
-        return m.group(1)
-
-    # 알파벳+숫자 혼합 패턴 (IG1025, U7408PL)
-    m = re.search(r'\b([A-Z]{1,3}\d{3,5}[A-Z]{0,3})\b', name.upper())
-    if m:
-        return m.group(1)
-
-    return ""
+    if not style_info:
+        return ""
+    # COLOR_ID가 3자리 숫자면 모델번호 조합
+    if color_id and re.match(r"^\d{3}$", color_id):
+        return f"{style_info}-{color_id}"
+    return style_info
 
 
-def _parse_schema_org(html: str) -> dict:
-    """schema.org JSON-LD에서 상품 정보 추출."""
-    try:
-        scripts = re.findall(
-            r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL,
-        )
-        for script in scripts:
-            data = json.loads(script)
-            if data.get("@type") == "Product":
-                return data
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
-    return {}
+def _parse_option_inline(option_inline: str) -> list[dict]:
+    """PRDT_OPTION_INLINE 파싱.
 
-
-def _parse_products_from_html(html: str) -> list[dict]:
-    """검색 결과 HTML에서 상품 목록 파싱.
-
-    ABC마트는 JS 렌더링이 많아 서버 렌더링된 부분만 추출.
-    schema.org JSON-LD 또는 상품 카드 HTML에서 파싱.
+    형식: "240,168,10001/245,59,10001/250,0,10001/"
+    → [{"size": "240", "stock": 168, "channel": "10001"}, ...]
     """
-    results = []
-
-    # 방법 1: schema.org ItemList
-    try:
-        scripts = re.findall(
-            r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL,
-        )
-        for script in scripts:
-            data = json.loads(script)
-            if data.get("@type") == "ItemList":
-                for item in data.get("itemListElement", []):
-                    product = item.get("item", {})
-                    if product.get("@type") != "Product":
-                        continue
-
-                    name = product.get("name", "")
-                    offers = product.get("offers", {})
-                    price = int(offers.get("price", 0))
-                    url = product.get("url", "")
-                    goods_cd = re.search(r'/product/(\d+)', url)
-
-                    results.append({
-                        "product_id": goods_cd.group(1) if goods_cd else "",
-                        "name": name,
-                        "brand": product.get("brand", {}).get("name", ""),
-                        "model_number": _extract_model_number(name),
-                        "price": price,
-                        "original_price": price,
-                        "url": url,
-                        "image_url": product.get("image", ""),
-                        "is_sold_out": False,
-                    })
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
-
-    # 방법 2: 상품 카드 HTML 파싱 (폴백)
-    if not results:
-        cards = re.findall(
-            r'<a[^>]*href="(/product/(\d+))"[^>]*class="[^"]*item-link[^"]*"[^>]*>'
-            r'.*?</a>',
-            html, re.DOTALL,
-        )
-        for url_path, goods_cd in cards:
-            results.append({
-                "product_id": goods_cd,
-                "name": "",
-                "brand": "",
-                "model_number": "",
-                "price": 0,
-                "original_price": 0,
-                "url": BASE_URL + url_path,
-                "image_url": "",
-                "is_sold_out": False,
+    sizes = []
+    if not option_inline:
+        return sizes
+    for part in option_inline.strip().split("/"):
+        if not part:
+            continue
+        fields = part.split(",")
+        if len(fields) >= 2:
+            stock = int(fields[1]) if fields[1].isdigit() else 0
+            sizes.append({
+                "size": fields[0],
+                "stock": stock,
+                "in_stock": stock > 0,
             })
-
-    return results
+    return sizes
 
 
 class AbcMartCrawler:
@@ -148,7 +88,11 @@ class AbcMartCrawler:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                headers={"User-Agent": _random_ua()},
+                headers={
+                    "User-Agent": _random_ua(),
+                    "Accept": "application/json, text/plain, */*",
+                    "X-Requested-With": "XMLHttpRequest",
+                },
                 timeout=15,
                 follow_redirects=True,
                 verify=False,
@@ -156,139 +100,138 @@ class AbcMartCrawler:
         return self._client
 
     async def search_products(self, keyword: str, limit: int = 30) -> list[dict]:
-        """ABC마트 검색.
+        """ABC마트 GrandStage 채널 검색.
 
         Returns:
             [{"product_id": str, "name": str, "brand": str, "model_number": str,
               "price": int, "original_price": int, "url": str, ...}, ...]
         """
         client = await self._get_client()
-        url = SEARCH_URL.format(query=keyword.replace(" ", "+"))
 
         try:
             async with self._rate_limiter.acquire():
-                resp = await client.get(url, headers={"User-Agent": _random_ua()})
+                resp = await client.get(SEARCH_URL, params={
+                    "searchWord": keyword,
+                    "channel": GS_CHANNEL,
+                    "page": "1",
+                    "perPage": str(limit),
+                    "tabGubun": "total",
+                }, headers={"User-Agent": _random_ua()})
+
             if resp.status_code != 200:
                 logger.warning("ABC마트 검색 실패 (HTTP %d): %s", resp.status_code, keyword)
                 return []
 
-            results = _parse_products_from_html(resp.text)
-            logger.info("ABC마트 검색 '%s': %d건", keyword, len(results))
-            return results[:limit]
+            body = resp.json()
+            products = body.get("SEARCH", [])
 
         except Exception as e:
             logger.error("ABC마트 검색 에러 (%s): %s", keyword, e)
             return []
 
+        results = []
+        for p in products:
+            prdt_no = str(p.get("PRDT_NO", ""))
+            name = p.get("PRDT_NAME", "")
+            style = p.get("STYLE_INFO", "")
+            color = p.get("COLOR_ID", "")
+            model = _build_model_number(style, color)
+            sell_price = int(p.get("PRDT_DC_PRICE", 0) or 0)
+            normal_price = int(p.get("NRMAL_AMT", 0) or 0)
+            is_sold_out = str(p.get("SOLD_OUT", "")).lower() == "y"
+
+            results.append({
+                "product_id": prdt_no,
+                "name": name,
+                "brand": p.get("BRAND_NAME", ""),
+                "model_number": model,
+                "price": sell_price or normal_price,
+                "original_price": normal_price,
+                "url": PRODUCT_PAGE_URL.format(prdt_no=prdt_no),
+                "image_url": p.get("PRDT_IMAGE_URL", ""),
+                "is_sold_out": is_sold_out,
+            })
+
+        logger.info("ABC마트 검색 '%s': %d건", keyword, len(results))
+        return results[:limit]
+
     async def get_product_detail(self, product_id: str) -> RetailProduct | None:
-        """상품 상세 페이지에서 사이즈별 가격/재고 수집."""
+        """상품 상세 API에서 사이즈별 가격/재고 수집."""
         client = await self._get_client()
-        url = PRODUCT_URL.format(goods_cd=product_id)
 
         try:
             async with self._rate_limiter.acquire():
-                resp = await client.get(url, headers={"User-Agent": _random_ua()})
+                resp = await client.get(
+                    DETAIL_URL, params={"prdtNo": product_id},
+                    headers={"User-Agent": _random_ua()},
+                )
+
             if resp.status_code != 200:
                 logger.warning(
                     "ABC마트 상품 조회 실패 (HTTP %d): %s", resp.status_code, product_id,
                 )
                 return None
 
-            html = resp.text
-            schema = _parse_schema_org(html)
-
-            name = schema.get("name", "")
-            brand_obj = schema.get("brand", {})
-            brand = brand_obj.get("name", "") if isinstance(brand_obj, dict) else ""
-            image = schema.get("image", "")
-
-            offers = schema.get("offers", {})
-            sale_price = int(offers.get("price", 0))
-            availability = offers.get("availability", "")
-            if "OutOfStock" in availability:
-                logger.info("ABC마트 품절 상품: %s", product_id)
-                return None
-
-            # 사이즈 파싱: 옵션 select 태그 또는 data 속성
-            sizes = self._parse_sizes_from_html(html, sale_price)
-
-            model_number = _extract_model_number(name)
-
-            product = RetailProduct(
-                source="abcmart",
-                product_id=product_id,
-                name=name,
-                model_number=model_number,
-                brand=brand,
-                url=url,
-                image_url=image if isinstance(image, str) else "",
-                sizes=sizes,
-                fetched_at=datetime.now(),
-            )
-
-            logger.info(
-                "ABC마트 상품: %s | 모델: %s | 가격: %s원 | 사이즈: %d개",
-                name, model_number,
-                f"{sale_price:,}" if sale_price else "?",
-                len(sizes),
-            )
-            return product
+            data = resp.json()
 
         except Exception as e:
             logger.error("ABC마트 상품 조회 에러 (%s): %s", product_id, e)
             return None
 
-    def _parse_sizes_from_html(self, html: str, sale_price: int) -> list[RetailSizeInfo]:
-        """HTML에서 사이즈 옵션 파싱."""
-        sizes: list[RetailSizeInfo] = []
-        seen: set[str] = set()
+        # 기본 정보
+        name = data.get("prdtName", "")
+        style = data.get("styleInfo", "")
+        color = data.get("prdtColorInfo", "")
+        model_number = _build_model_number(style, color)
+        brand_info = data.get("brand", {}) or {}
+        brand = brand_info.get("brandName", "")
 
-        # 패턴 1: select option 태그 (사이즈 선택)
-        options = re.findall(
-            r'<option[^>]*value="([^"]*)"[^>]*data-size="([^"]*)"[^>]*'
-            r'(?:data-stock="([^"]*)")?[^>]*>([^<]*)</option>',
-            html,
-        )
-        for value, size, stock, label in options:
-            if not size or size in seen:
-                continue
-            seen.add(size)
+        # 가격
+        price_info = data.get("productPrice", {}) or {}
+        normal_price = int(price_info.get("normalAmt", 0) or 0)
+        sell_price = int(price_info.get("sellAmt", 0) or 0) or normal_price
 
-            # 품절 체크
-            is_sold_out = stock == "0" or "품절" in label
-            if is_sold_out:
+        # 사이즈/재고
+        options = data.get("productOption", []) or []
+        sizes = []
+        for opt in options:
+            size_val = str(opt.get("optnName", ""))
+            orderable = int(opt.get("orderPsbltQty", 0) or 0)
+            if not size_val or orderable <= 0:
                 continue
+
+            discount_rate = 0.0
+            if normal_price and sell_price and normal_price > sell_price:
+                discount_rate = round(1 - sell_price / normal_price, 3)
 
             sizes.append(RetailSizeInfo(
-                size=size,
-                price=sale_price,
-                original_price=sale_price,
+                size=size_val,
+                price=sell_price,
+                original_price=normal_price,
                 in_stock=True,
-                discount_type="",
-                discount_rate=0.0,
+                discount_type="할인" if discount_rate > 0 else "",
+                discount_rate=discount_rate,
             ))
 
-        # 패턴 2: 사이즈 버튼 (대체 파싱)
-        if not sizes:
-            buttons = re.findall(
-                r'class="[^"]*size[^"]*(?:sold-out|disabled)?[^"]*"[^>]*'
-                r'data-size="([^"]*)"',
-                html,
-            )
-            for size in buttons:
-                if not size or size in seen:
-                    continue
-                seen.add(size)
-                sizes.append(RetailSizeInfo(
-                    size=size,
-                    price=sale_price,
-                    original_price=sale_price,
-                    in_stock=True,
-                    discount_type="",
-                    discount_rate=0.0,
-                ))
+        product = RetailProduct(
+            source="abcmart",
+            product_id=product_id,
+            name=name,
+            model_number=model_number,
+            brand=brand,
+            url=PRODUCT_PAGE_URL.format(prdt_no=product_id),
+            image_url="",
+            sizes=sizes,
+            fetched_at=datetime.now(),
+        )
 
-        return sizes
+        logger.info(
+            "ABC마트 상품: %s | 모델: %s | 가격: %s원 | 사이즈: %d개",
+            name, model_number,
+            f"{sell_price:,}" if sell_price else "?",
+            len(sizes),
+        )
+        return product
 
     async def disconnect(self) -> None:
         """클라이언트 종료."""

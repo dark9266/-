@@ -5,21 +5,21 @@
 상세: www.29cm.co.kr/products/{id} HTML 파싱 (schema.org + RSC payload)
 """
 
-import asyncio
 import json
 import random
 import re
 from datetime import datetime
 
-import aiohttp
+import httpx
 
 from src.config import settings
 from src.models.product import RetailProduct, RetailSizeInfo
 from src.utils.logging import setup_logger
+from src.utils.rate_limiter import AsyncRateLimiter
 
 logger = setup_logger("29cm_crawler")
 
-SEARCH_API = "https://search-api.29cm.co.kr/api/v4/products/search"
+SEARCH_API = "https://search-api.29cm.co.kr/api/v4/products"
 PRODUCT_URL = "https://www.29cm.co.kr/products/{item_no}"
 IMAGE_CDN = "https://img.29cm.co.kr"
 
@@ -43,11 +43,6 @@ def _random_ua() -> str:
     return random.choice(USER_AGENTS)
 
 
-async def _random_delay() -> None:
-    delay = random.uniform(settings.request_delay_min, settings.request_delay_max)
-    await asyncio.sleep(delay)
-
-
 def _extract_model_number(item_name: str) -> str:
     """상품명에서 모델번호 추출.
 
@@ -64,15 +59,17 @@ class TwentyNineCmCrawler:
     """29CM 크롤러."""
 
     def __init__(self):
-        self._session: aiohttp.ClientSession | None = None
+        self._client: httpx.AsyncClient | None = None
+        self._rate_limiter = AsyncRateLimiter(max_concurrent=3, min_interval=2.0)
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
                 headers={"User-Agent": _random_ua()},
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=15,
+                follow_redirects=True,
             )
-        return self._session
+        return self._client
 
     async def search_products(self, keyword: str, limit: int = 30) -> list[dict]:
         """29CM 검색 API로 상품 검색.
@@ -82,18 +79,18 @@ class TwentyNineCmCrawler:
               "price": int, "original_price": int, "url": str, "image_url": str,
               "is_sold_out": bool}, ...]
         """
-        session = await self._get_session()
+        client = await self._get_client()
         params = {"keyword": keyword, "limit": limit, "offset": 0}
 
         try:
-            await _random_delay()
-            async with session.get(
-                SEARCH_API, params=params, headers={"User-Agent": _random_ua()}
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning("29CM 검색 실패 (HTTP %d): %s", resp.status, keyword)
-                    return []
-                body = await resp.json()
+            async with self._rate_limiter.acquire():
+                resp = await client.get(
+                    SEARCH_API, params=params, headers={"User-Agent": _random_ua()}
+                )
+            if resp.status_code != 200:
+                logger.warning("29CM 검색 실패 (HTTP %d): %s", resp.status_code, keyword)
+                return []
+            body = resp.json()
         except Exception as e:
             logger.error("29CM 검색 에러 (%s): %s", keyword, e)
             return []
@@ -102,21 +99,31 @@ class TwentyNineCmCrawler:
             logger.warning("29CM 검색 응답 에러: %s", body.get("message"))
             return []
 
-        products = body.get("data", {}).get("products", [])
+        # v4/products: data가 직접 리스트 (이전: data.products)
+        raw_data = body.get("data", [])
+        products = raw_data if isinstance(raw_data, list) else raw_data.get("products", [])
         results = []
 
         for p in products:
             item_name = p.get("itemName", "")
-            sale_info = p.get("saleInfoV2", {})
+            sale_info = p.get("saleInfoV2", {}) or {}
             image_path = p.get("imageUrl", "")
             image_url = f"{IMAGE_CDN}{image_path}" if image_path else ""
+
+            # 할인가: saleInfoV2 > lastSalePrice > consumerPrice
+            price = (
+                sale_info.get("totalSellPrice")
+                or sale_info.get("sellPrice")
+                or p.get("lastSalePrice")
+                or p.get("consumerPrice", 0)
+            )
 
             results.append({
                 "product_id": str(p["itemNo"]),
                 "name": item_name,
                 "brand": p.get("frontBrandNameEng", "") or p.get("frontBrandNameKor", ""),
                 "model_number": _extract_model_number(item_name),
-                "price": sale_info.get("totalSellPrice") or sale_info.get("sellPrice") or 0,
+                "price": price,
                 "original_price": p.get("consumerPrice", 0),
                 "url": PRODUCT_URL.format(item_no=p["itemNo"]),
                 "image_url": image_url,
@@ -131,18 +138,16 @@ class TwentyNineCmCrawler:
 
         HTML의 schema.org JSON-LD + RSC payload를 파싱한다.
         """
-        session = await self._get_session()
+        client = await self._get_client()
         url = PRODUCT_URL.format(item_no=product_id)
 
         try:
-            await _random_delay()
-            async with session.get(
-                url, headers={"User-Agent": _random_ua()}
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning("29CM 상품 조회 실패 (HTTP %d): %s", resp.status, product_id)
-                    return None
-                html = await resp.text()
+            async with self._rate_limiter.acquire():
+                resp = await client.get(url, headers={"User-Agent": _random_ua()})
+            if resp.status_code != 200:
+                logger.warning("29CM 상품 조회 실패 (HTTP %d): %s", resp.status_code, product_id)
+                return None
+            html = resp.text
         except Exception as e:
             logger.error("29CM 상품 조회 에러 (%s): %s", product_id, e)
             return None
@@ -260,10 +265,10 @@ class TwentyNineCmCrawler:
         return sizes
 
     async def disconnect(self) -> None:
-        """세션 종료."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        """클라이언트 종료."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
         logger.info("29CM 크롤러 연결 해제")
 
 

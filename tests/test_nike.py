@@ -96,26 +96,27 @@ class TestParseSizesFromPdp:
     """상품 상세 사이즈 파싱 테스트."""
 
     def test_parse_sizes_available(self):
-        """availableSkus에서 재고 있는 사이즈 추출."""
+        """selectedProduct.sizes에서 사이즈 추출 (2024+ 구조)."""
         html = (
             '<script id="__NEXT_DATA__" type="application/json">'
-            '{"props":{"pageProps":{"initialState":{"product":{"availableSkus":['
-            '{"localizedSize":"270","available":true},'
-            '{"localizedSize":"280","available":false}'
-            ']}}}}}'
+            '{"props":{"pageProps":{"selectedProduct":{"sizes":['
+            '{"localizedLabel":"270","label":"270","status":"ACTIVE","skuId":"123"},'
+            '{"localizedLabel":"280","label":"280","status":"OUT_OF_STOCK","skuId":"456"}'
+            ']}}}}'
             "</script>"
         )
         sizes = _parse_sizes_from_pdp(html)
         assert len(sizes) == 2
         assert sizes[0]["size"] == "270"
         assert sizes[0]["available"] is True
+        assert sizes[1]["size"] == "280"
         assert sizes[1]["available"] is False
 
     def test_parse_sizes_empty(self):
         """사이즈 데이터 없음 → 빈 리스트."""
         html = (
             '<script id="__NEXT_DATA__" type="application/json">'
-            '{"props":{"pageProps":{"initialState":{"product":{}}}}}'
+            '{"props":{"pageProps":{"selectedProduct":{}}}}'
             "</script>"
         )
         assert _parse_sizes_from_pdp(html) == []

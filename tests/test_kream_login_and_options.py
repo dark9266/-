@@ -1,7 +1,7 @@
-"""크림 로그인 자동화 + /api/p/options/display API 테스트.
+"""크림 options/display API 테스트.
 
-CDP 로그인 → 쿠키 주입 → options/display API로 전체 사이즈별 가격 수집 흐름을 검증한다.
-네트워크/브라우저 호출은 모두 mock 처리.
+Pinia API로 전체 사이즈별 가격 수집 흐름을 검증한다.
+네트워크 호출은 모두 mock 처리.
 """
 
 import pytest

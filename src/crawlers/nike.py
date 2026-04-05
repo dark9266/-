@@ -87,26 +87,22 @@ def _parse_products_from_wall(next_data: dict) -> list[dict]:
 
 
 def _parse_sizes_from_pdp(html: str) -> list[dict]:
-    """상품 상세 페이지에서 사이즈/재고 파싱."""
+    """상품 상세 페이지에서 사이즈/재고 파싱.
+
+    2024+ 구조: pageProps.selectedProduct.sizes[] (localizedLabel + status)
+    """
     next_data = _extract_next_data(html)
-    product_state = (
+    selected = (
         next_data.get("props", {})
         .get("pageProps", {})
-        .get("initialState", {})
-        .get("product", {})
+        .get("selectedProduct", {})
     )
 
-    # 사이즈 정보가 여러 경로에 있을 수 있음
-    skus = product_state.get("availableSkus", [])
-    if not skus:
-        # 대체 경로: selectedProduct.skus
-        selected = product_state.get("selectedProduct", {})
-        skus = selected.get("skus", [])
-
+    sizes_data = selected.get("sizes", [])
     sizes = []
-    for sku in skus:
-        size_val = sku.get("localizedSize", "") or sku.get("nikeSize", "")
-        available = sku.get("available", True)
+    for s in sizes_data:
+        size_val = s.get("localizedLabel", "") or s.get("label", "")
+        available = s.get("status", "") == "ACTIVE"
         if size_val:
             sizes.append({"size": size_val, "available": available})
 
@@ -174,17 +170,17 @@ class NikeCrawler:
             html = resp.text
             next_data = _extract_next_data(html)
 
-            # 기본 정보
-            product_state = (
+            # 기본 정보 (2024+ 구조: pageProps.selectedProduct)
+            selected = (
                 next_data.get("props", {})
                 .get("pageProps", {})
-                .get("initialState", {})
-                .get("product", {})
+                .get("selectedProduct", {})
             )
-            selected = product_state.get("selectedProduct", {})
-            title = selected.get("title", "")
-            current_price = selected.get("currentPrice", 0)
-            full_price = selected.get("fullPrice", 0)
+            product_info = selected.get("productInfo", {})
+            title = product_info.get("title", "") or product_info.get("fullTitle", "")
+            prices = selected.get("prices", {})
+            current_price = prices.get("currentPrice", 0)
+            full_price = prices.get("initialPrice", 0)
 
             # 사이즈 파싱
             size_data = _parse_sizes_from_pdp(html)

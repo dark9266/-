@@ -40,9 +40,9 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `src/scanner.py` — Orchestrator. Runs keyword scans, auto-scans (Kream popular → Musinsa search → profit analysis), reverse scans (Musinsa sales → Kream DB match), and batch scans. Uses 3-stage Musinsa search: model# → product name → brand+name.
 - `src/crawlers/kream.py` — Parses Kream's Nuxt `__NUXT_DATA__` (devalue format) for sizes, prices, trade volume.
 - `src/crawlers/musinsa_httpx.py` — httpx 기반 무신사 크롤러. 세션 쿠키(`data/musinsa_session.json`)로 등급할인가 수집.
-- `src/crawlers/twentynine_cm.py` — 29CM 크롤러. 검색 API + HTML 파싱 (schema.org + RSC payload).
-- `src/crawlers/abcmart.py` — ABC마트 크롤러. a-rt.com HTML 파싱 (schema.org JSON-LD).
-- `src/crawlers/nike.py` — 나이키 공식몰 크롤러. __NEXT_DATA__ JSON 파싱.
+- `src/crawlers/twentynine_cm.py` — 29CM 크롤러. 검색 API v4/products + HTML 파싱 (schema.org + RSC payload).
+- `src/crawlers/abcmart.py` — ABC마트 크롤러. JSON API (검색 /display/search-word/result-total/list, 상세 /product/info).
+- `src/crawlers/nike.py` — 나이키 공식몰 크롤러. __NEXT_DATA__ JSON 파싱 (2024+ selectedProduct 구조).
 - `src/crawlers/adidas.py` — 아디다스 공식몰 크롤러. HTML + window.__STATE__ 파싱.
 - `src/crawlers/registry.py` — 소싱처 크롤러 레지스트리. 서킷브레이커: 연속 3회 실패 시 30분 비활성화, 자동 재활성화.
 - `src/matcher.py` — Model number normalization and exact matching (e.g., "dq8423 100" → "DQ8423-100"). No fuzzy matching.
@@ -71,10 +71,11 @@ Environment variables in `.env` (see `.env.example`):
 - `src/tier1_scanner.py`: `get_active()`로 활성 크롤러만 검색, `record_failure()`/`record_success()` 추적
 - `src/tier2_monitor.py`: 알림 발송 실패 시 `result.errors` 증가
 - 소싱처별 안정성:
-  - 무신사/29CM: 안정 (API 검증 완료)
-  - 나이키: 검색 안정, 상세 제한적 (__NEXT_DATA__ PDP 구조 변동)
-  - ABC마트: 제한적 (JS 렌더링, HTML에 상품 데이터 없음)
-  - 아디다스: 제한적 (WAF 403 차단)
+  - 무신사: 안정 (API 검증 완료)
+  - 29CM: 안정 (검색 API v4/products 엔드포인트, 2024-04 검증)
+  - 나이키: 안정 (검색 Wall + PDP selectedProduct.sizes 2024+ 구조 적용)
+  - ABC마트: 안정 (JSON API 전환 — 검색 /display/search-word/result-total/list, 상세 /product/info)
+  - 아디다스: 제한적 (Akamai WAF 403 차단, GET-only로 해결 불가)
 
 ## Code Style
 
