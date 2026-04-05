@@ -32,6 +32,7 @@ from src.models.product import (
 )
 from src.price_tracker import PriceChange, PriceTracker
 from src.profit_calculator import analyze_auto_scan_opportunity, analyze_opportunity, determine_signal
+from src.scan_cache import ScanCache
 from src.utils.logging import setup_logger
 
 logger = setup_logger("scanner")
@@ -201,6 +202,7 @@ class CategoryScanResult:
         self.name_no_match: int = 0        # 이름 모델→DB 실패 (스킵)
         self.detail_fetched: int = 0       # 상세 방문 수
         self.detail_matched: int = 0       # 상세→DB 성공
+        self.cache_skipped: int = 0        # 스캔 캐시 스킵
         self.errors: list[str] = []
         self.pages_scanned: int = 0
         self.started_at: datetime = datetime.now()
@@ -235,6 +237,9 @@ class Scanner:
         self._match_review_callback = None
         # 배치스캔 중지 플래그
         self._batch_scan_stop: bool = False
+        # 스캔 캐시 (모델번호 기반 중복 방지)
+        self.scan_cache = ScanCache()
+        self.scan_cache.cleanup_expired()
 
     async def scan_keyword(self, keyword: str) -> ScanResult:
         """단일 키워드로 전체 파이프라인 실행.
@@ -1560,6 +1565,12 @@ class Scanner:
                 goods_name = item.get("goodsName", "")
                 name_model = extract_model_from_name(goods_name)
 
+                # Layer 2.5: 스캔 캐시 체크 (24h/6h TTL)
+                if name_model and self.scan_cache.should_skip(name_model):
+                    result.cache_skipped += 1
+                    scanned_set.add(goods_no)
+                    continue
+
                 if name_model:
                     rows = await self.db.find_kream_all_by_model(name_model)
                     if rows:
@@ -1579,10 +1590,10 @@ class Scanner:
 
             logger.info(
                 "카테고리 %s 필터 결과: 총 %d → 품절 %d / 이미스캔 %d / "
-                "브랜드필터 %d / 이름매칭 %d / 이름미매칭 %d / 상세필요 %d",
+                "캐시스킵 %d / 브랜드필터 %d / 이름매칭 %d / 이름미매칭 %d / 상세필요 %d",
                 category, len(listing),
                 result.sold_out_skipped, result.already_scanned,
-                result.brand_filtered, result.name_matched,
+                result.cache_skipped, result.brand_filtered, result.name_matched,
                 result.name_no_match, len(detail_queue),
             )
 
@@ -1591,7 +1602,7 @@ class Scanner:
                     f"카테고리 [{category}] 필터 완료\n"
                     f"• 리스팅 {len(listing)}건 → "
                     f"품절 {result.sold_out_skipped} / 이미스캔 {result.already_scanned} / "
-                    f"브랜드필터 {result.brand_filtered}\n"
+                    f"캐시스킵 {result.cache_skipped} / 브랜드필터 {result.brand_filtered}\n"
                     f"• 이름매칭 {result.name_matched}건 + "
                     f"상세방문 대기 {len(detail_queue)}건"
                 )
@@ -1766,6 +1777,7 @@ class Scanner:
                             logger.info(
                                 "카테고리 탈락[수익분석실패]: %s", goods_name[:40],
                             )
+                            self.scan_cache.record(model, profitable=False, source="category_scan")
                             continue
 
                         opportunity.source_prices = {"무신사": min(
@@ -1782,6 +1794,7 @@ class Scanner:
                                 opportunity.best_confirmed_profit,
                                 opportunity.best_estimated_profit,
                             )
+                            self.scan_cache.record(model, profitable=False, source="category_scan")
                             continue
 
                         await self.db.upsert_retail_product(
@@ -1800,6 +1813,15 @@ class Scanner:
                             opportunity.volume_7d,
                         )
                         opportunity.signal = signal
+
+                        # 스캔 캐시 기록
+                        profitable = (
+                            opportunity.best_confirmed_profit > 0
+                            or opportunity.best_estimated_profit > 0
+                        )
+                        self.scan_cache.record(
+                            model, profitable=profitable, source="category_scan",
+                        )
 
                         result.opportunities.append(opportunity)
 

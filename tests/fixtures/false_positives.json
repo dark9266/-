@@ -9,7 +9,7 @@
       "input": {"retail_model": "25-002", "kream_model": "CU9225-002"},
       "expected": "no_match",
       "bug_date": "2026-04-05",
-      "status": "known_bug"
+      "status": "fixed"
     },
     {
       "id": "low_profit_alert_sent",
@@ -18,7 +18,8 @@
       "input": {"net_profit": 954, "volume_7d": 10},
       "expected_signal": "비추천",
       "expected_alert": false,
-      "bug_date": "2026-04-05"
+      "bug_date": "2026-04-05",
+      "status": "fixed"
     },
     {
       "id": "offline_product_passed",
@@ -35,7 +36,8 @@
       "input": {"net_profit": 50000, "volume_7d": 0},
       "expected_signal": "비추천",
       "expected_alert": false,
-      "bug_date": "2026-04-05"
+      "bug_date": "2026-04-05",
+      "status": "fixed"
     }
   ]
 }

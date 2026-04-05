@@ -48,6 +48,7 @@ Musinsa/Kream Crawlers → Matcher (model# matching) → Profit Calculator → D
 - `src/discord_bot/bot.py` — 16+ slash commands, rich embed alerts, 1-hour alert dedup cooldown.
 - `src/models/database.py` — Async SQLite (aiosqlite), 11 tables: products, price history, trade volume, alerts, keywords, settings.
 - `src/config.py` — Pydantic `BaseSettings`, loads from `.env`.
+- `src/scan_cache.py` — JSON 기반 모델번호 스캔 캐시. 24시간 TTL (수익 발생 시 6시간). 중복 스캔 방지.
 
 ## Configuration
 
@@ -139,6 +140,17 @@ WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges th
 - 새 버그 발견 시 `tests/fixtures/false_positives.json`에 케이스 추가
 - 케이스 추가만으로 자동 회귀 테스트 확장 (코드 수정 불필요)
 - `status: "known_bug"` → 수정 후 `"fixed"`로 변경
+
+### 스캔 캐시 (`src/scan_cache.py`)
+- 모델번호 기반 중복 스캔 방지 (`data/scan_cache.json`)
+- 일반 상품 24시간, 수익 발생 상품 6시간 TTL
+- Scanner 초기화 시 만료 항목 자동 정리
+- 카테고리 스캔에서 캐시 히트 시 상세 방문 스킵
+
+### 알림 최소 기준 (하드 플로어)
+- `send_profit_alert()`: BUY/STRONG_BUY 시그널만 발송
+- `send_auto_scan_alert()`: 순수익 ≥ 10,000₩ AND ROI ≥ 5% AND 거래량 ≥ 1
+- `config.py`: `alert_min_profit`, `alert_min_roi`, `alert_min_volume_7d`
 
 ### Known Issues
 - MFS(다중재고) 상품 품절 필터 한계 — inventory API 근본 미작동, 15/17까지만 축소 가능 (MT410CK5 등)

@@ -98,5 +98,10 @@ class Settings(BaseSettings):
     auto_scan_concurrency: int = 3  # 동시 요청 수
     auto_scan_cache_minutes: int = 60  # 캐시 유효 시간 (분)
 
+    # 알림 최소 기준 (하드 플로어)
+    alert_min_profit: int = 10_000  # 최소 순수익 (원)
+    alert_min_roi: float = 5.0  # 최소 ROI (%)
+    alert_min_volume_7d: int = 1  # 최소 7일 거래량
+
 
 settings = Settings()

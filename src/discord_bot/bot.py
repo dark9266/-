@@ -96,6 +96,10 @@ class KreamBot(commands.Bot):
 
     async def send_profit_alert(self, opportunity) -> None:
         """수익 알림 채널에 알림 전송 (중복 방지 강화)."""
+        # 시그널 필터: BUY/STRONG_BUY만 발송
+        if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+            return
+
         if not settings.channel_profit_alert:
             return
 
@@ -177,13 +181,34 @@ class KreamBot(commands.Bot):
 
 
     async def send_auto_scan_alert(self, opportunity) -> bool:
-        """자동스캔 수익 알림 전송 (중복 방지 적용).
+        """자동스캔 수익 알림 전송 (중복 방지 + 최소기준 적용).
 
         Returns:
             True면 실제 전송됨, False면 스킵 또는 실패.
         """
         kream_product = opportunity.kream_product
         product_name = kream_product.name[:30] if kream_product else "?"
+
+        # 최소 수익/ROI 필터
+        best_profit = max(
+            opportunity.best_confirmed_profit,
+            opportunity.best_estimated_profit,
+        )
+        best_roi = max(
+            opportunity.best_confirmed_roi,
+            opportunity.best_estimated_roi,
+        )
+        if best_profit < settings.alert_min_profit or best_roi < settings.alert_min_roi:
+            logger.debug(
+                "최소기준 미달 스킵: %s (profit=%d, roi=%.1f%%)",
+                product_name, best_profit, best_roi,
+            )
+            return False
+
+        # 거래량 0건 차단
+        if opportunity.volume_7d < settings.alert_min_volume_7d:
+            logger.debug("거래량 미달 스킵: %s (vol=%d)", product_name, opportunity.volume_7d)
+            return False
 
         if not settings.channel_profit_alert:
             logger.warning("매수알림 채널 미설정: %s", product_name)

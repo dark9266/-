@@ -176,10 +176,10 @@ class TestAlertDedup:
 
 
 class TestLikeSearchBoundary:
-    """search_kream_by_model_like LIKE 오매칭 확인."""
+    """search_kream_by_model_like 슬래시 전용 LIKE 검색."""
 
-    async def test_short_model_like_false_positive(self, db: Database):
-        """25-002가 CU9225-002를 LIKE 매칭하는 위험 확인 (known bug)."""
+    async def test_short_model_no_false_positive(self, db: Database):
+        """25-002가 CU9225-002를 매칭하지 않아야 함 (수정 완료)."""
         await db.upsert_kream_product(
             product_id="CU9225",
             name="나이키 에어포스 1",
@@ -187,6 +187,21 @@ class TestLikeSearchBoundary:
             brand="Nike",
         )
         row = await db.search_kream_by_model_like("25-002")
-        # 현재 코드는 매칭됨 (이것이 버그)
-        # 향후 수정 시 assert row is None 으로 변경
-        assert row is not None  # known bug 기록
+        assert row is None  # 슬래시 전용으로 차단됨
+
+    async def test_slash_model_like_match(self, db: Database):
+        """슬래시 구분 모델번호는 정상 매칭."""
+        await db.upsert_kream_product(
+            product_id="AF1",
+            name="나이키 AF1",
+            model_number="315122-111/CW2288-111",
+            brand="Nike",
+        )
+        row = await db.search_kream_by_model_like("CW2288-111")
+        assert row is not None
+        assert row["product_id"] == "AF1"
+
+    async def test_like_min_length_guard(self, db: Database):
+        """5자 이하 모델번호는 LIKE 검색 차단."""
+        row = await db.search_kream_by_model_like("AB-1")
+        assert row is None

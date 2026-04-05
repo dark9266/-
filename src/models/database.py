@@ -231,26 +231,29 @@ class Database:
         return await cursor.fetchall()
 
     async def search_kream_by_model_like(self, model_number: str) -> aiosqlite.Row | None:
-        """모델번호 유연 검색 (슬래시 구분 모델번호 등 대응).
+        """모델번호 유연 검색 (슬래시 구분 모델번호만 대응).
 
         kream_db.json의 모델번호가 '315122-111/CW2288-111' 형태일 때,
-        'CW2288-111'로 검색해도 찾을 수 있도록 LIKE 검색을 수행한다.
+        'CW2288-111'로 검색해도 찾을 수 있도록 슬래시 기준 LIKE 검색.
+        단순 부분 문자열 매칭은 차단 (25-002 → CU9225-002 오매칭 방지).
         """
-        if not model_number:
+        if not model_number or len(model_number) < 6:
             return None
         cursor = await self.db.execute(
-            "SELECT * FROM kream_products WHERE model_number LIKE ? LIMIT 1",
-            (f"%{model_number}%",),
+            "SELECT * FROM kream_products "
+            "WHERE model_number LIKE ? OR model_number LIKE ? LIMIT 1",
+            (f"%/{model_number}", f"{model_number}/%"),
         )
         return await cursor.fetchone()
 
     async def search_kream_all_by_model_like(self, model_number: str) -> list[aiosqlite.Row]:
-        """모델번호 유연 검색 — 전체 결과 반환 (복수 매칭 대응)."""
-        if not model_number:
+        """모델번호 유연 검색 — 슬래시 구분만 허용."""
+        if not model_number or len(model_number) < 6:
             return []
         cursor = await self.db.execute(
-            "SELECT * FROM kream_products WHERE model_number LIKE ?",
-            (f"%{model_number}%",),
+            "SELECT * FROM kream_products "
+            "WHERE model_number LIKE ? OR model_number LIKE ?",
+            (f"%/{model_number}", f"{model_number}/%"),
         )
         return await cursor.fetchall()
 
