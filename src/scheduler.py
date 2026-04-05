@@ -92,14 +92,52 @@ class Scheduler:
 
     @tasks.loop(minutes=settings.scan_interval_minutes)
     async def periodic_scan(self) -> None:
-        """주기적 자동 스캔 (기본 30분)."""
+        """주기적 자동 스캔 (기본 30분).
+
+        카테고리스캔(aiohttp 기반, Chrome 불필요)을 먼저 실행한 뒤,
+        Chrome 상태를 확인하고 키워드 스캔(Playwright 의존)을 실행한다.
+        """
         logger.info("=== 자동 스캔 시작 ===")
 
+        # ── 1단계: 카테고리스캔 (Chrome 불필요, 항상 실행) ──
         try:
-            # Chrome 상태 확인
+            async def on_cat_opportunity(opportunity):
+                if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    return
+                await self.bot.send_auto_scan_alert(opportunity)
+
+            cat_result = await self.bot.scanner.run_category_scan(
+                categories=["103"],  # 스니커즈
+                max_pages=30,
+                on_opportunity=on_cat_opportunity,
+                on_progress=lambda msg: logger.info("카테고리스캔: %s", msg),
+                resume=True,
+            )
+
+            cat_elapsed = 0.0
+            if cat_result.finished_at and cat_result.started_at:
+                cat_elapsed = (cat_result.finished_at - cat_result.started_at).total_seconds()
+
+            self.bot.daily_stats["scan_count"] += 1
+            self.bot.daily_stats["product_count"] += cat_result.detail_fetched
+
+            await self.bot.log_to_channel(
+                f"카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
+                f"리스팅 {cat_result.listing_fetched} → "
+                f"브랜드필터 {cat_result.brand_filtered} / "
+                f"상세 {cat_result.detail_fetched} → "
+                f"수익기회 {len(cat_result.opportunities)}"
+            )
+        except Exception as e:
+            error_aggregator.add("periodic_scan_category", e)
+            logger.error("카테고리스캔 실패: %s", e)
+            await self.bot.log_to_channel(f"⚠️ 카테고리스캔 실패: {e}")
+
+        # ── 2단계: 키워드 스캔 (Chrome 필요, Chrome OK일 때만) ──
+        try:
             if not await chrome_health.check_and_recover():
-                logger.error("Chrome 상태 불량, 스캔 건너뜀")
-                await self.bot.log_to_channel("⚠️ Chrome 연결 불량으로 자동 스캔 건너뜀")
+                logger.warning("Chrome 상태 불량, 키워드 스캔 건너뜀")
+                await self.bot.log_to_channel("⚠️ Chrome 연결 불량 — 키워드 스캔 건너뜀 (카테고리스캔은 완료)")
                 return
 
             result = await self.bot.scanner.scan_all_keywords()
@@ -113,7 +151,6 @@ class Scheduler:
             # 수익 알림 전송
             for op in result.opportunities:
                 await self.bot.send_profit_alert(op)
-                # 매수/강력매수 시그널이면 집중 추적에 추가
                 if op.signal in (Signal.STRONG_BUY, Signal.BUY):
                     self.add_to_tracking(op)
 
@@ -131,8 +168,8 @@ class Scheduler:
         except Exception as e:
             chrome_health.report_failure()
             error_aggregator.add("periodic_scan", e)
-            logger.error("자동 스캔 실패: %s", e)
-            await self.bot.log_to_channel(f"⚠️ 자동 스캔 실패: {e}")
+            logger.error("키워드 스캔 실패: %s", e)
+            await self.bot.log_to_channel(f"⚠️ 키워드 스캔 실패: {e}")
 
     @periodic_scan.before_loop
     async def before_periodic_scan(self) -> None:
@@ -292,48 +329,54 @@ class Scheduler:
             self.bot.daily_stats["scan_count"] += 1
             self.bot.daily_stats["product_count"] += cat_result.detail_fetched
 
-            # ── 2단계: 역방향스캔 (기존 auto_scan) ──
-            async def on_opportunity(opportunity: AutoScanOpportunity):
-                """수익 기회 발견 즉시 디스코드 알림 (BUY 이상만)."""
-                if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
-                    return
-                await self.bot.send_auto_scan_alert(opportunity)
-                # 확정 수익이면 집중 추적 추가
-                if opportunity.best_confirmed_roi >= settings.auto_scan_confirmed_roi:
-                    from src.models.product import ProfitOpportunity as PO
-                    tracking_op = PO(
-                        kream_product=opportunity.kream_product,
-                        retail_products=[],
-                        size_profits=[],
-                        best_profit=opportunity.best_confirmed_profit,
-                        best_roi=opportunity.best_confirmed_roi,
-                        signal=Signal.STRONG_BUY if opportunity.best_confirmed_roi >= 10 else Signal.BUY,
-                    )
-                    self.add_to_tracking(tracking_op)
+            # ── 2단계: 역방향스캔 (Chrome 필요, Chrome OK일 때만) ──
+            if not await chrome_health.check_and_recover():
+                logger.warning("Chrome 상태 불량, 역방향스캔 건너뜀")
+                await self.bot.log_to_channel(
+                    "⚠️ Chrome 연결 불량 — 역방향스캔 건너뜀 (카테고리스캔은 완료)"
+                )
+            else:
+                async def on_opportunity(opportunity: AutoScanOpportunity):
+                    """수익 기회 발견 즉시 디스코드 알림 (BUY 이상만)."""
+                    if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                        return
+                    await self.bot.send_auto_scan_alert(opportunity)
+                    # 확정 수익이면 집중 추적 추가
+                    if opportunity.best_confirmed_roi >= settings.auto_scan_confirmed_roi:
+                        from src.models.product import ProfitOpportunity as PO
+                        tracking_op = PO(
+                            kream_product=opportunity.kream_product,
+                            retail_products=[],
+                            size_profits=[],
+                            best_profit=opportunity.best_confirmed_profit,
+                            best_roi=opportunity.best_confirmed_roi,
+                            signal=Signal.STRONG_BUY if opportunity.best_confirmed_roi >= 10 else Signal.BUY,
+                        )
+                        self.add_to_tracking(tracking_op)
 
-            async def on_progress(message: str):
-                """진행 상황 로그."""
-                logger.info("역방향스캔 진행: %s", message)
+                async def on_progress(message: str):
+                    """진행 상황 로그."""
+                    logger.info("역방향스캔 진행: %s", message)
 
-            result = await self.bot.scanner.auto_scan(
-                on_opportunity=on_opportunity,
-                on_progress=on_progress,
-            )
+                result = await self.bot.scanner.auto_scan(
+                    on_opportunity=on_opportunity,
+                    on_progress=on_progress,
+                )
 
-            # 통계 업데이트
-            self.bot.daily_stats["product_count"] += result.kream_scanned
+                # 통계 업데이트
+                self.bot.daily_stats["product_count"] += result.kream_scanned
 
-            elapsed = 0.0
-            if result.finished_at and result.started_at:
-                elapsed = (result.finished_at - result.started_at).total_seconds()
+                elapsed = 0.0
+                if result.finished_at and result.started_at:
+                    elapsed = (result.finished_at - result.started_at).total_seconds()
 
-            await self.bot.log_to_channel(
-                f"역방향스캔 완료 ({elapsed:.0f}초) | "
-                f"크림 {result.kream_scanned} → 매칭 {result.matched} → "
-                f"수익기회 {len(result.opportunities)} "
-                f"(확정 {result.confirmed_count} / 예상 {result.estimated_count}) | "
-                f"에러 {len(result.errors)}"
-            )
+                await self.bot.log_to_channel(
+                    f"역방향스캔 완료 ({elapsed:.0f}초) | "
+                    f"크림 {result.kream_scanned} → 매칭 {result.matched} → "
+                    f"수익기회 {len(result.opportunities)} "
+                    f"(확정 {result.confirmed_count} / 예상 {result.estimated_count}) | "
+                    f"에러 {len(result.errors)}"
+                )
 
             logger.info("=== 자동스캔 루프 완료 ===")
 
