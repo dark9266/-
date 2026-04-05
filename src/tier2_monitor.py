@@ -107,8 +107,11 @@ class Tier2Monitor:
 
                 size_name = size_data.get("size", "?")
                 fees = calculate_kream_fees(kream_price)
-                net_profit = kream_price - fees["total_fees"] - item.musinsa_price
-                roi = (net_profit / item.musinsa_price * 100) if item.musinsa_price > 0 else 0
+                retail_price = (
+                    item.source_price if item.source_price > 0 else item.musinsa_price
+                )
+                net_profit = kream_price - fees["total_fees"] - retail_price
+                roi = (net_profit / retail_price * 100) if retail_price > 0 else 0
 
                 if net_profit > best_profit:
                     best_profit = net_profit
@@ -117,7 +120,7 @@ class Tier2Monitor:
                 if net_profit >= settings.alert_min_profit and roi >= settings.alert_min_roi:
                     profitable_sizes.append(AutoScanSizeProfit(
                         size=str(size_name),
-                        musinsa_price=item.musinsa_price,
+                        musinsa_price=retail_price,
                         kream_bid_price=kream_price,
                         confirmed_profit=net_profit,
                         confirmed_roi=round(roi, 1),
@@ -139,11 +142,15 @@ class Tier2Monitor:
                         name=item.kream_name,
                         model_number=item.model_number,
                     )
+                    source_url = (
+                        item.source_url
+                        or f"https://www.musinsa.com/products/{item.musinsa_product_id}"
+                    )
                     opportunity = AutoScanOpportunity(
                         kream_product=kream_product,
-                        musinsa_url=f"https://www.musinsa.com/products/{item.musinsa_product_id}",
+                        musinsa_url=source_url,
                         musinsa_name="",
-                        musinsa_product_id=item.musinsa_product_id,
+                        musinsa_product_id=item.source_product_id or item.musinsa_product_id,
                         size_profits=profitable_sizes,
                         best_confirmed_profit=best_profit,
                         best_confirmed_roi=round(best_roi, 1),

@@ -11,6 +11,7 @@ from datetime import datetime
 from src.config import settings
 from src.crawlers.kream import kream_crawler
 from src.crawlers.musinsa_httpx import musinsa_crawler
+from src.crawlers.registry import get_all as get_all_crawlers
 from src.matcher import extract_model_from_name, normalize_model_number
 from src.models.database import Database
 from src.utils.logging import setup_logger
@@ -128,6 +129,38 @@ class Tier1Scanner:
 
             # gap 기준 확인
             if gap > settings.watchlist_gap_threshold:
+                # 다른 소싱처 병렬 검색 → 최저가 선택
+                best_price = price
+                best_source = "musinsa"
+                best_pid = product_id
+                best_url = f"https://www.musinsa.com/products/{product_id}"
+
+                try:
+                    other_tasks = {}
+                    for key, info in get_all_crawlers().items():
+                        if key == "musinsa":
+                            continue
+                        other_tasks[key] = info["crawler"].search_products(
+                            model_norm, limit=5,
+                        )
+
+                    if other_tasks:
+                        other_results = await asyncio.gather(
+                            *other_tasks.values(), return_exceptions=True,
+                        )
+                        for skey, sresult in zip(other_tasks.keys(), other_results):
+                            if isinstance(sresult, Exception) or not sresult:
+                                continue
+                            for r in sresult:
+                                r_price = r.get("price", 0)
+                                if 0 < r_price < best_price:
+                                    best_price = r_price
+                                    best_source = skey
+                                    best_pid = str(r.get("product_id", ""))
+                                    best_url = r.get("url", "")
+                except Exception as e:
+                    logger.debug("멀티소스 검색 실패: %s", e)
+
                 item = WatchlistItem(
                     kream_product_id=str(kream.get("product_id", "")),
                     model_number=model_norm,
@@ -135,7 +168,11 @@ class Tier1Scanner:
                     musinsa_product_id=product_id,
                     musinsa_price=price,
                     kream_price=kream_price,
-                    gap=gap,
+                    gap=best_price - kream_price,
+                    source=best_source,
+                    source_product_id=best_pid,
+                    source_price=best_price,
+                    source_url=best_url,
                 )
                 if self.watchlist.add(item):
                     result.added += 1

@@ -818,3 +818,6 @@ class MusinsaHttpxCrawler:
 
 # 싱글톤 (import 호환: from src.crawlers.musinsa_httpx import musinsa_crawler)
 musinsa_crawler = MusinsaHttpxCrawler()
+
+from src.crawlers.registry import register  # noqa: E402
+register("musinsa", musinsa_crawler, "무신사")

@@ -22,12 +22,17 @@ class WatchlistItem:
     kream_product_id: str
     model_number: str
     kream_name: str
-    musinsa_product_id: str
-    musinsa_price: int
+    musinsa_product_id: str  # 하위호환 유지
+    musinsa_price: int  # 하위호환 유지
     kream_price: int  # 최근 시세
-    gap: int  # musinsa_price - kream_price
+    gap: int  # source_price - kream_price
     added_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_checked: str = field(default_factory=lambda: datetime.now().isoformat())
+    # 멀티소스 필드
+    source: str = "musinsa"  # 최저가 소싱처 키
+    source_product_id: str = ""  # 최저가 소싱처 상품 ID
+    source_price: int = 0  # 최저가 가격 (0이면 musinsa_price 사용)
+    source_url: str = ""  # 최저가 상품 URL
 
 
 class Watchlist:
@@ -49,6 +54,11 @@ class Watchlist:
             self._items = {}
             for item_data in data:
                 item = WatchlistItem(**item_data)
+                # 멀티소스 마이그레이션: source_price 백필
+                if item.source_price == 0 and item.musinsa_price > 0:
+                    item.source_price = item.musinsa_price
+                    item.source_product_id = item.source_product_id or item.musinsa_product_id
+                    item.source = item.source or "musinsa"
                 self._items[item.model_number] = item
             logger.info("워치리스트 로드: %d건", len(self._items))
         except Exception as e:
@@ -96,7 +106,8 @@ class Watchlist:
         item = self._items.get(model_number)
         if item:
             item.kream_price = new_price
-            item.gap = item.musinsa_price - new_price
+            retail_price = item.source_price if item.source_price > 0 else item.musinsa_price
+            item.gap = retail_price - new_price
             item.last_checked = datetime.now().isoformat()
             self.save()
 

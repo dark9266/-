@@ -32,7 +32,7 @@ ruff format src/ tests/
 
 **Core pipeline:** Scanner orchestrates the flow:
 ```
-Musinsa/Kream Crawlers → Matcher (model# matching) → Profit Calculator → Discord Alerts
+Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matcher (model# matching) → Profit Calculator → Discord Alerts
 ```
 
 **Key modules:**
@@ -40,11 +40,16 @@ Musinsa/Kream Crawlers → Matcher (model# matching) → Profit Calculator → D
 - `src/scanner.py` — Orchestrator. Runs keyword scans, auto-scans (Kream popular → Musinsa search → profit analysis), reverse scans (Musinsa sales → Kream DB match), and batch scans. Uses 3-stage Musinsa search: model# → product name → brand+name.
 - `src/crawlers/kream.py` — Parses Kream's Nuxt `__NUXT_DATA__` (devalue format) for sizes, prices, trade volume.
 - `src/crawlers/musinsa_httpx.py` — httpx 기반 무신사 크롤러. 세션 쿠키(`data/musinsa_session.json`)로 등급할인가 수집.
+- `src/crawlers/twentynine_cm.py` — 29CM 크롤러. 검색 API + HTML 파싱 (schema.org + RSC payload).
+- `src/crawlers/abcmart.py` — ABC마트 크롤러. a-rt.com HTML 파싱 (schema.org JSON-LD).
+- `src/crawlers/nike.py` — 나이키 공식몰 크롤러. __NEXT_DATA__ JSON 파싱.
+- `src/crawlers/adidas.py` — 아디다스 공식몰 크롤러. HTML + window.__STATE__ 파싱.
+- `src/crawlers/registry.py` — 소싱처 크롤러 레지스트리. 각 크롤러 자동 등록.
 - `src/matcher.py` — Model number normalization and exact matching (e.g., "dq8423 100" → "DQ8423-100"). No fuzzy matching.
 - `src/profit_calculator.py` — Kream fee structure (base 2500₩ + 6% + 10% VAT), per-size profit/ROI, signal determination (STRONG_BUY 30k+ / BUY 15k+ / WATCH 5k+ / NOT_RECOMMENDED).
 - `src/scheduler.py` — `discord.ext.tasks` 3개 루프: Tier1 워치리스트 빌더(30분), Tier2 실시간 폴링(60초), 일일 리포트(자정).
-- `src/watchlist.py` — watchlist.json 기반 모니터링 대상 관리.
-- `src/tier1_scanner.py` — 워치리스트 빌더. 리스팅 가격 기반 gap 스크리닝.
+- `src/watchlist.py` — watchlist.json 기반 모니터링 대상 관리. 멀티소스 지원 (source, source_price, source_url 필드).
+- `src/tier1_scanner.py` — 워치리스트 빌더. 리스팅 가격 기반 gap 스크리닝 + 멀티소스 최저가 비교.
 - `src/tier2_monitor.py` — 실시간 크림 시세 폴링. 수익 조건 도달 시 알림.
 - `src/utils/rate_limiter.py` — AsyncRateLimiter (Semaphore + 최소 간격).
 - `src/discord_bot/bot.py` — 16+ slash commands, rich embed alerts, 1-hour alert dedup cooldown.
@@ -162,9 +167,10 @@ WSL2 + Windows: bot runs on Linux. 무신사 세션 쿠키는 `data/musinsa_sess
 - API 호출 간 최소 1~2초 딜레이 (rate limit 방지)
 
 ## 2티어 실시간 아키텍처
-- 1티어: asyncio 병렬(동시 10개) 워치리스트 빌더 - 30분 주기
+- 1티어: asyncio 병렬(동시 10개) 워치리스트 빌더 - 30분 주기 + 멀티소스 최저가 비교
 - 2티어: watchlist.json 대상 Pinia API 60초 폴링 - 독립 병렬 실행
 - 수익 조건 도달 즉시 웹훅 발송
+- 소싱처: 무신사, 29CM, ABC마트, 나이키, 아디다스 (레지스트리 자동 등록)
 
 ### Known Issues
 - MFS(다중재고) 상품 품절 필터 한계 — inventory API 근본 미작동, 15/17까지만 축소 가능 (MT410CK5 등)

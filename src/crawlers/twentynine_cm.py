@@ -269,3 +269,6 @@ class TwentyNineCmCrawler:
 
 # 싱글톤
 twentynine_cm_crawler = TwentyNineCmCrawler()
+
+from src.crawlers.registry import register  # noqa: E402
+register("29cm", twentynine_cm_crawler, "29CM")
