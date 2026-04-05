@@ -468,17 +468,32 @@ class Database:
         await self.db.execute("DELETE FROM category_scan_progress")
         await self.db.commit()
 
-    async def load_scanned_goods_nos(self, category: str = "") -> set[str]:
-        """카테고리 스캔 이력에서 goods_no 집합 로딩 (메모리 SET)."""
+    async def load_scanned_goods_nos(
+        self, category: str = "", ttl_hours: int = 0,
+    ) -> set[str]:
+        """카테고리 스캔 이력에서 goods_no 집합 로딩 (메모리 SET).
+
+        Args:
+            category: 특정 카테고리만 로딩. 빈 문자열이면 전체.
+            ttl_hours: 0보다 크면 scanned_at 기준 N시간 이내 항목만 로딩.
+        """
+        conditions = []
+        params: list = []
+
         if category:
-            cursor = await self.db.execute(
-                "SELECT goods_no FROM category_scan_history WHERE category = ?",
-                (category,),
+            conditions.append("category = ?")
+            params.append(category)
+        if ttl_hours > 0:
+            conditions.append(
+                "scanned_at >= datetime('now', ?)"
             )
-        else:
-            cursor = await self.db.execute(
-                "SELECT goods_no FROM category_scan_history"
-            )
+            params.append(f"-{ttl_hours} hours")
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self.db.execute(
+            f"SELECT goods_no FROM category_scan_history{where}",
+            tuple(params),
+        )
         rows = await cursor.fetchall()
         return {row["goods_no"] for row in rows}
 

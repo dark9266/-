@@ -1463,7 +1463,11 @@ class Scanner:
             await self.db.clear_category_scan_history()
             scanned_set: set[str] = set()
             logger.info("카테고리 스캔 이력 초기화 완료")
+        elif max_pages == 1:
+            # Tier1 (1페이지 스캔): 6시간 TTL — 오래된 항목은 재스캔 허용
+            scanned_set = await self.db.load_scanned_goods_nos(ttl_hours=6)
         else:
+            # 다페이지 전체 스캔: 영구 이력 유지
             scanned_set = await self.db.load_scanned_goods_nos()
 
         logger.info(
