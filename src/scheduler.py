@@ -106,11 +106,14 @@ class Scheduler:
                     return
                 await self.bot.send_auto_scan_alert(opportunity)
 
+            async def on_cat_progress(message):
+                logger.info("카테고리스캔: %s", message)
+
             cat_result = await self.bot.scanner.run_category_scan(
                 categories=["103"],  # 스니커즈
                 max_pages=30,
                 on_opportunity=on_cat_opportunity,
-                on_progress=lambda msg: logger.info("카테고리스캔: %s", msg),
+                on_progress=on_cat_progress,
                 resume=True,
             )
 
