@@ -495,7 +495,23 @@ def verify_brand_filter():
         "브랜드 필터 카운트 누락",
     )
 
-    # 9-d) 병렬 상세 방문 구조 확인
+    # 9-d) KNOWN_KREAM_BRANDS에 주요 브랜드 포함 확인
+    from src.scanner import KNOWN_KREAM_BRANDS
+    for brand in ["nike", "adidas", "newbalance", "jordan", "converse"]:
+        check(
+            f"KNOWN_KREAM_BRANDS에 '{brand}' 포함",
+            brand in KNOWN_KREAM_BRANDS,
+            f"대형 브랜드 '{brand}' 누락 — 브랜드 필터에서 잘못 스킵될 수 있음",
+        )
+
+    # 9-e) 브랜드 필터가 합집합(all_kream_brands) 사용하는지 확인
+    check(
+        "브랜드 필터가 all_kream_brands 합집합 사용",
+        "all_kream_brands" in src,
+        "kream_brand_slugs 단독 사용 중 — 합집합으로 변경 필요",
+    )
+
+    # 9-f) 병렬 상세 방문 구조 확인
     check(
         "카테고리스캔에 asyncio.gather 병렬 처리 존재",
         "asyncio.gather" in src,
