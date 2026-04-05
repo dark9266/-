@@ -190,11 +190,11 @@ def verify_category_scan():
 
     source = open("src/scanner.py").read()
 
-    # 3-a) 스마트 브랜드 필터 확인 — 크림 DB 기반 브랜드 필터
+    # 3-a) 스마트 브랜드 필터 확인 — 블랙리스트 기반 브랜드 필터
     check(
-        "카테고리스캔 스마트 브랜드 필터 확인",
-        "kream_brand_slugs" in source,
-        "run_category_scan에 크림 브랜드 셋 기반 필터가 없음",
+        "카테고리스캔 브랜드 블랙리스트 필터 확인",
+        "MUSINSA_ONLY_BRANDS" in source,
+        "run_category_scan에 브랜드 블랙리스트 필터가 없음",
     )
 
     # 3-b) 이름 매칭 로직 존재 확인
@@ -485,9 +485,9 @@ def verify_brand_filter():
         __import__("src.scanner", fromlist=["Scanner"]).Scanner.run_category_scan
     )
     check(
-        "카테고리스캔에 kream_brand_slugs 로드 존재",
-        "kream_brand_slugs" in src,
-        "브랜드 셋 로드 로직 누락",
+        "카테고리스캔에 MUSINSA_ONLY_BRANDS 블랙리스트 사용",
+        "MUSINSA_ONLY_BRANDS" in src,
+        "블랙리스트 브랜드 필터 누락",
     )
     check(
         "카테고리스캔에 brand_filtered 카운트 존재",
@@ -495,20 +495,21 @@ def verify_brand_filter():
         "브랜드 필터 카운트 누락",
     )
 
-    # 9-d) KNOWN_KREAM_BRANDS에 주요 브랜드 포함 확인
-    from src.scanner import KNOWN_KREAM_BRANDS
-    for brand in ["nike", "adidas", "newbalance", "jordan", "converse"]:
+    # 9-d) 블랙리스트에 대형 브랜드가 없는지 확인 (과필터링 방지)
+    from src.scanner import MUSINSA_ONLY_BRANDS
+    for brand in ["nike", "adidas", "newbalance", "jordan", "converse",
+                   "puma", "asics", "vans", "thenorthface"]:
         check(
-            f"KNOWN_KREAM_BRANDS에 '{brand}' 포함",
-            brand in KNOWN_KREAM_BRANDS,
-            f"대형 브랜드 '{brand}' 누락 — 브랜드 필터에서 잘못 스킵될 수 있음",
+            f"블랙리스트에 '{brand}' 미포함 (과필터링 방지)",
+            brand not in MUSINSA_ONLY_BRANDS,
+            f"대형 브랜드 '{brand}'가 블랙리스트에 포함됨!",
         )
 
-    # 9-e) 브랜드 필터가 합집합(all_kream_brands) 사용하는지 확인
+    # 9-e) 브랜드 필터가 블랙리스트 방식인지 확인 (in, not 'not in')
     check(
-        "브랜드 필터가 all_kream_brands 합집합 사용",
-        "all_kream_brands" in src,
-        "kream_brand_slugs 단독 사용 중 — 합집합으로 변경 필요",
+        "브랜드 필터가 블랙리스트 방식 (in MUSINSA_ONLY_BRANDS)",
+        "in MUSINSA_ONLY_BRANDS" in src and "not in MUSINSA_ONLY_BRANDS" not in src,
+        "화이트리스트 방식(not in) 사용 중 — 블랙리스트(in)로 변경 필요",
     )
 
     # 9-f) 병렬 상세 방문 구조 확인

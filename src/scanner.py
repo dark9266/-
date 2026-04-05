@@ -36,34 +36,20 @@ from src.utils.logging import setup_logger
 
 logger = setup_logger("scanner")
 
-# 크림에서 거래되는 주요 브랜드 (정규화된 slug — 소문자 영숫자만)
-# DB가 불완전해도 대형 브랜드가 필터되지 않도록 보장
-KNOWN_KREAM_BRANDS: set[str] = {
-    # 스포츠/스니커즈
-    "nike", "jordan", "adidas", "newbalance", "asics", "puma", "reebok",
-    "converse", "vans", "underarmour", "hoka", "on", "saucony",
-    "salomon", "mizuno",
-    # 럭셔리
-    "gucci", "louisvuitton", "prada", "balenciaga", "bottegaveneta",
-    "saintlaurent", "givenchy", "valentino", "alexandermcqueen", "loewe",
-    "celine", "dior", "chanel", "hermes", "burberry", "miumiu", "fendi",
-    # 스트릿/컨템포러리
-    "stussy", "supreme", "palace", "bape", "humanmade",
-    "fearofgod", "essentials", "amiri",
-    "offwhite", "palmangels",
-    # 아웃도어
-    "thenorthface", "arcteryx", "patagonia", "columbia", "descente",
-    "northface",
-    # 캐주얼/스포츠캐주얼
-    "carhartt", "carharttwip", "dickies",
-    "champion", "fila", "ellesse", "kappa",
-    "timberland", "drmartens",
-    # 한국 인기
-    "mlb", "marithefrancoisgirbaud", "covernat", "thisisneverthat",
-    "iab", "instantfunk",
-    # 기타 주요 브랜드
-    "crocs", "birkenstock", "ugg", "skechers",
-    "lacoste", "ralphlauren", "tommyhilfiger", "lululemon",
+# 크림에 절대 없는 브랜드 (블랙리스트 — 정규화된 slug)
+# 이 목록에 있는 브랜드만 스킵. 나머지는 모두 상세 방문하여 모델번호 매칭 시도.
+# 원칙: 애매하면 스킵하지 말고 스캔.
+MUSINSA_ONLY_BRANDS: set[str] = {
+    # 무신사 자체/단독 브랜드
+    "musinsastandard", "musinsastandards", "musinsa",
+    "topten", "topteni", "spao",
+    # 수제화/제화 공방 (리셀 시장 무관)
+    "tangobyjullie", "votta", "flattershoes", "pezd",
+    "rockfish", "glitzy", "anyshoes",
+    # 속옷/양말 전문
+    "bodywild", "byt", "gentlemonster",  # gentlemonster는 안경
+    # 생활용품/잡화 (신발 카테고리에 간혹 노출)
+    "daiso",
 }
 
 
@@ -1496,13 +1482,10 @@ class Scanner:
 
         seen_models: set[str] = set()
 
-        # 크림 브랜드 셋 로드 (1회) — 브랜드 필터용
-        kream_brand_slugs = await self.db.get_all_kream_brand_slugs()
-        # 하드코딩 브랜드와 합집합 (DB 불완전 시 대형 브랜드 보호)
-        all_kream_brands = kream_brand_slugs | KNOWN_KREAM_BRANDS
+        # 블랙리스트 브랜드 로드 — 크림에 절대 없는 브랜드만 스킵
         logger.info(
-            "크림 브랜드 셋: DB %d개 + 하드코딩 %d개 → 합집합 %d개",
-            len(kream_brand_slugs), len(KNOWN_KREAM_BRANDS), len(all_kream_brands),
+            "브랜드 블랙리스트: %d개 (이 외 브랜드는 모두 상세 방문)",
+            len(MUSINSA_ONLY_BRANDS),
         )
 
         for category in categories:
@@ -1542,11 +1525,11 @@ class Scanner:
                 for i in listing
             )
             unique_brands.discard("")
-            kream_matched_brands = unique_brands & all_kream_brands
+            blacklisted = unique_brands & MUSINSA_ONLY_BRANDS
             logger.info(
-                "브랜드 분석: 고유 %d개 중 크림등록 %d개 (필터대상 %d개)",
-                len(unique_brands), len(kream_matched_brands),
-                len(unique_brands) - len(kream_matched_brands),
+                "브랜드 분석: 고유 %d개 중 블랙리스트 %d개 (나머지 %d개 → 상세 방문)",
+                len(unique_brands), len(blacklisted),
+                len(unique_brands) - len(blacklisted),
             )
 
             # 3단계 필터링
@@ -1566,9 +1549,9 @@ class Scanner:
 
                 brand_slug = (item.get("brand") or "").strip().lower()
 
-                # Layer 1.5: 브랜드 필터 (크림 DB에 없는 브랜드 스킵)
+                # Layer 1.5: 브랜드 블랙리스트 (크림에 절대 없는 브랜드만 스킵)
                 brand_normalized = re.sub(r"[^a-z0-9]", "", brand_slug)
-                if brand_normalized and brand_normalized not in all_kream_brands:
+                if brand_normalized and brand_normalized in MUSINSA_ONLY_BRANDS:
                     result.brand_filtered += 1
                     scanned_set.add(goods_no)
                     continue
