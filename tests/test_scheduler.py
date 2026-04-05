@@ -1,6 +1,8 @@
 """스케줄러 단위 테스트."""
 
+import tempfile
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +17,7 @@ from src.models.product import (
 )
 from src.scheduler import Scheduler
 from src.utils.resilience import ErrorAggregator
+from src.watchlist import Watchlist, WatchlistItem
 
 
 # --- 헬퍼 ---
@@ -208,3 +211,120 @@ class TestDailyStats:
         assert top[0].best_profit == 80000
         assert top[1].best_profit == 50000
         assert top[4].best_profit == 10000
+
+
+# --- Watchlist 추적 테스트 (TestSchedulerTracking 동등 복원) ---
+
+
+def _make_watchlist_item(
+    model_number: str = "TEST-001",
+    musinsa_price: int = 89000,
+    kream_price: int = 120000,
+    added_at: str | None = None,
+) -> WatchlistItem:
+    gap = musinsa_price - kream_price
+    return WatchlistItem(
+        kream_product_id="12345",
+        model_number=model_number,
+        kream_name=f"테스트 {model_number}",
+        musinsa_product_id="67890",
+        musinsa_price=musinsa_price,
+        kream_price=kream_price,
+        gap=gap,
+        **({"added_at": added_at} if added_at else {}),
+    )
+
+
+class TestWatchlistTracking:
+    """워치리스트 추적 테스트 (구 TestSchedulerTracking 동등)."""
+
+    def _make_wl(self):
+        f = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        self._tmp = Path(f.name)
+        f.close()
+        return Watchlist(path=self._tmp)
+
+    def teardown_method(self):
+        if hasattr(self, "_tmp"):
+            self._tmp.unlink(missing_ok=True)
+
+    def test_watchlist_add_single(self):
+        """항목 1개 추가 → size==1, get() 확인."""
+        wl = self._make_wl()
+        item = _make_watchlist_item()
+        assert wl.add(item) is True
+        assert wl.size == 1
+        assert wl.get("TEST-001") is not None
+
+    def test_watchlist_add_multiple(self):
+        """3개 추가 → size==3."""
+        wl = self._make_wl()
+        wl.add(_make_watchlist_item(model_number="A-001"))
+        wl.add(_make_watchlist_item(model_number="B-002"))
+        wl.add(_make_watchlist_item(model_number="C-003"))
+        assert wl.size == 3
+
+    def test_watchlist_add_same_updates(self):
+        """동일 model 재추가 → size==1, 가격 갱신."""
+        wl = self._make_wl()
+        wl.add(_make_watchlist_item(model_number="X-001", kream_price=100000))
+        wl.add(_make_watchlist_item(model_number="X-001", kream_price=110000))
+        assert wl.size == 1
+        assert wl.get("X-001").kream_price == 110000
+
+    def test_watchlist_cleanup_removes_expired(self):
+        """100h 지난 항목 제거."""
+        wl = self._make_wl()
+        old_at = (datetime.now() - timedelta(hours=100)).isoformat()
+        wl.add(_make_watchlist_item(model_number="OLD-001", added_at=old_at))
+        removed = wl.cleanup_stale(max_age_hours=48)
+        assert removed == 1
+        assert wl.size == 0
+
+    def test_watchlist_cleanup_keeps_active(self):
+        """최근 항목 유지."""
+        wl = self._make_wl()
+        wl.add(_make_watchlist_item(model_number="NEW-001"))
+        removed = wl.cleanup_stale(max_age_hours=48)
+        assert removed == 0
+        assert wl.size == 1
+
+    def test_watchlist_expiry_mixed(self):
+        """만료+유효 혼합 → 만료만 제거."""
+        wl = self._make_wl()
+        old_at = (datetime.now() - timedelta(hours=100)).isoformat()
+        wl.add(_make_watchlist_item(model_number="OLD-001", added_at=old_at))
+        wl.add(_make_watchlist_item(model_number="NEW-001"))
+        removed = wl.cleanup_stale(max_age_hours=48)
+        assert removed == 1
+        assert wl.size == 1
+        assert wl.get("NEW-001") is not None
+        assert wl.get("OLD-001") is None
+
+
+class TestSchedulerStartStop:
+    """스케줄러 시작/중지 테스트 (동등 복원)."""
+
+    def test_scheduler_start_starts_loops(self):
+        """start() → 3개 루프 .start() 호출."""
+        bot = _make_mock_bot()
+        scheduler = Scheduler(bot)
+        scheduler.tier1_loop = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.tier2_loop = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.daily_report = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.start()
+        scheduler.tier1_loop.start.assert_called_once()
+        scheduler.tier2_loop.start.assert_called_once()
+        scheduler.daily_report.start.assert_called_once()
+
+    def test_scheduler_stop_cancels_loops(self):
+        """stop() → 3개 루프 .cancel() 호출."""
+        bot = _make_mock_bot()
+        scheduler = Scheduler(bot)
+        scheduler.tier1_loop = MagicMock()
+        scheduler.tier2_loop = MagicMock()
+        scheduler.daily_report = MagicMock()
+        scheduler.stop()
+        scheduler.tier1_loop.cancel.assert_called_once()
+        scheduler.tier2_loop.cancel.assert_called_once()
+        scheduler.daily_report.cancel.assert_called_once()

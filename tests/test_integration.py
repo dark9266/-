@@ -311,3 +311,125 @@ def test_tier_files_exist():
     assert (base / "tier1_scanner.py").exists()
     assert (base / "tier2_monitor.py").exists()
     assert (base / "utils" / "rate_limiter.py").exists()
+
+
+# ─── g) Tier2 수익 경계값 테스트 ────────────────────────
+
+
+async def _run_tier2_with_kream_price(kream_price: int, musinsa_price: int = 80000):
+    """Tier2 테스트 헬퍼: 주어진 크림 가격으로 실행."""
+    from src.tier2_monitor import Tier2Monitor
+    from src.watchlist import Watchlist, WatchlistItem
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        tmp_path = Path(f.name)
+
+    try:
+        wl = Watchlist(path=tmp_path)
+        wl.add(WatchlistItem(
+            kream_product_id="999",
+            model_number="BOUNDARY-TEST",
+            kream_name="Boundary Test",
+            musinsa_product_id="888",
+            musinsa_price=musinsa_price,
+            kream_price=kream_price,
+            gap=musinsa_price - kream_price,
+        ))
+
+        alert_cb = AsyncMock()
+        monitor = Tier2Monitor(watchlist=wl, alert_callback=alert_cb)
+
+        mock_kream_data = {
+            "sizes": [{"size": "270", "buy_now_price": kream_price}],
+        }
+
+        with patch("src.tier2_monitor.kream_crawler") as mock_kream:
+            mock_kream.get_full_product_info = AsyncMock(return_value=mock_kream_data)
+            result = await monitor.run()
+
+        return result, alert_cb
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_tier2_below_min_no_alert():
+    """순수익 < 10,000원 → 알림 없음."""
+    # kream=102500 → profit=9985 (< 10k alert_min_profit)
+    result, alert_cb = await _run_tier2_with_kream_price(102500)
+    assert result.checked == 1
+    assert not alert_cb.called
+
+
+@pytest.mark.asyncio
+async def test_tier2_watch_no_alert():
+    """순수익 10k~15k → WATCH 시그널 → 알림 없음."""
+    # kream=107000 → profit=14188 (WATCH: >= 10k but < 15k BUY)
+    result, alert_cb = await _run_tier2_with_kream_price(107000)
+    assert result.checked == 1
+    assert not alert_cb.called
+
+
+@pytest.mark.asyncio
+async def test_tier2_buy_sends_alert():
+    """순수익 >= 15,000원 → BUY 시그널 → 알림 발송."""
+    # kream=108000 → profit=15122 (>= 15k buy_profit)
+    result, alert_cb = await _run_tier2_with_kream_price(108000)
+    assert result.checked == 1
+    assert alert_cb.called
+    assert result.alerts_sent == 1
+
+
+@pytest.mark.asyncio
+async def test_tier2_strong_buy_alert():
+    """순수익 >= 30,000원 → STRONG_BUY 시그널 → 알림 발송."""
+    # kream=124000 → profit=30066 (>= 30k strong_buy_profit)
+    result, alert_cb = await _run_tier2_with_kream_price(124000)
+    assert result.checked == 1
+    assert alert_cb.called
+    assert result.alerts_sent == 1
+
+
+# ─── h) Rate Limiter 추가 테스트 ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_concurrency_limit():
+    """max_concurrent=2 → 동시 최대 2개만 실행."""
+    import asyncio
+    from src.utils.rate_limiter import AsyncRateLimiter
+
+    limiter = AsyncRateLimiter(max_concurrent=2, min_interval=0)
+    max_concurrent = 0
+    current = 0
+
+    async def work():
+        nonlocal max_concurrent, current
+        async with limiter.acquire():
+            current += 1
+            if current > max_concurrent:
+                max_concurrent = current
+            await asyncio.sleep(0.05)
+            current -= 1
+
+    await asyncio.gather(*[work() for _ in range(5)])
+    assert max_concurrent <= 2
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_interval_enforcement():
+    """min_interval=0.1 → 연속 호출 간 최소 간격 보장."""
+    import asyncio
+    import time
+    from src.utils.rate_limiter import AsyncRateLimiter
+
+    limiter = AsyncRateLimiter(max_concurrent=1, min_interval=0.1)
+    timestamps = []
+
+    for _ in range(3):
+        async with limiter.acquire():
+            timestamps.append(time.monotonic())
+
+    for i in range(1, len(timestamps)):
+        gap = timestamps[i] - timestamps[i - 1]
+        assert gap >= 0.09, f"Interval {i}: {gap:.3f}s < 0.09s"

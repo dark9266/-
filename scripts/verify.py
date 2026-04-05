@@ -410,6 +410,18 @@ def verify_chrome_ssh_fallback():
         "tier2_monitor.py가 없습니다",
     )
 
+    # musinsa_httpx 단위 테스트 통과 확인
+    import subprocess
+    ret = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_musinsa_httpx.py", "-v", "--tb=short"],
+        capture_output=True, text=True,
+    )
+    check(
+        "test_musinsa_httpx.py 전체 통과",
+        ret.returncode == 0,
+        "test_musinsa_httpx.py 테스트 실패",
+    )
+
 
 # ───────────────────────────────────────────
 # [8] 빠른테스트 데이터 흐름 검증
