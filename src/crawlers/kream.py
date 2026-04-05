@@ -220,60 +220,15 @@ class KreamCrawler:
             self._logged_in = False
             logger.info("크림 크롤러 세션 종료")
 
-    # ─── CDP 로그인 + 인증 쿠키 ────────────────────────
+    # ─── 로그인 (CDP 제거 — pinia 전용 모드) ─────────────
 
     async def ensure_login(self) -> bool:
-        """CDP 브라우저로 크림 로그인 후 인증 쿠키를 aiohttp 세션에 주입.
+        """Pinia 전용 모드 — CDP 로그인 비활성화.
 
-        이미 로그인된 세션이면 스킵.
-        use_cdp_login=False면 CDP 시도 없이 바로 False 반환 (pinia 전용 모드).
-        Returns: 로그인 성공 여부.
+        Returns: False (인증 불필요, pinia 데이터로 충분).
         """
-        if self._logged_in:
-            return True
-
-        if not settings.use_cdp_login:
-            logger.debug("CDP 로그인 비활성화 (pinia 전용 모드)")
-            return False
-
-        from src.crawlers.chrome_cdp import cdp_manager
-
-        email = settings.kream_email
-        password = settings.kream_password
-        if not email or not password:
-            logger.warning("크림 로그인 정보 미설정 (KREAM_EMAIL / KREAM_PASSWORD)")
-            return False
-
-        try:
-            # CDP 브라우저로 로그인
-            logged_in = await cdp_manager.kream_login(email, password)
-            if not logged_in:
-                return False
-
-            # 브라우저 쿠키를 aiohttp 세션에 주입
-            cookies = await cdp_manager.get_kream_cookies()
-            if not cookies:
-                logger.warning("로그인 성공했지만 쿠키 추출 실패")
-                return False
-
-            session = await self._get_session()
-            from http.cookies import SimpleCookie
-            from yarl import URL
-
-            kream_url = URL(KREAM_BASE)
-            for c in cookies:
-                session.cookie_jar.update_cookies(
-                    SimpleCookie({c["name"]: c["value"]}),
-                    kream_url,
-                )
-
-            self._logged_in = True
-            logger.info("인증 쿠키 %d개 → aiohttp 세션 주입 완료", len(cookies))
-            return True
-
-        except Exception as e:
-            logger.error("CDP 로그인 프로세스 실패: %s", e)
-            return False
+        logger.debug("pinia 전용 모드 — 로그인 스킵")
+        return False
 
     # ─── HTTP 요청 (재시도 + 지수 백오프) ─────────────────
 
@@ -1314,7 +1269,7 @@ class KreamCrawler:
                 return None
 
         # 2단계: 인증 API로 전체 사이즈별 가격 보충 (로그인된 경우만)
-        if self._logged_in or settings.use_cdp_login:
+        if self._logged_in:
             api_prices = await self._fetch_options_display(product_id)
             if api_prices:
                 # API 결과가 더 완전하면 교체, 아니면 병합

@@ -60,24 +60,14 @@ class Settings(BaseSettings):
     channel_log: int = 0
     channel_match_review: int = 0  # 매칭 애매한 경우 검토용 채널
 
-    # Chrome CDP
-    chrome_path: str = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
-    chrome_debug_port: int = 9222
-    chrome_user_data_dir: str = (
-        ""
-    )
-
-    # 크림 로그인
-    kream_email: str = ""
-    kream_password: str = ""
-
     # 배송비
     shipping_cost_to_kream: int = 3000  # 사업자 택배비
 
     # 크롤링
-    use_cdp_login: bool = False  # CDP 브라우저 로그인 사용 여부 (False면 pinia 전용 모드)
-    request_delay_min: float = 1.5  # 최소 딜레이 (초)
-    request_delay_max: float = 4.0  # 최대 딜레이 (초)
+    request_delay_min: float = 1.0  # 최소 딜레이 (초)
+    request_delay_max: float = 2.0  # 최대 딜레이 (초)
+    httpx_concurrency: int = 10  # httpx 동시 요청 수
+    musinsa_min_interval: float = 0.5  # 무신사 요청 간 최소 간격 (초)
     scan_interval_minutes: int = 30  # 기본 스캔 주기
     fast_scan_interval_minutes: int = 10  # 수익 상품 집중 추적 주기
 
@@ -95,8 +85,14 @@ class Settings(BaseSettings):
     auto_scan_confirmed_roi: float = 5.0  # 확정 수익 ROI 기준 (%)
     auto_scan_estimated_roi: float = 10.0  # 예상 수익 ROI 기준 (%)
     auto_scan_max_products: int = 100  # 1회 스캔 최대 상품 수
-    auto_scan_concurrency: int = 3  # 동시 요청 수
+    auto_scan_concurrency: int = 10  # 동시 요청 수
     auto_scan_cache_minutes: int = 60  # 캐시 유효 시간 (분)
+
+    # 2티어 실시간 아키텍처
+    tier1_interval_minutes: int = 30  # 워치리스트 빌더 주기
+    tier2_interval_seconds: int = 60  # 실시간 폴링 주기
+    watchlist_gap_threshold: int = -20_000  # 워치리스트 추가 기준 (gap > 이 값)
+    watchlist_max_age_hours: int = 48  # 워치리스트 항목 최대 유지 시간
 
     # 알림 최소 기준 (하드 플로어)
     alert_min_profit: int = 10_000  # 최소 순수익 (원)

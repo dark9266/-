@@ -7,9 +7,8 @@ import discord
 from discord.ext import commands
 
 from src.config import settings
-from src.crawlers.chrome_cdp import cdp_manager
 from src.crawlers.kream import kream_crawler
-from src.crawlers.musinsa import musinsa_crawler
+from src.crawlers.musinsa_httpx import musinsa_crawler
 from src.discord_bot.formatter import (
     format_auto_scan_alert,
     format_auto_scan_summary,
@@ -59,14 +58,24 @@ class KreamBot(commands.Bot):
         await self.db.connect()
         self.scanner = Scanner(self.db)
         self.scanner._match_review_callback = self.send_match_review
+
+        # 2티어 아키텍처 초기화
+        from src.watchlist import Watchlist
+        from src.tier1_scanner import Tier1Scanner
+        from src.tier2_monitor import Tier2Monitor
+
+        self.watchlist = Watchlist()
+        self.tier1_scanner = Tier1Scanner(db=self.db, watchlist=self.watchlist)
+        self.tier2_monitor = Tier2Monitor(
+            watchlist=self.watchlist,
+            alert_callback=self.send_auto_scan_alert,
+        )
+
         self.scheduler = Scheduler(self)
         logger.info("봇 초기화 완료")
 
     async def on_ready(self) -> None:
         logger.info("봇 로그인: %s (ID: %s)", self.user.name, self.user.id)
-        # Chrome 헬스체커에 알림 콜백 연결
-        from src.utils.resilience import chrome_health
-        chrome_health.set_notify_callback(self.log_to_channel)
         # 스케줄러 시작
         if self.scheduler:
             self.scheduler.start()
@@ -1063,7 +1072,6 @@ async def cmd_status(ctx: commands.Context):
     """봇 상태 확인."""
     await ctx.send("🔍 상태 확인 중...")
 
-    is_chrome = cdp_manager.is_connected
     is_kream = kream_crawler.is_active
     is_musinsa = False
 
@@ -1080,7 +1088,7 @@ async def cmd_status(ctx: commands.Context):
     uptime = str(datetime.now() - bot.start_time).split(".")[0]
 
     embed = format_status(
-        is_chrome_connected=is_chrome,
+        is_chrome_connected=False,
         is_kream_logged_in=is_kream,
         is_musinsa_logged_in=is_musinsa,
         keyword_count=len(keywords),
@@ -1090,15 +1098,13 @@ async def cmd_status(ctx: commands.Context):
 
     # 스케줄러 정보 추가
     if bot.scheduler:
-        tracking_count = len(bot.scheduler._tracking)
-        scan_running = bot.scheduler.periodic_scan.is_running()
-        auto_scan_running = bot.scheduler.auto_scan_loop.is_running()
+        tier1_running = bot.scheduler.tier1_loop.is_running()
+        tier2_running = bot.scheduler.tier2_loop.is_running()
         embed.add_field(
             name="스케줄러",
             value=(
-                f"**키워드 스캔:** {'🟢 실행 중' if scan_running else '🔴 중지'} ({settings.scan_interval_minutes}분)\n"
-                f"**자동스캔:** {'🟢 실행 중' if auto_scan_running else '🔴 중지'} ({settings.auto_scan_interval_minutes}분)\n"
-                f"**집중 추적:** {tracking_count}개 상품\n"
+                f"**Tier1 (워치리스트):** {'🟢 실행 중' if tier1_running else '🔴 중지'} ({settings.tier1_interval_minutes}분)\n"
+                f"**Tier2 (실시간):** {'🟢 실행 중' if tier2_running else '🔴 중지'} ({settings.tier2_interval_seconds}초)\n"
                 f"**오늘 스캔:** {bot.daily_stats['scan_count']}회"
             ),
             inline=False,
@@ -1194,33 +1200,6 @@ async def cmd_tracking_list(ctx: commands.Context):
             ),
             inline=False,
         )
-
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="크롬상태")
-async def cmd_chrome_health(ctx: commands.Context):
-    """Chrome 상태 및 복구 이력 조회."""
-    from src.utils.resilience import chrome_health
-
-    is_connected = cdp_manager.is_connected
-    status_icon = "🟢" if is_connected else "🔴"
-    summary = chrome_health.get_health_summary()
-
-    embed = discord.Embed(
-        title=f"{status_icon} Chrome 상태",
-        color=0x00FF00 if is_connected else 0xFF0000,
-    )
-    embed.add_field(
-        name="CDP 연결",
-        value="연결됨" if is_connected else "연결 끊김",
-        inline=True,
-    )
-    embed.add_field(
-        name="상세 정보",
-        value=f"```\n{summary}\n```",
-        inline=False,
-    )
 
     await ctx.send(embed=embed)
 

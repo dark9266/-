@@ -11,7 +11,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # Setup
 pip install -e ".[dev]"
-playwright install chromium
 
 # Run the bot
 python main.py
@@ -19,7 +18,7 @@ python main.py
 # Tests
 pytest tests/                        # all tests
 pytest tests/test_matcher.py -v      # single file
-pytest tests/test_auto_scan_live.py -v -s  # E2E (requires network + Chrome CDP)
+pytest tests/test_auto_scan_live.py -v -s  # E2E (requires network)
 
 # Lint
 ruff check src/ tests/
@@ -40,11 +39,14 @@ Musinsa/Kream Crawlers → Matcher (model# matching) → Profit Calculator → D
 
 - `src/scanner.py` — Orchestrator. Runs keyword scans, auto-scans (Kream popular → Musinsa search → profit analysis), reverse scans (Musinsa sales → Kream DB match), and batch scans. Uses 3-stage Musinsa search: model# → product name → brand+name.
 - `src/crawlers/kream.py` — Parses Kream's Nuxt `__NUXT_DATA__` (devalue format) for sizes, prices, trade volume.
-- `src/crawlers/musinsa.py` — Playwright-based, requires logged-in session (`data/musinsa_session.json`). Extracts member-only discounts.
-- `src/crawlers/chrome_cdp.py` — Connects to Windows Chrome via CDP (remote debugging) to bypass anti-bot. WSL2↔Windows bridge.
+- `src/crawlers/musinsa_httpx.py` — httpx 기반 무신사 크롤러. 세션 쿠키(`data/musinsa_session.json`)로 등급할인가 수집.
 - `src/matcher.py` — Model number normalization and exact matching (e.g., "dq8423 100" → "DQ8423-100"). No fuzzy matching.
 - `src/profit_calculator.py` — Kream fee structure (base 2500₩ + 6% + 10% VAT), per-size profit/ROI, signal determination (STRONG_BUY 30k+ / BUY 15k+ / WATCH 5k+ / NOT_RECOMMENDED).
-- `src/scheduler.py` — `discord.ext.tasks` loops: 30min auto-scan, 10min fast-track, 5min health-check, midnight daily report.
+- `src/scheduler.py` — `discord.ext.tasks` 3개 루프: Tier1 워치리스트 빌더(30분), Tier2 실시간 폴링(60초), 일일 리포트(자정).
+- `src/watchlist.py` — watchlist.json 기반 모니터링 대상 관리.
+- `src/tier1_scanner.py` — 워치리스트 빌더. 리스팅 가격 기반 gap 스크리닝.
+- `src/tier2_monitor.py` — 실시간 크림 시세 폴링. 수익 조건 도달 시 알림.
+- `src/utils/rate_limiter.py` — AsyncRateLimiter (Semaphore + 최소 간격).
 - `src/discord_bot/bot.py` — 16+ slash commands, rich embed alerts, 1-hour alert dedup cooldown.
 - `src/models/database.py` — Async SQLite (aiosqlite), 11 tables: products, price history, trade volume, alerts, keywords, settings.
 - `src/config.py` — Pydantic `BaseSettings`, loads from `.env`.
@@ -54,34 +56,35 @@ Musinsa/Kream Crawlers → Matcher (model# matching) → Profit Calculator → D
 
 Environment variables in `.env` (see `.env.example`):
 - `DISCORD_TOKEN`, `CHANNEL_*` — Discord bot token and channel IDs
-- `CHROME_PATH`, `CHROME_DEBUG_PORT`, `CHROME_USER_DATA_DIR` — Chrome CDP settings (Windows paths from WSL2)
-- `KREAM_EMAIL/PASSWORD`, `MUSINSA_EMAIL/PASSWORD` — Optional auto-login credentials
+- `MUSINSA_EMAIL/PASSWORD` — Optional auto-login credentials
 - Thresholds: `AUTO_SCAN_CONFIRMED_ROI=5.0`, `AUTO_SCAN_ESTIMATED_ROI=10.0`
+- Tier settings: `TIER1_INTERVAL_MINUTES=30`, `TIER2_INTERVAL_SECONDS=60`, `HTTPX_CONCURRENCY=10`
 
 ## Code Style
 
 - Ruff: line-length 100, rules E/F/I/N/W, target Python 3.13
 - pytest: `asyncio_mode = "auto"` (async tests auto-detected)
-- All I/O is async (aiosqlite, aiohttp, Playwright)
+- All I/O is async (aiosqlite, aiohttp, httpx)
 - Korean used in user-facing strings, Discord messages, and documentation; English in code identifiers
 
 ## Dev Environment
 
-WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges the two via `localhost:9222`.
+WSL2 + Windows: bot runs on Linux. 무신사 세션 쿠키는 `data/musinsa_session.json`에서 로드.
 
 ## 현재 명령어 체계
 
 - `!역방향스캔` — 브랜드별 무신사 검색 → 크림 DB 매칭 (TOP 20 브랜드, 테스트 모드 5개)
 - `!역방향스캔 전체` — 전체 브랜드 무제한
 - `!카테고리스캔 [카테고리] [페이지]` — 무신사 카테고리 페이지 전수 대조 (개발 중)
-- `!자동스캔` — 30분 주기 자동 실행
-- `!배치스캔` — 크림 DB 순회 스캔 (Chrome 의존성 제거 필요)
+- `!자동스캔` — Tier1+Tier2 자동 실행
+- `!배치스캔` — 크림 DB 순회 스캔
+- `!상태` — 봇/스케줄러 상태 확인
 
 ## 역방향 스캔 동작 흐름
 
 1. 브랜드별 무신사 검색 API (aiohttp) → 상품 리스트
-2. 상품별 상세 조회 (Playwright) → 사이즈+가격
-3. 사이즈 파싱: 3단계 폴백 (직접API → 인터셉트 → DOM)
+2. 상품별 상세 조회 (httpx) → 사이즈+가격
+3. 사이즈 파싱: options API + inventory API
 4. 품절 필터: inventory v2 API + productVariantId 매핑
 5. 크림 DB SQLite 매칭 (모델번호 인덱스) → 없으면 크림 API 호출
 6. 수수료 차감 후 수익 계산 → 디스코드 알림
@@ -151,6 +154,17 @@ WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges th
 - `send_profit_alert()`: BUY/STRONG_BUY 시그널만 발송
 - `send_auto_scan_alert()`: 순수익 ≥ 10,000₩ AND ROI ≥ 5% AND 거래량 ≥ 1
 - `config.py`: `alert_min_profit`, `alert_min_roi`, `alert_min_volume_7d`
+
+## Chrome 제거 원칙
+- Selenium/Chrome/CDP 사용 금지
+- 모든 KREAM 데이터 수집은 requests/httpx 직접 API 호출로만
+- GET 전용 엔드포인트만 사용, 쓰기 요청 금지
+- API 호출 간 최소 1~2초 딜레이 (rate limit 방지)
+
+## 2티어 실시간 아키텍처
+- 1티어: asyncio 병렬(동시 10개) 워치리스트 빌더 - 30분 주기
+- 2티어: watchlist.json 대상 Pinia API 60초 폴링 - 독립 병렬 실행
+- 수익 조건 도달 즉시 웹훅 발송
 
 ### Known Issues
 - MFS(다중재고) 상품 품절 필터 한계 — inventory API 근본 미작동, 15/17까지만 축소 가능 (MT410CK5 등)

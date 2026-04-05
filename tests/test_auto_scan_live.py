@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.crawlers.kream import kream_crawler
-from src.crawlers.musinsa import musinsa_crawler
+from src.crawlers.musinsa_httpx import musinsa_crawler
 from src.matcher import model_numbers_match, normalize_model_number
 from src.profit_calculator import _normalize_size, analyze_auto_scan_opportunity
 

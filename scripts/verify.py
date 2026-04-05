@@ -93,9 +93,9 @@ def verify_alert_filter():
 def verify_stock_filter():
     print("\n[2] 품절 필터 검증")
 
-    from src.crawlers.musinsa import MusinsaCrawler
+    from src.crawlers.musinsa_httpx import MusinsaHttpxCrawler
 
-    crawler = MusinsaCrawler.__new__(MusinsaCrawler)
+    crawler = MusinsaHttpxCrawler.__new__(MusinsaHttpxCrawler)
 
     # 테스트용 options_data: 사이즈 3개 (no=1,2,3)
     options_data = {
@@ -375,29 +375,39 @@ def verify_collab_matching():
 
 
 # ───────────────────────────────────────────
-# 7) Chrome SSH 폴백 검증
+# 7) Chrome 제거 + 2티어 아키텍처 검증
 # ───────────────────────────────────────────
 def verify_chrome_ssh_fallback():
-    print("\n[7] Chrome SSH 폴백 검증")
-
-    source = open("src/crawlers/chrome_cdp.py").read()
+    print("\n[7] Chrome 제거 + 2티어 아키텍처 검증")
 
     check(
-        "shutil.which 폴백 로직 존재",
-        "shutil.which" in source,
-        "chrome_cdp.py에 shutil.which 없음",
+        "chrome_cdp.py 파일 삭제됨",
+        not os.path.exists("src/crawlers/chrome_cdp.py"),
+        "chrome_cdp.py가 아직 존재합니다",
     )
 
     check(
-        "pkill 폴백 존재 (WSL 네이티브)",
-        "pkill" in source,
-        "chrome_cdp.py에 pkill 폴백 없음",
+        "musinsa_httpx.py 존재",
+        os.path.exists("src/crawlers/musinsa_httpx.py"),
+        "musinsa_httpx.py가 없습니다",
     )
 
     check(
-        "import shutil 존재",
-        "import shutil" in source,
-        "chrome_cdp.py에 shutil import 없음",
+        "watchlist.py 존재",
+        os.path.exists("src/watchlist.py"),
+        "watchlist.py가 없습니다",
+    )
+
+    check(
+        "tier1_scanner.py 존재",
+        os.path.exists("src/tier1_scanner.py"),
+        "tier1_scanner.py가 없습니다",
+    )
+
+    check(
+        "tier2_monitor.py 존재",
+        os.path.exists("src/tier2_monitor.py"),
+        "tier2_monitor.py가 없습니다",
     )
 
 

@@ -1,106 +1,80 @@
 """자동 스캔 스케줄러.
 
-discord.ext.tasks 기반 주기적 자동 스캔, 수익 상품 집중 추적, 일일 리포트.
+discord.ext.tasks 기반 2티어 실시간 아키텍처:
+- Tier 1: 워치리스트 빌더 (30분 주기)
+- Tier 2: 실시간 폴링 모니터 (60초 주기)
+- 일일 리포트 (자정)
 """
 
 import asyncio
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 
 from discord.ext import tasks
 
 from src.config import settings
-from src.models.product import AutoScanOpportunity, ProfitOpportunity, Signal
+from src.models.product import Signal
 from src.utils.logging import setup_logger
-from src.utils.resilience import chrome_health, error_aggregator
+from src.utils.resilience import error_aggregator
 
 logger = setup_logger("scheduler")
 
 
 class Scheduler:
-    """자동 스캔 스케줄러.
+    """2티어 스케줄러.
 
     bot.py의 KreamBot에서 초기화하고 start()로 시작한다.
     """
 
     def __init__(self, bot):
-        """
-        Args:
-            bot: KreamBot 인스턴스 (scanner, db, send_profit_alert 등 접근용)
-        """
         self.bot = bot
-        # 집중 추적 대상 (product_id -> ProfitOpportunity)
-        self._tracking: dict[str, ProfitOpportunity] = {}
-        self._tracking_expires: dict[str, datetime] = {}
-        self._tracking_duration = timedelta(hours=2)  # 집중 추적 지속 시간
 
     def start(self) -> None:
         """모든 스케줄 태스크 시작."""
-        if not self.periodic_scan.is_running():
-            self.periodic_scan.start()
-        if not self.fast_track_scan.is_running():
-            self.fast_track_scan.start()
+        if not self.tier1_loop.is_running():
+            self.tier1_loop.start()
+        if not self.tier2_loop.is_running():
+            self.tier2_loop.start()
         if not self.daily_report.is_running():
             self.daily_report.start()
-        if not self.health_check.is_running():
-            self.health_check.start()
-        if not self.tab_cleanup.is_running():
-            self.tab_cleanup.start()
-        logger.info("스케줄러 시작 완료")
+
+        # 스캔 캐시 정리
+        if hasattr(self.bot, 'scanner') and hasattr(self.bot.scanner, 'scan_cache'):
+            self.bot.scanner.scan_cache.cleanup_expired()
+
+        logger.info("스케줄러 시작 완료 (Tier1=%d분, Tier2=%d초)",
+                     settings.tier1_interval_minutes, settings.tier2_interval_seconds)
 
     def stop(self) -> None:
         """모든 스케줄 태스크 중지."""
-        self.periodic_scan.cancel()
-        self.fast_track_scan.cancel()
+        self.tier1_loop.cancel()
+        self.tier2_loop.cancel()
         self.daily_report.cancel()
-        self.health_check.cancel()
-        self.tab_cleanup.cancel()
-        self.stop_auto_scan()
         logger.info("스케줄러 중지")
 
     def start_auto_scan(self) -> None:
-        """자동스캔 루프 시작."""
-        if not self.auto_scan_loop.is_running():
-            self.auto_scan_loop.start()
-            logger.info("자동스캔 루프 시작 (%d분 간격)", settings.auto_scan_interval_minutes)
+        """자동스캔 시작 (Tier1 + Tier2)."""
+        if not self.tier1_loop.is_running():
+            self.tier1_loop.start()
+        if not self.tier2_loop.is_running():
+            self.tier2_loop.start()
+        logger.info("자동스캔 시작 (Tier1 + Tier2)")
 
     def stop_auto_scan(self) -> None:
-        """자동스캔 루프 중지."""
-        if self.auto_scan_loop.is_running():
-            self.auto_scan_loop.cancel()
-            logger.info("자동스캔 루프 중지")
+        """자동스캔 중지."""
+        if self.tier1_loop.is_running():
+            self.tier1_loop.cancel()
+        if self.tier2_loop.is_running():
+            self.tier2_loop.cancel()
+        logger.info("자동스캔 중지")
 
-    def add_to_tracking(self, opportunity: ProfitOpportunity) -> None:
-        """수익 상품을 집중 추적 목록에 추가."""
-        pid = opportunity.kream_product.product_id
-        self._tracking[pid] = opportunity
-        self._tracking_expires[pid] = datetime.now() + self._tracking_duration
-        logger.info(
-            "집중 추적 추가: %s (만료: %s)",
-            opportunity.kream_product.name,
-            self._tracking_expires[pid].strftime("%H:%M"),
-        )
+    # ─── Tier 1: 워치리스트 빌더 (30분 주기) ─────────────
 
-    def _cleanup_expired_tracking(self) -> None:
-        """만료된 집중 추적 항목 제거."""
-        now = datetime.now()
-        expired = [pid for pid, exp in self._tracking_expires.items() if now > exp]
-        for pid in expired:
-            name = self._tracking.get(pid, None)
-            del self._tracking[pid]
-            del self._tracking_expires[pid]
-            logger.info("집중 추적 만료: %s", pid)
+    @tasks.loop(minutes=settings.tier1_interval_minutes)
+    async def tier1_loop(self) -> None:
+        """카테고리스캔 → 크림 매칭 → 워치리스트 빌더."""
+        logger.info("=== Tier1 워치리스트 빌더 시작 ===")
+        await self.bot.log_to_channel("🔄 **Tier1 시작** | 카테고리스캔 + 워치리스트 빌더")
 
-    @tasks.loop(minutes=settings.scan_interval_minutes)
-    async def periodic_scan(self) -> None:
-        """주기적 자동 스캔 (기본 30분).
-
-        카테고리스캔(aiohttp 기반, Chrome 불필요)을 먼저 실행한 뒤,
-        Chrome 상태를 확인하고 키워드 스캔(Playwright 의존)을 실행한다.
-        """
-        logger.info("=== 자동 스캔 시작 ===")
-        await self.bot.log_to_channel("🔄 **자동스캔 시작** | 카테고리 103 (30페이지)")
-
-        # ── 1단계: 카테고리스캔 (Chrome 불필요, 항상 실행) ──
         try:
             async def on_cat_opportunity(opportunity):
                 if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
@@ -108,14 +82,13 @@ class Scheduler:
                 await self.bot.send_auto_scan_alert(opportunity)
 
             async def on_cat_progress(message):
-                logger.info("카테고리스캔: %s", message)
-                # 필터 완료 시점에 Discord 알림 (상세 방문 전 중간 보고)
+                logger.info("Tier1: %s", message)
                 if "필터 완료" in message:
                     await self.bot.log_to_channel(f"📋 {message}")
 
             cat_result = await self.bot.scanner.run_category_scan(
-                categories=["103"],  # 스니커즈
-                max_pages=30,
+                categories=["103"],
+                max_pages=1,  # httpx 직접 API: 1페이지(60건)
                 on_opportunity=on_cat_opportunity,
                 on_progress=on_cat_progress,
                 resume=True,
@@ -128,112 +101,62 @@ class Scheduler:
             self.bot.daily_stats["scan_count"] += 1
             self.bot.daily_stats["product_count"] += cat_result.detail_fetched
 
-            await self.bot.log_to_channel(
-                f"카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
-                f"리스팅 {cat_result.listing_fetched} → "
-                f"브랜드필터 {cat_result.brand_filtered} / "
-                f"상세 {cat_result.detail_fetched} → "
-                f"수익기회 {len(cat_result.opportunities)}"
-            )
-        except Exception as e:
-            error_aggregator.add("periodic_scan_category", e)
-            logger.error("카테고리스캔 실패: %s", e)
-            await self.bot.log_to_channel(f"⚠️ 카테고리스캔 실패: {e}")
-
-        # ── 2단계: 키워드 스캔 (Chrome 필요, Chrome OK일 때만) ──
-        try:
-            if not await chrome_health.check_and_recover():
-                logger.warning("Chrome 상태 불량, 키워드 스캔 건너뜀")
-                await self.bot.log_to_channel("⚠️ Chrome 연결 불량 — 키워드 스캔 건너뜀 (카테고리스캔은 완료)")
-                return
-
-            result = await self.bot.scanner.scan_all_keywords()
-
-            # 통계 업데이트
-            self.bot.daily_stats["scan_count"] += 1
-            self.bot.daily_stats["product_count"] += result.scanned_products
-            self.bot.daily_stats["opportunity_count"] += len(result.opportunities)
-            self.bot.daily_stats["opportunities"].extend(result.opportunities)
-
-            # 수익 알림 전송
-            for op in result.opportunities:
-                await self.bot.send_profit_alert(op)
-                if op.signal in (Signal.STRONG_BUY, Signal.BUY):
-                    self.add_to_tracking(op)
-
-            # 가격 변동 알림
-            if result.price_changes:
-                await self.bot.send_price_change_alert(result.price_changes)
-
-            chrome_health.report_success()
-
-            logger.info(
-                "=== 자동 스캔 완료: 수익기회 %d건, 가격변동 %d건 ===",
-                len(result.opportunities), len(result.price_changes),
-            )
+            # Tier1 워치리스트 빌더 실행
+            if hasattr(self.bot, 'tier1_scanner') and self.bot.tier1_scanner:
+                try:
+                    t1_result = await self.bot.tier1_scanner.run()
+                    await self.bot.log_to_channel(
+                        f"Tier1 완료 ({cat_elapsed:.0f}초) | "
+                        f"스캔 {t1_result.scanned} / 매칭 {t1_result.matched} / "
+                        f"워치리스트 +{t1_result.added}"
+                    )
+                except Exception as e:
+                    error_aggregator.add("tier1_watchlist", e)
+                    logger.error("Tier1 워치리스트 빌더 실패: %s", e)
+            else:
+                await self.bot.log_to_channel(
+                    f"카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
+                    f"리스팅 {cat_result.listing_fetched} → "
+                    f"상세 {cat_result.detail_fetched} → "
+                    f"수익기회 {len(cat_result.opportunities)}"
+                )
 
         except Exception as e:
-            chrome_health.report_failure()
-            error_aggregator.add("periodic_scan", e)
-            logger.error("키워드 스캔 실패: %s", e)
-            await self.bot.log_to_channel(f"⚠️ 키워드 스캔 실패: {e}")
+            error_aggregator.add("tier1_loop", e)
+            logger.error("Tier1 실패: %s", e)
+            await self.bot.log_to_channel(f"⚠️ Tier1 실패: {e}")
 
-    @periodic_scan.before_loop
-    async def before_periodic_scan(self) -> None:
-        """봇이 ready될 때까지 대기."""
+    @tier1_loop.before_loop
+    async def before_tier1(self) -> None:
         await self.bot.wait_until_ready()
-        # 시작 후 첫 스캔은 1분 뒤에 (봇 초기화 시간 확보)
         await asyncio.sleep(60)
 
-    @tasks.loop(minutes=settings.fast_scan_interval_minutes)
-    async def fast_track_scan(self) -> None:
-        """수익 상품 집중 추적 (기본 10분)."""
-        self._cleanup_expired_tracking()
+    # ─── Tier 2: 실시간 폴링 모니터 (60초 주기) ──────────
 
-        if not self._tracking:
+    @tasks.loop(seconds=settings.tier2_interval_seconds)
+    async def tier2_loop(self) -> None:
+        """워치리스트 대상 크림 실시간 폴링."""
+        if not hasattr(self.bot, 'tier2_monitor') or not self.bot.tier2_monitor:
             return
 
-        logger.info("집중 추적 스캔: %d개 상품", len(self._tracking))
+        try:
+            result = await self.bot.tier2_monitor.run()
+            if result and result.alerts_sent > 0:
+                logger.info("Tier2: %d건 알림 발송", result.alerts_sent)
+        except Exception as e:
+            error_aggregator.add("tier2_loop", e)
+            logger.error("Tier2 실패: %s", e)
 
-        for pid, opportunity in list(self._tracking.items()):
-            try:
-                # 크림 가격만 재수집
-                updated = await self.bot.scanner.scan_single_product(
-                    pid, opportunity.retail_products
-                )
-                if updated:
-                    # 가격 변동 확인
-                    retail_price_map = {}
-                    for rp in opportunity.retail_products:
-                        for s in rp.sizes:
-                            if s.in_stock:
-                                retail_price_map[s.size] = s.price
-
-                    changes = await self.bot.scanner.price_tracker.check_kream_price_changes(
-                        updated.kream_product, retail_price_map
-                    )
-                    significant = self.bot.scanner.price_tracker.filter_significant_changes(changes)
-                    if significant:
-                        await self.bot.send_price_change_alert(significant)
-
-                    # 시그널이 비추천으로 떨어지면 추적 해제
-                    if updated.signal == Signal.NOT_RECOMMENDED:
-                        del self._tracking[pid]
-                        del self._tracking_expires[pid]
-                        logger.info("집중 추적 해제 (시그널 하락): %s", pid)
-
-            except Exception as e:
-                error_aggregator.add("fast_track", e)
-                logger.error("집중 추적 실패 (%s): %s", pid, e)
-
-    @fast_track_scan.before_loop
-    async def before_fast_track(self) -> None:
+    @tier2_loop.before_loop
+    async def before_tier2(self) -> None:
         await self.bot.wait_until_ready()
         await asyncio.sleep(120)
 
-    @tasks.loop(time=time(hour=0, minute=0))  # 매일 자정
+    # ─── 일일 리포트 (자정) ──────────────────────────────
+
+    @tasks.loop(time=time(hour=0, minute=0))
     async def daily_report(self) -> None:
-        """매일 자정 일일 리포트 자동 생성."""
+        """매일 자정 일일 리포트."""
         logger.info("일일 리포트 생성")
 
         try:
@@ -254,8 +177,7 @@ class Scheduler:
                 if channel:
                     await channel.send(embed=embed)
 
-            # 에러 요약도 로그 채널에 전송
-            error_summary = error_aggregator.get_summary(minutes=1440)  # 24시간
+            error_summary = error_aggregator.get_summary(minutes=1440)
             if "에러 없음" not in error_summary:
                 await self.bot.log_to_channel(f"📊 일일 에러 요약\n```\n{error_summary}\n```")
 
@@ -268,9 +190,12 @@ class Scheduler:
             }
             error_aggregator.clear()
 
-            # 카테고리스캔 이력 초기화 (하루 1회 전수 스캔 보장)
+            # 카테고리스캔 이력 초기화
             await self.bot.scanner.db.clear_category_scan_history()
-            logger.info("카테고리스캔 이력 초기화 (일일 리셋)")
+
+            # 워치리스트 만료 항목 정리
+            if hasattr(self.bot, 'watchlist') and self.bot.watchlist:
+                self.bot.watchlist.cleanup_stale()
 
             logger.info("일일 리포트 전송 완료, 통계 리셋")
 
@@ -281,137 +206,3 @@ class Scheduler:
     @daily_report.before_loop
     async def before_daily_report(self) -> None:
         await self.bot.wait_until_ready()
-
-    @tasks.loop(minutes=5)
-    async def health_check(self) -> None:
-        """5분마다 Chrome 상태 확인 및 자동 복구."""
-        try:
-            await chrome_health.check_and_recover()
-            # check_and_recover 내부에서 직접 알림을 전송하므로 여기선 추가 알림 불필요
-        except Exception as e:
-            error_aggregator.add("health_check", e)
-            await self.bot.log_to_channel(f"❌ 헬스체크 자체 오류: {e}")
-
-    @health_check.before_loop
-    async def before_health_check(self) -> None:
-        await self.bot.wait_until_ready()
-        await asyncio.sleep(180)
-
-    @tasks.loop(minutes=settings.auto_scan_interval_minutes)
-    async def auto_scan_loop(self) -> None:
-        """카테고리스캔 + 역방향스캔 통합 자동스캔."""
-        logger.info("=== 자동스캔 루프 실행 ===")
-        await self.bot.log_to_channel("🔄 **자동스캔 루프 시작** | 카테고리 103 (30페이지)")
-
-        try:
-            # ── 1단계: 카테고리스캔 (Playwright headless, Chrome CDP 불필요) ──
-            async def on_cat_opportunity(opportunity):
-                if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
-                    return
-                await self.bot.send_auto_scan_alert(opportunity)
-
-            async def on_cat_progress(message):
-                logger.info("카테고리스캔 진행: %s", message)
-                if "필터 완료" in message:
-                    await self.bot.log_to_channel(f"📋 {message}")
-
-            cat_result = await self.bot.scanner.run_category_scan(
-                categories=["103"],  # 스니커즈
-                max_pages=30,
-                on_opportunity=on_cat_opportunity,
-                on_progress=on_cat_progress,
-                resume=True,  # 이력 유지 (이미 스캔한 상품 스킵)
-            )
-
-            cat_elapsed = 0.0
-            if cat_result.finished_at and cat_result.started_at:
-                cat_elapsed = (cat_result.finished_at - cat_result.started_at).total_seconds()
-
-            await self.bot.log_to_channel(
-                f"카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
-                f"리스팅 {cat_result.listing_fetched} → "
-                f"브랜드필터 {cat_result.brand_filtered} / "
-                f"상세 {cat_result.detail_fetched} → "
-                f"수익기회 {len(cat_result.opportunities)}"
-            )
-
-            # 통계 업데이트
-            self.bot.daily_stats["scan_count"] += 1
-            self.bot.daily_stats["product_count"] += cat_result.detail_fetched
-
-            # ── 2단계: 역방향스캔 (Chrome 필요, Chrome OK일 때만) ──
-            if not await chrome_health.check_and_recover():
-                logger.warning("Chrome 상태 불량, 역방향스캔 건너뜀")
-                await self.bot.log_to_channel(
-                    "⚠️ Chrome 연결 불량 — 역방향스캔 건너뜀 (카테고리스캔은 완료)"
-                )
-            else:
-                async def on_opportunity(opportunity: AutoScanOpportunity):
-                    """수익 기회 발견 즉시 디스코드 알림 (BUY 이상만)."""
-                    if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
-                        return
-                    await self.bot.send_auto_scan_alert(opportunity)
-                    # 확정 수익이면 집중 추적 추가
-                    if opportunity.best_confirmed_roi >= settings.auto_scan_confirmed_roi:
-                        from src.models.product import ProfitOpportunity as PO
-                        tracking_op = PO(
-                            kream_product=opportunity.kream_product,
-                            retail_products=[],
-                            size_profits=[],
-                            best_profit=opportunity.best_confirmed_profit,
-                            best_roi=opportunity.best_confirmed_roi,
-                            signal=Signal.STRONG_BUY if opportunity.best_confirmed_roi >= 10 else Signal.BUY,
-                        )
-                        self.add_to_tracking(tracking_op)
-
-                async def on_progress(message: str):
-                    """진행 상황 로그."""
-                    logger.info("역방향스캔 진행: %s", message)
-
-                result = await self.bot.scanner.auto_scan(
-                    on_opportunity=on_opportunity,
-                    on_progress=on_progress,
-                )
-
-                # 통계 업데이트
-                self.bot.daily_stats["product_count"] += result.kream_scanned
-
-                elapsed = 0.0
-                if result.finished_at and result.started_at:
-                    elapsed = (result.finished_at - result.started_at).total_seconds()
-
-                await self.bot.log_to_channel(
-                    f"역방향스캔 완료 ({elapsed:.0f}초) | "
-                    f"크림 {result.kream_scanned} → 매칭 {result.matched} → "
-                    f"수익기회 {len(result.opportunities)} "
-                    f"(확정 {result.confirmed_count} / 예상 {result.estimated_count}) | "
-                    f"에러 {len(result.errors)}"
-                )
-
-            logger.info("=== 자동스캔 루프 완료 ===")
-
-        except Exception as e:
-            error_aggregator.add("auto_scan_loop", e)
-            logger.error("자동스캔 루프 실패: %s", e)
-            await self.bot.log_to_channel(f"⚠️ 자동스캔 실패: {e}")
-
-    @auto_scan_loop.before_loop
-    async def before_auto_scan_loop(self) -> None:
-        """봇이 ready될 때까지 대기."""
-        await self.bot.wait_until_ready()
-        # 시작 후 첫 스캔은 2분 뒤에
-        await asyncio.sleep(120)
-
-    @tasks.loop(minutes=30)
-    async def tab_cleanup(self) -> None:
-        """30분마다 불필요한 탭 정리."""
-        try:
-            from src.crawlers.chrome_cdp import cdp_manager
-            await cdp_manager.close_extra_tabs(keep=2)
-        except Exception:
-            pass
-
-    @tab_cleanup.before_loop
-    async def before_tab_cleanup(self) -> None:
-        await self.bot.wait_until_ready()
-        await asyncio.sleep(300)

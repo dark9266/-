@@ -302,101 +302,16 @@ class TestFetchOptionsDisplay:
 
 
 class TestEnsureLogin:
-    """ensure_login (CDP 로그인 + 쿠키 주입) 테스트."""
+    """ensure_login (pinia 전용 모드) 테스트."""
 
     def setup_method(self):
         self.crawler = KreamCrawler()
 
     @pytest.mark.asyncio
-    async def test_skip_if_already_logged_in(self):
-        """이미 로그인된 상태면 바로 True."""
-        self.crawler._logged_in = True
+    async def test_pinia_only_returns_false(self):
+        """pinia 전용 모드 — 항상 False 반환."""
+        self.crawler._logged_in = False
         result = await self.crawler.ensure_login()
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_fail_if_no_credentials(self):
-        """로그인 정보 없으면 False."""
-        self.crawler._logged_in = False
-        with patch("src.crawlers.kream.settings") as mock_settings:
-            mock_settings.kream_email = ""
-            mock_settings.kream_password = ""
-            result = await self.crawler.ensure_login()
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_successful_login_flow(self):
-        """CDP 로그인 → 쿠키 추출 → aiohttp 주입 전체 흐름."""
-        self.crawler._logged_in = False
-
-        # mock CDP manager
-        mock_cdp = MagicMock()
-        mock_cdp.kream_login = AsyncMock(return_value=True)
-        mock_cdp.get_kream_cookies = AsyncMock(return_value=[
-            {"name": "token", "value": "abc123", "domain": ".kream.co.kr"},
-            {"name": "session_id", "value": "sess456", "domain": ".kream.co.kr"},
-        ])
-
-        # mock session
-        mock_session = MagicMock()
-        mock_cookie_jar = MagicMock()
-        mock_session.cookie_jar = mock_cookie_jar
-        self.crawler._get_session = AsyncMock(return_value=mock_session)
-
-        with (
-            patch("src.crawlers.kream.settings") as mock_settings,
-            patch("src.crawlers.kream.cdp_manager", mock_cdp, create=True),
-        ):
-            # cdp_manager를 ensure_login 내부에서 import하므로 patch 위치 조정
-            mock_settings.kream_email = "test@test.com"
-            mock_settings.kream_password = "password123"
-
-            with patch.dict("sys.modules", {}):
-                # ensure_login 내부의 from src.crawlers.chrome_cdp import cdp_manager 를 mock
-                with patch("src.crawlers.chrome_cdp.cdp_manager", mock_cdp):
-                    result = await self.crawler.ensure_login()
-
-        assert result is True
-        assert self.crawler._logged_in is True
-        mock_cdp.kream_login.assert_called_once()
-        mock_cdp.get_kream_cookies.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_login_fails(self):
-        """CDP 로그인 실패 시 False."""
-        self.crawler._logged_in = False
-
-        mock_cdp = MagicMock()
-        mock_cdp.kream_login = AsyncMock(return_value=False)
-
-        with (
-            patch("src.crawlers.kream.settings") as mock_settings,
-            patch("src.crawlers.chrome_cdp.cdp_manager", mock_cdp),
-        ):
-            mock_settings.kream_email = "test@test.com"
-            mock_settings.kream_password = "password123"
-            result = await self.crawler.ensure_login()
-
-        assert result is False
-        assert self.crawler._logged_in is False
-
-    @pytest.mark.asyncio
-    async def test_login_ok_but_no_cookies(self):
-        """로그인 성공했지만 쿠키 추출 실패."""
-        self.crawler._logged_in = False
-
-        mock_cdp = MagicMock()
-        mock_cdp.kream_login = AsyncMock(return_value=True)
-        mock_cdp.get_kream_cookies = AsyncMock(return_value=[])
-
-        with (
-            patch("src.crawlers.kream.settings") as mock_settings,
-            patch("src.crawlers.chrome_cdp.cdp_manager", mock_cdp),
-        ):
-            mock_settings.kream_email = "test@test.com"
-            mock_settings.kream_password = "password123"
-            result = await self.crawler.ensure_login()
-
         assert result is False
 
 

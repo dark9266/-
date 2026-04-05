@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 from src.config import settings
 from src.crawlers.kream import kream_crawler
-from src.crawlers.musinsa import musinsa_crawler
+from src.crawlers.musinsa_httpx import musinsa_crawler
 from src.crawlers.twentynine_cm import twentynine_cm_crawler
 from src.matcher import (
     _pick_best_kream_match,
@@ -1449,7 +1449,7 @@ class Scanner:
             on_progress: 진행 상황 콜백
             resume: True면 이전 스캔 이어서, False면 처음부터 (미사용, 향후 확장)
         """
-        from src.crawlers.musinsa import musinsa_crawler
+        from src.crawlers.musinsa_httpx import musinsa_crawler
         from src.profit_calculator import _normalize_size
 
         result = CategoryScanResult()
