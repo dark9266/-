@@ -105,6 +105,7 @@ WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges th
 - 크림 API 404는 에러 아님 (거래량 0인 신규 상품)
 
 ### 필터링
+- 브랜드 필터: **블랙리스트 방식** (`MUSINSA_ONLY_BRANDS`) — 크림에 절대 없는 브랜드만 스킵, 나머지는 모두 상세 방문. 화이트리스트는 과필터링 위험이 높으므로 사용 금지.
 - 오프라인전용: "오프라인 전용 상품" 정확 문구 + 구매버튼 없을 때만 스킵
 - 발매예정: "판매예정" 또는 "출시예정" 텍스트 → 스킵
 
