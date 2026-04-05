@@ -27,6 +27,8 @@ class Scheduler:
 
     def __init__(self, bot):
         self.bot = bot
+        self.last_tier1_run: datetime | None = None
+        self.last_tier2_run: datetime | None = None
 
     def start(self) -> None:
         """모든 스케줄 태스크 시작."""
@@ -100,6 +102,7 @@ class Scheduler:
 
             self.bot.daily_stats["scan_count"] += 1
             self.bot.daily_stats["product_count"] += cat_result.detail_fetched
+            self.last_tier1_run = datetime.now()
 
             # Tier1 워치리스트 빌더 실행
             if hasattr(self.bot, 'tier1_scanner') and self.bot.tier1_scanner:
@@ -141,6 +144,7 @@ class Scheduler:
 
         try:
             result = await self.bot.tier2_monitor.run()
+            self.last_tier2_run = datetime.now()
             if result and result.alerts_sent > 0:
                 logger.info("Tier2: %d건 알림 발송", result.alerts_sent)
         except Exception as e:

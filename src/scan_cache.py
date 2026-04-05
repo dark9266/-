@@ -86,3 +86,9 @@ class ScanCache:
     @property
     def size(self) -> int:
         return len(self._cache)
+
+    def get_stats(self) -> dict:
+        """캐시 통계 반환."""
+        total = len(self._cache)
+        profitable = sum(1 for e in self._cache.values() if e.get("profitable"))
+        return {"total": total, "profitable": profitable}

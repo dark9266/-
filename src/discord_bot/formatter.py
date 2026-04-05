@@ -610,6 +610,47 @@ def format_status(
     return embed
 
 
+def format_circuit_breaker_status(status: dict[str, str]) -> str:
+    """서킷브레이커 상태를 문자열로 포맷."""
+    if not status:
+        return "등록된 소싱처 없음"
+    return "\n".join(status.values())
+
+
+def format_watchlist_embed(items: list, max_items: int = 10) -> discord.Embed:
+    """워치리스트 Embed (!워치리스트 명령어용)."""
+    embed = discord.Embed(
+        title=f"📋 워치리스트 ({len(items)}건)",
+        color=0x5865F2,
+        timestamp=datetime.now(),
+    )
+
+    if not items:
+        embed.add_field(name="현황", value="워치리스트가 비어 있습니다.", inline=False)
+        return embed
+
+    # gap 내림차순 정렬 (수익 높은 순)
+    sorted_items = sorted(items, key=lambda x: x.gap, reverse=True)
+    display = sorted_items[:max_items]
+
+    lines = []
+    for item in display:
+        model = item.model_number[:15]
+        src = item.source[:6]
+        lines.append(
+            f"{model:<15} {src:<6} {item.source_price:>8,} {item.kream_price:>8,} {item.gap:>+8,}"
+        )
+
+    header = f"{'모델번호':<15} {'소싱처':<6} {'소싱가':>8} {'크림가':>8} {'갭':>8}"
+    table = f"```\n{header}\n{'─' * 50}\n" + "\n".join(lines) + "\n```"
+    embed.add_field(name="상위 항목", value=table, inline=False)
+
+    if len(items) > max_items:
+        embed.set_footer(text=f"... 외 {len(items) - max_items}건")
+
+    return embed
+
+
 def format_help() -> discord.Embed:
     """도움말 Embed (!도움 명령어용)."""
     embed = discord.Embed(
@@ -636,6 +677,8 @@ def format_help() -> discord.Embed:
         "!상태": "봇 상태 확인",
         "!스케줄러시작": "키워드 기반 스케줄러 시작",
         "!스케줄러중지": "키워드 기반 스케줄러 중지",
+        "!워치리스트": "워치리스트 상위 10건",
+        "!강제스캔": "Tier1 즉시 실행 (30분 주기 무시)",
         "!추적목록": "집중 추적 중인 상품 목록",
         "!크롬상태": "Chrome 상태 및 복구 이력",
         "!DB구축": "크림 전체 상품 DB 구축 (!DB구축 전체)",

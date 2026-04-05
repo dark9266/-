@@ -9,10 +9,12 @@ from discord.ext import commands
 from src.config import settings
 from src.crawlers.kream import kream_crawler
 from src.crawlers.musinsa_httpx import musinsa_crawler
+from src.crawlers.registry import get_status as get_registry_status
 from src.discord_bot.formatter import (
     format_auto_scan_alert,
     format_auto_scan_summary,
     format_category_scan_summary,
+    format_circuit_breaker_status,
     format_daily_report,
     format_help,
     format_price_change_alert,
@@ -20,6 +22,7 @@ from src.discord_bot.formatter import (
     format_profit_alert,
     format_reverse_scan_summary,
     format_status,
+    format_watchlist_embed,
 )
 from src.kream_db_builder import build_kream_db, CATEGORIES
 from src.models.database import Database
@@ -1110,6 +1113,37 @@ async def cmd_status(ctx: commands.Context):
             inline=False,
         )
 
+    # 모니터링 정보
+    tier_info_parts = []
+    if bot.scheduler and bot.scheduler.last_tier1_run:
+        t1_time = bot.scheduler.last_tier1_run.strftime("%H:%M")
+        tier_info_parts.append(f"**Tier1 마지막:** {t1_time}")
+    if bot.scheduler and bot.scheduler.last_tier2_run:
+        t2_time = bot.scheduler.last_tier2_run.strftime("%H:%M")
+        tier_info_parts.append(f"**Tier2 마지막:** {t2_time}")
+    if hasattr(bot, 'watchlist') and bot.watchlist:
+        tier_info_parts.append(f"**워치리스트:** {bot.watchlist.size}건")
+    if tier_info_parts:
+        embed.add_field(name="모니터링", value="\n".join(tier_info_parts), inline=True)
+
+    # 소싱처 서킷브레이커 상태
+    registry_status = get_registry_status()
+    if registry_status:
+        embed.add_field(
+            name="소싱처 상태",
+            value=format_circuit_breaker_status(registry_status),
+            inline=True,
+        )
+
+    # 통계
+    stats_parts = [f"**오늘 알림:** {bot.daily_stats['opportunity_count']}건"]
+    if hasattr(bot, 'scanner') and bot.scanner and hasattr(bot.scanner, 'scan_cache'):
+        cache_stats = bot.scanner.scan_cache.get_stats()
+        stats_parts.append(
+            f"**캐시:** {cache_stats['total']}건 (수익 {cache_stats['profitable']}건)"
+        )
+    embed.add_field(name="통계", value="\n".join(stats_parts), inline=True)
+
     # 최근 에러 요약
     recent_errors = error_aggregator.get_recent(minutes=60)
     if recent_errors:
@@ -1120,6 +1154,50 @@ async def cmd_status(ctx: commands.Context):
         )
 
     await ctx.send(embed=embed)
+
+
+@bot.command(name="워치리스트")
+async def cmd_watchlist(ctx: commands.Context):
+    """워치리스트 상위 10개 항목 표시."""
+    if not hasattr(bot, 'watchlist') or not bot.watchlist:
+        await ctx.send("❌ 워치리스트가 초기화되지 않았습니다.")
+        return
+
+    items = bot.watchlist.get_all()
+    embed = format_watchlist_embed(items)
+    await ctx.send(embed=embed)
+
+
+_force_scan_running = False
+
+
+@bot.command(name="강제스캔")
+async def cmd_force_scan(ctx: commands.Context):
+    """Tier1 스캔 즉시 실행."""
+    global _force_scan_running
+
+    if not hasattr(bot, 'tier1_scanner') or not bot.tier1_scanner:
+        await ctx.send("❌ Tier1 스캐너가 초기화되지 않았습니다.")
+        return
+
+    if _force_scan_running:
+        await ctx.send("⏳ 강제스캔이 이미 실행 중입니다.")
+        return
+
+    _force_scan_running = True
+    await ctx.send("🔄 Tier1 강제스캔 시작...")
+
+    try:
+        result = await bot.tier1_scanner.run()
+        await ctx.send(
+            f"✅ 강제스캔 완료\n"
+            f"스캔: {result.scanned} / 매칭: {result.matched} / 추가: {result.added}"
+        )
+    except Exception as e:
+        await ctx.send(f"❌ 강제스캔 실패: {e}")
+        logger.error("강제스캔 실패: %s", e)
+    finally:
+        _force_scan_running = False
 
 
 @bot.command(name="스케줄러시작")
