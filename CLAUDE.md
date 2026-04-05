@@ -43,7 +43,7 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `src/crawlers/twentynine_cm.py` — 29CM 크롤러. 검색 API v4/products + HTML 파싱 (schema.org + RSC payload).
 - `src/crawlers/abcmart.py` — ABC마트 크롤러. JSON API (검색 /display/search-word/result-total/list, 상세 /product/info).
 - `src/crawlers/nike.py` — 나이키 공식몰 크롤러. __NEXT_DATA__ JSON 파싱 (2024+ selectedProduct 구조).
-- `src/crawlers/adidas.py` — 아디다스 공식몰 크롤러. HTML + window.__STATE__ 파싱.
+- `src/crawlers/adidas.py` — 아디다스 공식몰 크롤러. taxonomy API (/api/search/taxonomy, 사이즈/가격 포함).
 - `src/crawlers/registry.py` — 소싱처 크롤러 레지스트리. 서킷브레이커: 연속 3회 실패 시 30분 비활성화, 자동 재활성화.
 - `src/matcher.py` — Model number normalization and exact matching (e.g., "dq8423 100" → "DQ8423-100"). No fuzzy matching.
 - `src/profit_calculator.py` — Kream fee structure (base 2500₩ + 6% + 10% VAT), per-size profit/ROI, signal determination (STRONG_BUY 30k+ / BUY 15k+ / WATCH 5k+ / NOT_RECOMMENDED).
@@ -75,7 +75,7 @@ Environment variables in `.env` (see `.env.example`):
   - 29CM: 안정 (검색 API v4/products 엔드포인트, 2024-04 검증)
   - 나이키: 안정 (검색 Wall + PDP selectedProduct.sizes 2024+ 구조 적용)
   - ABC마트: 안정 (JSON API 전환 — 검색 /display/search-word/result-total/list, 상세 /product/info)
-  - 아디다스: 제한적 (Akamai WAF 403 차단, GET-only로 해결 불가)
+  - 아디다스: 안정 (taxonomy API 전환 — /api/search/taxonomy, Akamai WAF 우회 성공)
 
 ## Code Style
 

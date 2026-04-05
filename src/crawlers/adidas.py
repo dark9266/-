@@ -1,13 +1,11 @@
 """아디다스 공식몰 (adidas.co.kr) 크롤러.
 
-아디다스 한국 공식몰에서 상품 정보를 수집한다.
-검색: adidas.co.kr/search?q={query} HTML 파싱
-상세: adidas.co.kr/{product_id}.html HTML 파싱 (schema.org + 사이즈 데이터)
+아디다스 KR 검색 taxonomy API로 상품 정보를 수집한다.
+검색: /api/search/taxonomy?query={keyword} (JSON API, 사이즈/가격 포함)
+상세: 검색 결과에 사이즈/가격이 포함되어 별도 상세 조회 불필요.
 """
 
-import json
 import random
-import re
 from datetime import datetime
 
 import httpx
@@ -20,8 +18,8 @@ from src.utils.rate_limiter import AsyncRateLimiter
 logger = setup_logger("adidas_crawler")
 
 BASE_URL = "https://www.adidas.co.kr"
-SEARCH_URL = BASE_URL + "/search?q={query}"
-PRODUCT_URL = BASE_URL + "/{product_id}.html"
+SEARCH_API = BASE_URL + "/api/search/taxonomy"
+PRODUCT_PAGE_URL = BASE_URL + "/{product_id}.html"
 
 USER_AGENTS = [
     (
@@ -39,170 +37,63 @@ def _random_ua() -> str:
     return random.choice(USER_AGENTS)
 
 
-def _extract_model_id(name: str) -> str:
-    """상품명이나 URL에서 아디다스 모델 ID 추출.
+def _build_headers() -> dict:
+    """Akamai WAF 우회를 위한 브라우저 유사 헤더."""
+    return {
+        "User-Agent": _random_ua(),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;"
+            "q=0.9,image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+    }
 
-    아디다스 모델 ID 패턴: IG1025, GW2871, HP5586, IF8065 등
+
+def _parse_items(data: dict) -> list[dict]:
+    """taxonomy API 응답에서 상품 목록 파싱.
+
+    응답 구조: {"itemList": {"items": [...], "count": N, ...}}
     """
-    m = re.search(r'\b([A-Z]{2}\d{4})\b', name.upper())
-    if m:
-        return m.group(1)
-
-    # 더 긴 패턴: IE1775 등
-    m = re.search(r'\b([A-Z]{1,3}\d{3,5})\b', name.upper())
-    if m:
-        return m.group(1)
-
-    return ""
-
-
-def _parse_schema_org(html: str) -> dict:
-    """schema.org JSON-LD에서 Product 정보 추출."""
-    try:
-        scripts = re.findall(
-            r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
-            html, re.DOTALL,
-        )
-        for script in scripts:
-            data = json.loads(script)
-            if data.get("@type") == "Product":
-                return data
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
-    return {}
-
-
-def _parse_search_results(html: str) -> list[dict]:
-    """검색 결과 HTML에서 상품 목록 파싱."""
+    item_list = data.get("itemList", {})
+    items = item_list.get("items", [])
     results = []
 
-    # 방법 1: __NEXT_DATA__ 또는 window.__STATE__ JSON
-    state_match = re.search(
-        r'window\.__(?:NEXT_DATA__|STATE__|INITIAL_STATE__)?\s*=\s*({.*?});?\s*</script>',
-        html, re.DOTALL,
-    )
-    if state_match:
-        try:
-            state = json.loads(state_match.group(1))
-            # 아디다스 검색 결과 구조 탐색
-            items = _extract_items_from_state(state)
-            for item in items:
-                results.append(item)
-        except (json.JSONDecodeError, ValueError):
-            pass
+    for item in items:
+        product_id = item.get("productId", "")
+        if not product_id:
+            continue
 
-    # 방법 2: schema.org ItemList
-    if not results:
-        try:
-            scripts = re.findall(
-                r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
-                html, re.DOTALL,
-            )
-            for script in scripts:
-                data = json.loads(script)
-                if data.get("@type") == "ItemList":
-                    for elem in data.get("itemListElement", []):
-                        item = elem.get("item", elem)
-                        if not isinstance(item, dict):
-                            continue
-                        name = item.get("name", "")
-                        url = item.get("url", "")
-                        model = _extract_model_id(name) or _extract_model_id(url)
-                        prod_id = re.search(r'/([A-Z0-9]+)\.html', url)
+        display_name = item.get("displayName", "")
+        price = int(item.get("price", 0) or 0)
+        sale_price = int(item.get("salePrice", 0) or 0) or price
+        link = item.get("link", "")
+        url = BASE_URL + link if link else PRODUCT_PAGE_URL.format(product_id=product_id)
 
-                        offers = item.get("offers", {})
-                        price = int(offers.get("price", 0)) if offers else 0
+        # 이미지 URL
+        image_info = item.get("image", {})
+        image_url = image_info.get("src", "") if isinstance(image_info, dict) else ""
 
-                        results.append({
-                            "product_id": prod_id.group(1) if prod_id else model,
-                            "name": name,
-                            "brand": "adidas",
-                            "model_number": model,
-                            "price": price,
-                            "original_price": price,
-                            "url": url,
-                            "image_url": item.get("image", ""),
-                            "is_sold_out": False,
-                        })
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+        # 사이즈 ("hidden" 엔트리 제외)
+        raw_sizes = item.get("availableSizes", [])
+        sizes = [s for s in raw_sizes if s and s != "hidden"]
 
-    # 방법 3: product card HTML
-    if not results:
-        cards = re.findall(
-            r'<a[^>]*href="(/([A-Z0-9]+)\.html)"[^>]*class="[^"]*product-card[^"]*"',
-            html,
-        )
-        for url_path, prod_id in cards:
-            results.append({
-                "product_id": prod_id,
-                "name": "",
-                "brand": "adidas",
-                "model_number": _extract_model_id(prod_id),
-                "price": 0,
-                "original_price": 0,
-                "url": BASE_URL + url_path,
-                "image_url": "",
-                "is_sold_out": False,
-            })
+        results.append({
+            "product_id": product_id,
+            "name": display_name,
+            "brand": "adidas",
+            "model_number": product_id,
+            "price": sale_price,
+            "original_price": price,
+            "url": url,
+            "image_url": image_url,
+            "is_sold_out": not item.get("orderable", True),
+            "sizes": sizes,
+        })
 
     return results
-
-
-def _extract_items_from_state(state: dict) -> list[dict]:
-    """window.__STATE__ 구조에서 상품 목록 추출."""
-    items = []
-
-    # 재귀적으로 itemList 또는 products 키 탐색
-    def _search(obj, depth=0):
-        if depth > 5 or not isinstance(obj, dict):
-            return
-        for key in ("itemList", "products", "items", "productList"):
-            val = obj.get(key)
-            if isinstance(val, list):
-                for item in val:
-                    if not isinstance(item, dict):
-                        continue
-                    name = (
-                        item.get("displayName", "")
-                        or item.get("name", "")
-                        or item.get("title", "")
-                    )
-                    model = (
-                        item.get("modelId", "")
-                        or item.get("articleNumber", "")
-                        or _extract_model_id(name)
-                    )
-                    price = (
-                        item.get("salePrice", 0)
-                        or item.get("price", 0)
-                        or item.get("currentPrice", 0)
-                    )
-                    prod_id = item.get("productId", "") or item.get("id", "") or model
-                    link = item.get("link", "") or item.get("url", "")
-
-                    if name or model:
-                        items.append({
-                            "product_id": str(prod_id),
-                            "name": name,
-                            "brand": "adidas",
-                            "model_number": model,
-                            "price": int(price) if price else 0,
-                            "original_price": int(
-                                item.get("originalPrice", 0)
-                                or item.get("standardPrice", 0)
-                                or price
-                            ),
-                            "url": link if link.startswith("http") else BASE_URL + link,
-                            "image_url": item.get("image", ""),
-                            "is_sold_out": item.get("isSoldOut", False),
-                        })
-        for v in obj.values():
-            if isinstance(v, dict):
-                _search(v, depth + 1)
-
-    _search(state)
-    return items
 
 
 class AdidasCrawler:
@@ -215,29 +106,29 @@ class AdidasCrawler:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                headers={
-                    "User-Agent": _random_ua(),
-                    "Accept": "text/html,application/xhtml+xml",
-                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-                },
+                headers=_build_headers(),
                 timeout=15,
                 follow_redirects=True,
             )
         return self._client
 
-    async def search_products(self, keyword: str, limit: int = 30) -> list[dict]:
-        """아디다스 KR 검색.
+    async def search_products(self, keyword: str, limit: int = 48) -> list[dict]:
+        """아디다스 KR taxonomy API 검색.
 
         Returns:
             [{"product_id": str, "name": str, "brand": str, "model_number": str,
               "price": int, "original_price": int, "url": str, ...}, ...]
         """
         client = await self._get_client()
-        url = SEARCH_URL.format(query=keyword.replace(" ", "+"))
 
         try:
             async with self._rate_limiter.acquire():
-                resp = await client.get(url, headers={"User-Agent": _random_ua()})
+                resp = await client.get(
+                    SEARCH_API,
+                    params={"query": keyword, "start": "0"},
+                    headers=_build_headers(),
+                )
+
             if resp.status_code == 403:
                 logger.warning("아디다스 검색 차단 (403): %s", keyword)
                 return []
@@ -245,7 +136,8 @@ class AdidasCrawler:
                 logger.warning("아디다스 검색 실패 (HTTP %d): %s", resp.status_code, keyword)
                 return []
 
-            results = _parse_search_results(resp.text)
+            data = resp.json()
+            results = _parse_items(data)
             logger.info("아디다스 검색 '%s': %d건", keyword, len(results))
             return results[:limit]
 
@@ -254,51 +146,76 @@ class AdidasCrawler:
             return []
 
     async def get_product_detail(self, product_id: str) -> RetailProduct | None:
-        """상품 상세 페이지에서 사이즈별 가격/재고 수집."""
+        """taxonomy API에서 상품 상세 조회.
+
+        productId로 검색하여 사이즈/가격 정보를 수집한다.
+        별도 상세 페이지 접근 불필요 (taxonomy API에 사이즈 포함).
+        """
         client = await self._get_client()
-        url = PRODUCT_URL.format(product_id=product_id)
 
         try:
             async with self._rate_limiter.acquire():
-                resp = await client.get(url, headers={"User-Agent": _random_ua()})
+                resp = await client.get(
+                    SEARCH_API,
+                    params={"query": product_id, "start": "0"},
+                    headers=_build_headers(),
+                )
+
             if resp.status_code != 200:
                 logger.warning(
                     "아디다스 상품 조회 실패 (HTTP %d): %s", resp.status_code, product_id,
                 )
                 return None
 
-            html = resp.text
-            schema = _parse_schema_org(html)
+            data = resp.json()
+            items = _parse_items(data)
 
-            name = schema.get("name", "")
-            brand = "adidas"
-            image = schema.get("image", "")
+            # productId가 정확히 일치하는 상품 찾기
+            target = None
+            for item in items:
+                if item["product_id"] == product_id:
+                    target = item
+                    break
 
-            offers = schema.get("offers", {})
-            sale_price = int(offers.get("price", 0))
-            original_price = sale_price
+            if not target:
+                logger.warning("아디다스 상품 미발견: %s", product_id)
+                return None
 
-            model_number = _extract_model_id(name) or _extract_model_id(product_id)
+            # 사이즈 정보 → RetailSizeInfo 변환
+            price = target["price"]
+            original_price = target["original_price"]
+            sizes = []
 
-            # 사이즈 파싱
-            sizes = self._parse_sizes_from_html(html, sale_price, original_price)
+            for size_val in target.get("sizes", []):
+                discount_rate = 0.0
+                if original_price and price and original_price > price:
+                    discount_rate = round(1 - price / original_price, 3)
+
+                sizes.append(RetailSizeInfo(
+                    size=size_val,
+                    price=price,
+                    original_price=original_price,
+                    in_stock=True,
+                    discount_type="할인" if discount_rate > 0 else "",
+                    discount_rate=discount_rate,
+                ))
 
             product = RetailProduct(
                 source="adidas",
                 product_id=product_id,
-                name=name,
-                model_number=model_number,
-                brand=brand,
-                url=url,
-                image_url=image if isinstance(image, str) else "",
+                name=target["name"],
+                model_number=product_id,
+                brand="adidas",
+                url=target["url"],
+                image_url=target.get("image_url", ""),
                 sizes=sizes,
                 fetched_at=datetime.now(),
             )
 
             logger.info(
                 "아디다스 상품: %s | 모델: %s | 가격: %s원 | 사이즈: %d개",
-                name, model_number,
-                f"{sale_price:,}" if sale_price else "?",
+                target["name"], product_id,
+                f"{price:,}" if price else "?",
                 len(sizes),
             )
             return product
@@ -306,66 +223,6 @@ class AdidasCrawler:
         except Exception as e:
             logger.error("아디다스 상품 조회 에러 (%s): %s", product_id, e)
             return None
-
-    def _parse_sizes_from_html(
-        self, html: str, sale_price: int, original_price: int,
-    ) -> list[RetailSizeInfo]:
-        """HTML에서 사이즈 정보 파싱."""
-        sizes: list[RetailSizeInfo] = []
-        seen: set[str] = set()
-
-        # 방법 1: JSON 내 사이즈 데이터 (window.__STATE__ 또는 inline)
-        size_json = re.search(
-            r'"variation_list"\s*:\s*(\[.*?\])', html, re.DOTALL,
-        )
-        if size_json:
-            try:
-                variations = json.loads(size_json.group(1))
-                for v in variations:
-                    size_val = v.get("size", "") or v.get("label", "")
-                    if not size_val or size_val in seen:
-                        continue
-                    seen.add(size_val)
-
-                    avail = v.get("availability_status", "")
-                    if avail in ("NOT_AVAILABLE", "PREVIEW", ""):
-                        continue
-
-                    discount_rate = 0.0
-                    if original_price and sale_price and original_price > sale_price:
-                        discount_rate = round(1 - sale_price / original_price, 3)
-
-                    sizes.append(RetailSizeInfo(
-                        size=size_val,
-                        price=sale_price,
-                        original_price=original_price,
-                        in_stock=True,
-                        discount_type="할인" if discount_rate > 0 else "",
-                        discount_rate=discount_rate,
-                    ))
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-        # 방법 2: 사이즈 버튼 HTML 파싱 (폴백)
-        if not sizes:
-            buttons = re.findall(
-                r'data-size="([^"]+)"[^>]*(?:class="[^"]*(?:unavailable|disabled)[^"]*")?',
-                html,
-            )
-            for size in buttons:
-                if not size or size in seen:
-                    continue
-                seen.add(size)
-                sizes.append(RetailSizeInfo(
-                    size=size,
-                    price=sale_price,
-                    original_price=original_price,
-                    in_stock=True,
-                    discount_type="",
-                    discount_rate=0.0,
-                ))
-
-        return sizes
 
     async def disconnect(self) -> None:
         """클라이언트 종료."""
