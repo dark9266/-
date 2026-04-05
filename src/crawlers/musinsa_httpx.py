@@ -20,6 +20,7 @@ from src.utils.rate_limiter import AsyncRateLimiter
 logger = setup_logger("musinsa_crawler")
 
 MUSINSA_BASE = "https://www.musinsa.com"
+MUSINSA_API_BASE = "https://api.musinsa.com/api2/dp/v1/plp"
 GOODS_DETAIL_BASE = "https://goods-detail.musinsa.com"
 SESSION_FILE = DATA_DIR / "musinsa_session.json"
 
@@ -221,9 +222,11 @@ class MusinsaHttpxCrawler:
         category: str,
         max_pages: int = 1,
     ) -> list[dict]:
-        """무신사 카테고리 리스팅 — API 직접 호출.
+        """무신사 카테고리 리스팅 — api.musinsa.com API 호출.
 
-        1페이지(60건) 단위로 조회. hmacId 없이 page 1만 안정적.
+        1페이지(60건) 단위로 조회.
+        신규 API: api.musinsa.com/api2/dp/v1/plp/goods
+        파라미터: category(코드), caller=CATEGORY, page, size, sortCode
         """
         client = await self.connect()
         all_items: list[dict] = []
@@ -233,13 +236,13 @@ class MusinsaHttpxCrawler:
             try:
                 async with self._rate_limiter.acquire():
                     resp = await client.get(
-                        f"{MUSINSA_BASE}/api/plp/goods",
+                        f"{MUSINSA_API_BASE}/goods",
                         params={
-                            "categoryCode": category,
+                            "category": category,
+                            "caller": "CATEGORY",
                             "page": page_num,
                             "size": 60,
-                            "sort": "NEW",
-                            "filter": "N",
+                            "sortCode": "NEW",
                         },
                         headers=_API_HEADERS,
                     )
