@@ -161,6 +161,7 @@ class Tier2Monitor:
                         await self.alert_callback(opportunity)
                         result.alerts_sent += 1
                     except Exception as e:
+                        result.errors += 1
                         logger.error("Tier2 알림 발송 실패: %s", e)
 
         except Exception as e:

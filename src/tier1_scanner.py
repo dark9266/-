@@ -11,7 +11,7 @@ from datetime import datetime
 from src.config import settings
 from src.crawlers.kream import kream_crawler
 from src.crawlers.musinsa_httpx import musinsa_crawler
-from src.crawlers.registry import get_all as get_all_crawlers
+from src.crawlers.registry import get_active, record_failure, record_success
 from src.matcher import extract_model_from_name, normalize_model_number
 from src.models.database import Database
 from src.utils.logging import setup_logger
@@ -137,21 +137,29 @@ class Tier1Scanner:
 
                 try:
                     other_tasks = {}
-                    for key, info in get_all_crawlers().items():
+                    for key, info in get_active().items():
                         if key == "musinsa":
                             continue
-                        other_tasks[key] = info["crawler"].search_products(
-                            model_norm, limit=5,
-                        )
+                        try:
+                            other_tasks[key] = info["crawler"].search_products(
+                                model_norm, limit=5,
+                            )
+                        except TypeError:
+                            other_tasks[key] = info["crawler"].search_products(
+                                model_norm,
+                            )
 
                     if other_tasks:
                         other_results = await asyncio.gather(
                             *other_tasks.values(), return_exceptions=True,
                         )
                         for skey, sresult in zip(other_tasks.keys(), other_results):
-                            if isinstance(sresult, Exception) or not sresult:
+                            if isinstance(sresult, Exception):
+                                record_failure(skey)
                                 continue
-                            for r in sresult:
+                            if sresult:
+                                record_success(skey)
+                            for r in (sresult or []):
                                 r_price = r.get("price", 0)
                                 if 0 < r_price < best_price:
                                     best_price = r_price

@@ -44,7 +44,7 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `src/crawlers/abcmart.py` — ABC마트 크롤러. a-rt.com HTML 파싱 (schema.org JSON-LD).
 - `src/crawlers/nike.py` — 나이키 공식몰 크롤러. __NEXT_DATA__ JSON 파싱.
 - `src/crawlers/adidas.py` — 아디다스 공식몰 크롤러. HTML + window.__STATE__ 파싱.
-- `src/crawlers/registry.py` — 소싱처 크롤러 레지스트리. 각 크롤러 자동 등록.
+- `src/crawlers/registry.py` — 소싱처 크롤러 레지스트리. 서킷브레이커: 연속 3회 실패 시 30분 비활성화, 자동 재활성화.
 - `src/matcher.py` — Model number normalization and exact matching (e.g., "dq8423 100" → "DQ8423-100"). No fuzzy matching.
 - `src/profit_calculator.py` — Kream fee structure (base 2500₩ + 6% + 10% VAT), per-size profit/ROI, signal determination (STRONG_BUY 30k+ / BUY 15k+ / WATCH 5k+ / NOT_RECOMMENDED).
 - `src/scheduler.py` — `discord.ext.tasks` 3개 루프: Tier1 워치리스트 빌더(30분), Tier2 실시간 폴링(60초), 일일 리포트(자정).
@@ -64,6 +64,17 @@ Environment variables in `.env` (see `.env.example`):
 - `MUSINSA_EMAIL/PASSWORD` — Optional auto-login credentials
 - Thresholds: `AUTO_SCAN_CONFIRMED_ROI=5.0`, `AUTO_SCAN_ESTIMATED_ROI=10.0`
 - Tier settings: `TIER1_INTERVAL_MINUTES=30`, `TIER2_INTERVAL_SECONDS=60`, `HTTPX_CONCURRENCY=10`
+
+## 장애 격리 (서킷브레이커)
+
+- `src/crawlers/registry.py`: 연속 3회 실패 → 30분 비활성화, 기간 만료 시 자동 재활성화
+- `src/tier1_scanner.py`: `get_active()`로 활성 크롤러만 검색, `record_failure()`/`record_success()` 추적
+- `src/tier2_monitor.py`: 알림 발송 실패 시 `result.errors` 증가
+- 소싱처별 안정성:
+  - 무신사/29CM: 안정 (API 검증 완료)
+  - 나이키: 검색 안정, 상세 제한적 (__NEXT_DATA__ PDP 구조 변동)
+  - ABC마트: 제한적 (JS 렌더링, HTML에 상품 데이터 없음)
+  - 아디다스: 제한적 (WAF 403 차단)
 
 ## Code Style
 
