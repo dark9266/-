@@ -74,6 +74,11 @@ class KreamBot(commands.Bot):
             alert_callback=self.send_auto_scan_alert,
         )
 
+        # 소싱처 크롤러 등록 (임포트 시 register() 자동 호출)
+        import src.crawlers.abcmart  # noqa: F401
+        import src.crawlers.nike  # noqa: F401
+        import src.crawlers.adidas  # noqa: F401
+
         self.scheduler = Scheduler(self)
         logger.info("봇 초기화 완료")
 
@@ -1075,9 +1080,13 @@ async def cmd_status(ctx: commands.Context):
     """봇 상태 확인."""
     await ctx.send("🔍 상태 확인 중...")
 
-    is_kream = kream_crawler.is_active
-    is_musinsa = False
+    try:
+        await kream_crawler._get_session()
+        is_kream = kream_crawler.is_active
+    except Exception:
+        is_kream = False
 
+    is_musinsa = False
     try:
         is_musinsa = await musinsa_crawler.check_login_status()
     except Exception:
@@ -1091,8 +1100,7 @@ async def cmd_status(ctx: commands.Context):
     uptime = str(datetime.now() - bot.start_time).split(".")[0]
 
     embed = format_status(
-        is_chrome_connected=False,
-        is_kream_logged_in=is_kream,
+        is_kream_active=is_kream,
         is_musinsa_logged_in=is_musinsa,
         keyword_count=len(keywords),
         db_product_count=product_count,

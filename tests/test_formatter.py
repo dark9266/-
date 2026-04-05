@@ -171,8 +171,7 @@ class TestFormatHelp:
 class TestFormatStatus:
     def test_creates_status(self):
         embed = format_status(
-            is_chrome_connected=True,
-            is_kream_logged_in=True,
+            is_kream_active=True,
             is_musinsa_logged_in=False,
             keyword_count=5,
             db_product_count=120,
@@ -180,5 +179,7 @@ class TestFormatStatus:
         )
 
         assert isinstance(embed, discord.Embed)
-        assert "🟢" in embed.fields[0].value
+        assert "🟢" in embed.fields[0].value  # kream active
         assert "🔴" in embed.fields[0].value  # musinsa not logged in
+        assert "크림 API" in embed.fields[0].value
+        assert "Chrome" not in embed.fields[0].value

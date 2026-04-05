@@ -575,8 +575,7 @@ def format_category_scan_summary(
 
 
 def format_status(
-    is_chrome_connected: bool,
-    is_kream_logged_in: bool,
+    is_kream_active: bool,
     is_musinsa_logged_in: bool,
     keyword_count: int,
     db_product_count: int,
@@ -590,8 +589,7 @@ def format_status(
     embed.add_field(
         name="연결 상태",
         value=(
-            f"{status_icon(is_chrome_connected)} Chrome CDP\n"
-            f"{status_icon(is_kream_logged_in)} 크림 로그인\n"
+            f"{status_icon(is_kream_active)} 크림 API\n"
             f"{status_icon(is_musinsa_logged_in)} 무신사 로그인"
         ),
         inline=True,
