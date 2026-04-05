@@ -1684,6 +1684,10 @@ class Scanner:
                                 model,
                             )
                         if not row:
+                            logger.info(
+                                "카테고리 탈락[DB미매칭]: model=%s brand=%s name=%s",
+                                model, brand_slug, goods_name[:40],
+                            )
                             await self.db.save_category_scan(
                                 goods_no=goods_no, category=category,
                                 brand=brand_slug, goods_name=goods_name,
@@ -1694,12 +1698,21 @@ class Scanner:
                             continue
 
                         result.detail_matched += 1
+                        logger.info(
+                            "카테고리 DB매칭: model=%s → kream=%s (%s)",
+                            model, row["product_id"], row["name"][:30],
+                        )
 
                         row = dict(row)
                         kream_product = await self._get_kream_from_db_or_api(
                             row["product_id"], row,
                         )
                         if not kream_product or not kream_product.size_prices:
+                            logger.info(
+                                "카테고리 탈락[시세없음]: %s (kream=%s, sizes=%d)",
+                                goods_name[:40], row["product_id"],
+                                len(kream_product.size_prices) if kream_product else 0,
+                            )
                             await self.db.save_category_scan(
                                 goods_no=goods_no, category=category,
                                 brand=brand_slug, goods_name=goods_name,
@@ -1718,6 +1731,10 @@ class Scanner:
                                     musinsa_sizes[ns] = (s.price, True)
 
                         if not musinsa_sizes:
+                            logger.info(
+                                "카테고리 탈락[무신사사이즈없음]: %s (%s)",
+                                goods_name[:40], goods_no,
+                            )
                             await self.db.save_category_scan(
                                 goods_no=goods_no, category=category,
                                 brand=brand_slug, goods_name=goods_name,
@@ -1746,6 +1763,9 @@ class Scanner:
                         scanned_set.add(goods_no)
 
                         if not opportunity:
+                            logger.info(
+                                "카테고리 탈락[수익분석실패]: %s", goods_name[:40],
+                            )
                             continue
 
                         opportunity.source_prices = {"무신사": min(
@@ -1756,6 +1776,12 @@ class Scanner:
                             opportunity.best_confirmed_profit <= 0
                             and opportunity.best_estimated_profit <= 0
                         ):
+                            logger.info(
+                                "카테고리 탈락[수익없음]: %s (확정=%d, 예상=%d)",
+                                goods_name[:40],
+                                opportunity.best_confirmed_profit,
+                                opportunity.best_estimated_profit,
+                            )
                             continue
 
                         await self.db.upsert_retail_product(
