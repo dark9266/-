@@ -98,6 +98,7 @@ class Scheduler:
         Chrome 상태를 확인하고 키워드 스캔(Playwright 의존)을 실행한다.
         """
         logger.info("=== 자동 스캔 시작 ===")
+        await self.bot.log_to_channel("🔄 **자동스캔 시작** | 카테고리 103 (30페이지)")
 
         # ── 1단계: 카테고리스캔 (Chrome 불필요, 항상 실행) ──
         try:
@@ -108,6 +109,9 @@ class Scheduler:
 
             async def on_cat_progress(message):
                 logger.info("카테고리스캔: %s", message)
+                # 필터 완료 시점에 Discord 알림 (상세 방문 전 중간 보고)
+                if "필터 완료" in message:
+                    await self.bot.log_to_channel(f"📋 {message}")
 
             cat_result = await self.bot.scanner.run_category_scan(
                 categories=["103"],  # 스니커즈
@@ -297,6 +301,7 @@ class Scheduler:
     async def auto_scan_loop(self) -> None:
         """카테고리스캔 + 역방향스캔 통합 자동스캔."""
         logger.info("=== 자동스캔 루프 실행 ===")
+        await self.bot.log_to_channel("🔄 **자동스캔 루프 시작** | 카테고리 103 (30페이지)")
 
         try:
             # ── 1단계: 카테고리스캔 (Playwright headless, Chrome CDP 불필요) ──
@@ -307,6 +312,8 @@ class Scheduler:
 
             async def on_cat_progress(message):
                 logger.info("카테고리스캔 진행: %s", message)
+                if "필터 완료" in message:
+                    await self.bot.log_to_channel(f"📋 {message}")
 
             cat_result = await self.bot.scanner.run_category_scan(
                 categories=["103"],  # 스니커즈
