@@ -9,6 +9,7 @@ Usage:
 
 import ast
 import inspect
+import os
 import sys
 import textwrap
 
@@ -583,6 +584,30 @@ def main():
     verify_quick_test_data_flow()
     verify_brand_filter()
     verify_auto_scan_category_integration()
+
+    # === [11] 3단계 테스트 (경계값 + 회귀 + 통합) ===
+    print(f"\n=== [11] 3단계 테스트 (경계값 + 회귀 + 통합) ===")
+    import subprocess
+
+    test_files = [
+        "tests/test_filters.py",
+        "tests/test_regression.py",
+        "tests/test_pipeline.py",
+    ]
+    for tf in test_files:
+        if not os.path.exists(tf):
+            check(f"{tf} 파일 존재", False, f"{tf} 파일이 없습니다")
+            continue
+        ret = subprocess.run(
+            [sys.executable, "-m", "pytest", tf, "-v", "--tb=short"],
+            capture_output=True, text=True,
+        )
+        passed = ret.returncode == 0
+        check(f"{tf} 전체 통과", passed, f"{tf} 테스트 실패")
+        if not passed:
+            for line in ret.stdout.splitlines():
+                if "FAILED" in line or "ERROR" in line:
+                    print(f"    → {line.strip()}")
 
     print("\n" + "=" * 50)
     if FAIL == 0:

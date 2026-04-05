@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "description": "실제 발견된 버그 케이스. 새 버그 발견 시 여기에 추가.",
+  "cases": [
+    {
+      "id": "like_short_model_match",
+      "description": "25-002가 CU9225-002에 LIKE 매칭되는 오매칭",
+      "type": "model_match",
+      "input": {"retail_model": "25-002", "kream_model": "CU9225-002"},
+      "expected": "no_match",
+      "bug_date": "2026-04-05",
+      "status": "known_bug"
+    },
+    {
+      "id": "low_profit_alert_sent",
+      "description": "+954원 ROI 0.7% 상품이 알림 발송됨",
+      "type": "signal",
+      "input": {"net_profit": 954, "volume_7d": 10},
+      "expected_signal": "비추천",
+      "expected_alert": false,
+      "bug_date": "2026-04-05"
+    },
+    {
+      "id": "offline_product_passed",
+      "description": "오프라인 전용 상품이 필터 통과",
+      "type": "offline_filter",
+      "input": {"page_text": "오프라인 전용 상품", "has_buy_button": false},
+      "expected": "skip",
+      "bug_date": "2026-04-05"
+    },
+    {
+      "id": "zero_volume_alert",
+      "description": "7일 거래량 0건 상품이 알림 발송됨",
+      "type": "signal",
+      "input": {"net_profit": 50000, "volume_7d": 0},
+      "expected_signal": "비추천",
+      "expected_alert": false,
+      "bug_date": "2026-04-05"
+    }
+  ]
+}

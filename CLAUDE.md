@@ -135,5 +135,10 @@ WSL2 + Windows: Chrome runs on Windows, bot runs on Linux. Chrome CDP bridges th
 5. **검증 성공 시에만** git commit + 디스코드 웹훅 전송
 6. **디스코드 실제 테스트** (!역방향스캔, !카테고리스캔 등 실환경 검증)만 사람이 직접 실행
 
+### 회귀 테스트 원칙
+- 새 버그 발견 시 `tests/fixtures/false_positives.json`에 케이스 추가
+- 케이스 추가만으로 자동 회귀 테스트 확장 (코드 수정 불필요)
+- `status: "known_bug"` → 수정 후 `"fixed"`로 변경
+
 ### Known Issues
 - MFS(다중재고) 상품 품절 필터 한계 — inventory API 근본 미작동, 15/17까지만 축소 가능 (MT410CK5 등)
