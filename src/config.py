@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     watchlist_gap_threshold: int = -20_000  # 워치리스트 추가 기준 (gap > 이 값)
     watchlist_max_age_hours: int = 48  # 워치리스트 항목 최대 유지 시간
 
+    # 실시간 DB
+    realtime_collect_interval_hours: int = 6       # 신규 상품 수집 주기
+    realtime_hot_refresh_minutes: int = 30         # hot 상품 시세 갱신 주기
+    realtime_cold_refresh_hours: int = 6           # cold 상품 시세 갱신 주기
+    realtime_volume_check_minutes: int = 60        # 거래량 체크 주기
+    realtime_spike_threshold: float = 2.0          # 거래량 급등 판정 배율 (이전 대비)
+    realtime_hot_volume_min: int = 5               # hot tier 최소 7일 거래량
+    realtime_collect_pages_per_keyword: int = 5    # 수집 시 키워드당 페이지 수
+    realtime_refresh_batch_size: int = 20          # 1회 시세 갱신 배치 크기
+
     # 알림 최소 기준 (하드 플로어)
     alert_min_profit: int = 10_000  # 최소 순수익 (원)
     alert_min_roi: float = 5.0  # 최소 ROI (%)

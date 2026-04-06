@@ -83,3 +83,74 @@ async def test_volume_snapshots_insert_and_query(db):
     assert rows[0]["volume_7d"] == 150
     assert rows[0]["volume_30d"] == 500
     assert rows[0]["snapshot_at"] is not None
+
+
+# -- KreamCollector 테스트 --
+
+
+async def test_collector_saves_new_products():
+    from src.kream_realtime.collector import KreamCollector
+    db = await _create_db()
+
+    mock_products = [
+        {"product_id": "999001", "name": "Test Shoe 1", "brand": "Nike", "model_number": "TEST-001",
+         "category": "신발", "buy_now_price": 150000, "sell_now_price": 120000, "trading_volume": 15,
+         "image_url": "", "url": "https://kream.co.kr/products/999001"},
+        {"product_id": "999002", "name": "Test Shoe 2", "brand": "Adidas", "model_number": "TEST-002",
+         "category": "신발", "buy_now_price": 200000, "sell_now_price": 180000, "trading_volume": 3,
+         "image_url": "", "url": "https://kream.co.kr/products/999002"},
+    ]
+
+    collector = KreamCollector(db)
+    saved = await collector.save_products(mock_products)
+    assert saved == 2
+
+    cursor = await db.execute("SELECT * FROM kream_products WHERE product_id = '999001'")
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row["model_number"] == "TEST-001"
+    assert row["volume_7d"] == 15
+    await db.close()
+
+
+async def test_collector_skips_existing():
+    from src.kream_realtime.collector import KreamCollector
+    db = await _create_db()
+    await db.execute(
+        "INSERT INTO kream_products (product_id, name, model_number) VALUES ('999001', 'Old', 'TEST-001')"
+    )
+    await db.commit()
+
+    mock_products = [
+        {"product_id": "999001", "name": "Updated Name", "brand": "Nike", "model_number": "TEST-001",
+         "category": "신발", "buy_now_price": 150000, "sell_now_price": 0, "trading_volume": 10,
+         "image_url": "", "url": ""},
+    ]
+
+    collector = KreamCollector(db)
+    saved = await collector.save_products(mock_products)
+    assert saved == 0
+
+    cursor = await db.execute("SELECT name, volume_7d FROM kream_products WHERE product_id = '999001'")
+    row = await cursor.fetchone()
+    assert row["name"] == "Updated Name"
+    assert row["volume_7d"] == 10
+    await db.close()
+
+
+def test_collector_parse_search_response():
+    from src.kream_realtime.collector import KreamCollector
+    data = {
+        "items": [
+            {"id": "123", "name": "Test", "brand": {"name": "Nike"},
+             "style_code": "ABC-001", "trading_volume": 5,
+             "image": {"url": "http://img.jpg"},
+             "market": {"buy_now": 100000, "sell_now": 80000}},
+        ]
+    }
+    results = KreamCollector._parse_search_response(data, "신발")
+    assert len(results) == 1
+    assert results[0]["product_id"] == "123"
+    assert results[0]["model_number"] == "ABC-001"
+    assert results[0]["brand"] == "Nike"
+    assert results[0]["trading_volume"] == 5
