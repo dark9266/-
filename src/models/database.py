@@ -131,6 +131,17 @@ CREATE TABLE IF NOT EXISTS category_scan_progress (
     total_items_scanned INTEGER DEFAULT 0,
     last_scan_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 크림 거래량 스냅샷 (급등 감지용)
+CREATE TABLE IF NOT EXISTS kream_volume_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id TEXT NOT NULL,
+    volume_7d INTEGER DEFAULT 0,
+    volume_30d INTEGER DEFAULT 0,
+    snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id) REFERENCES kream_products(product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vol_snap_product ON kream_volume_snapshots(product_id, snapshot_at);
 """
 
 
@@ -147,6 +158,7 @@ class Database:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA_SQL)
         await self._db.commit()
+        await self.migrate_realtime_columns()
         logger.info("데이터베이스 연결 완료: %s", self.db_path)
 
     async def close(self) -> None:
@@ -161,6 +173,23 @@ class Database:
         if self._db is None:
             raise RuntimeError("데이터베이스가 연결되지 않았습니다. connect()를 먼저 호출하세요.")
         return self._db
+
+    async def migrate_realtime_columns(self) -> None:
+        """kream_products에 실시간 DB용 컬럼 추가 (멱등)."""
+        migrations = [
+            "ALTER TABLE kream_products ADD COLUMN volume_7d INTEGER DEFAULT 0",
+            "ALTER TABLE kream_products ADD COLUMN volume_30d INTEGER DEFAULT 0",
+            "ALTER TABLE kream_products ADD COLUMN last_volume_check TIMESTAMP",
+            "ALTER TABLE kream_products ADD COLUMN refresh_tier TEXT DEFAULT 'cold'",
+            "ALTER TABLE kream_products ADD COLUMN last_price_refresh TIMESTAMP",
+        ]
+        for sql in migrations:
+            try:
+                await self.db.execute(sql)
+            except Exception:
+                pass  # 이미 존재하는 컬럼 무시
+        await self.db.commit()
+        logger.info("실시간 DB 마이그레이션 완료")
 
     # -- 크림 상품 --
 
