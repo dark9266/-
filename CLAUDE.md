@@ -103,6 +103,7 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `kream-monitor` — 크림 DB 거래량/시세 모니터링 (SELECT 전용)
 - `crawler-builder` — 새 소싱처 크롤러 풀사이클 구현 (API 탐색 → httpx 코드 → 테스트 → 검증)
 - `profit-analyzer` — 수익 계산 검증 + 알림 임계값 최적화 (SELECT 전용)
+- `reverse-scanner` — 크림 hot 상품 기준 역방향 소싱처 가격 조회 + 수익 기회 탐색 (GET 전용)
 
 ## Configuration
 
