@@ -154,3 +154,66 @@ def test_collector_parse_search_response():
     assert results[0]["model_number"] == "ABC-001"
     assert results[0]["brand"] == "Nike"
     assert results[0]["trading_volume"] == 5
+
+
+# -- KreamPriceRefresher 테스트 --
+
+
+@pytest.mark.asyncio
+async def test_refresher_picks_hot_first():
+    """hot tier 상품이 cold보다 먼저 선택되는지 확인."""
+    from src.kream_realtime.price_refresher import KreamPriceRefresher
+
+    db = await _create_db()
+
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, volume_7d, refresh_tier, last_price_refresh)
+        VALUES ('hot1', 'Hot Shoe', 'HOT-001', 20, 'hot',
+                datetime('now', '-31 minutes'))"""
+    )
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, volume_7d, refresh_tier, last_price_refresh)
+        VALUES ('cold1', 'Cold Shoe', 'COLD-001', 2, 'cold',
+                datetime('now', '-7 hours'))"""
+    )
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, volume_7d, refresh_tier, last_price_refresh)
+        VALUES ('hot2', 'Recent Hot', 'HOT-002', 30, 'hot',
+                datetime('now', '-5 minutes'))"""
+    )
+    await db.commit()
+
+    refresher = KreamPriceRefresher(db)
+    queue = await refresher.build_refresh_queue(batch_size=10)
+
+    pids = [row["product_id"] for row in queue]
+    assert "hot1" in pids
+    assert "cold1" in pids
+    assert "hot2" not in pids
+    assert pids.index("hot1") < pids.index("cold1")
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_refresher_updates_tier():
+    """거래량 변동 시 tier가 업데이트되는지 확인."""
+    from src.kream_realtime.price_refresher import KreamPriceRefresher
+
+    db = await _create_db()
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, volume_7d, refresh_tier)
+        VALUES ('t1', 'Test', 'T-001', 2, 'cold')"""
+    )
+    await db.commit()
+
+    refresher = KreamPriceRefresher(db)
+    await refresher.update_product_tier("t1", new_volume_7d=10)
+
+    cursor = await db.execute("SELECT refresh_tier FROM kream_products WHERE product_id = 't1'")
+    row = await cursor.fetchone()
+    assert row["refresh_tier"] == "hot"
+    await db.close()
