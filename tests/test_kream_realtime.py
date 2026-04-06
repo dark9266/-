@@ -328,3 +328,19 @@ async def test_spike_save_snapshots():
     row = await cursor.fetchone()
     assert row["volume_7d"] == 7
     await db.close()
+
+
+def test_scheduler_has_realtime_loops():
+    """Scheduler에 실시간 DB 루프가 정의되어 있는지 확인."""
+    import ast
+    source = open("src/scheduler.py").read()
+    tree = ast.parse(source)
+
+    method_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            method_names.add(node.name)
+
+    assert "collect_loop" in method_names, "collect_loop 없음"
+    assert "refresh_loop" in method_names, "refresh_loop 없음"
+    assert "spike_loop" in method_names, "spike_loop 없음"

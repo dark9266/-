@@ -80,6 +80,16 @@ class KreamBot(commands.Bot):
         import src.crawlers.adidas  # noqa: F401
 
         self.scheduler = Scheduler(self)
+
+        # 실시간 DB 모듈 초기화
+        from src.kream_realtime.collector import KreamCollector
+        from src.kream_realtime.price_refresher import KreamPriceRefresher
+        from src.kream_realtime.volume_spike_detector import VolumeSpikeDetector
+
+        self._kream_collector = KreamCollector(self.db.db)
+        self._kream_refresher = KreamPriceRefresher(self.db.db)
+        self._kream_spike_detector = VolumeSpikeDetector(self.db.db)
+
         logger.info("봇 초기화 완료")
 
     async def on_ready(self) -> None:

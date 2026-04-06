@@ -4,6 +4,7 @@ discord.ext.tasks 기반 2티어 실시간 아키텍처:
 - Tier 1: 워치리스트 빌더 (30분 주기)
 - Tier 2: 실시간 폴링 모니터 (60초 주기)
 - 일일 리포트 (자정)
+- 실시간 DB: 신규 수집 (6시간), 시세 갱신 (10분), 급등 감지 (60분)
 """
 
 import asyncio
@@ -38,6 +39,12 @@ class Scheduler:
             self.tier2_loop.start()
         if not self.daily_report.is_running():
             self.daily_report.start()
+        if not self.collect_loop.is_running():
+            self.collect_loop.start()
+        if not self.refresh_loop.is_running():
+            self.refresh_loop.start()
+        if not self.spike_loop.is_running():
+            self.spike_loop.start()
 
         # 스캔 캐시 정리
         if hasattr(self.bot, 'scanner') and hasattr(self.bot.scanner, 'scan_cache'):
@@ -51,6 +58,9 @@ class Scheduler:
         self.tier1_loop.cancel()
         self.tier2_loop.cancel()
         self.daily_report.cancel()
+        self.collect_loop.cancel()
+        self.refresh_loop.cancel()
+        self.spike_loop.cancel()
         logger.info("스케줄러 중지")
 
     def start_auto_scan(self) -> None:
@@ -210,3 +220,79 @@ class Scheduler:
     @daily_report.before_loop
     async def before_daily_report(self) -> None:
         await self.bot.wait_until_ready()
+
+    # ─── 신규 상품 자동 수집 (6시간 주기) ─────────────
+
+    @tasks.loop(hours=settings.realtime_collect_interval_hours)
+    async def collect_loop(self) -> None:
+        """크림 신규 상품 자동 수집."""
+        if not hasattr(self.bot, '_kream_collector') or not self.bot._kream_collector:
+            return
+
+        try:
+            result = await self.bot._kream_collector.run()
+            if result["total_new"] > 0:
+                await self.bot.log_to_channel(
+                    f"📦 신규 상품 수집: +{result['total_new']}건 ({result['elapsed']:.0f}초)"
+                )
+            logger.info("신규 수집: %d건 (%.0f초)", result["total_new"], result["elapsed"])
+        except Exception as e:
+            error_aggregator.add("collect_loop", e)
+            logger.error("신규 수집 실패: %s", e)
+
+    @collect_loop.before_loop
+    async def before_collect(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(300)
+
+    # ─── 우선순위 시세 갱신 (10분 주기) ────────────────
+
+    @tasks.loop(minutes=10)
+    async def refresh_loop(self) -> None:
+        """거래량 기반 우선순위 시세 갱신."""
+        if not hasattr(self.bot, '_kream_refresher') or not self.bot._kream_refresher:
+            return
+
+        try:
+            result = await self.bot._kream_refresher.run()
+            if result["refreshed"] > 0:
+                logger.info(
+                    "시세 갱신: %d/%d (%.0f초)",
+                    result["refreshed"], result["queue_size"], result["elapsed"],
+                )
+        except Exception as e:
+            error_aggregator.add("refresh_loop", e)
+            logger.error("시세 갱신 실패: %s", e)
+
+    @refresh_loop.before_loop
+    async def before_refresh(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(180)
+
+    # ─── 거래량 급등 감지 (60분 주기) ──────────────────
+
+    @tasks.loop(minutes=settings.realtime_volume_check_minutes)
+    async def spike_loop(self) -> None:
+        """거래량 급등 감지 + hot 승격."""
+        if not hasattr(self.bot, '_kream_spike_detector') or not self.bot._kream_spike_detector:
+            return
+
+        try:
+            result = await self.bot._kream_spike_detector.run()
+            if result["spikes"] > 0:
+                await self.bot.log_to_channel(
+                    f"🔥 거래량 급등: {result['spikes']}건 감지 "
+                    f"(승격: {', '.join(result['promoted'][:5])})"
+                )
+            logger.info(
+                "급등 감지: %d건 체크, %d건 급등 (%.0f초)",
+                result["checked"], result["spikes"], result["elapsed"],
+            )
+        except Exception as e:
+            error_aggregator.add("spike_loop", e)
+            logger.error("급등 감지 실패: %s", e)
+
+    @spike_loop.before_loop
+    async def before_spike(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(600)
