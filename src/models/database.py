@@ -499,12 +499,14 @@ class Database:
 
     async def load_scanned_goods_nos(
         self, category: str = "", ttl_hours: int = 0,
+        exclude_oldest_n: int = 0,
     ) -> set[str]:
         """카테고리 스캔 이력에서 goods_no 집합 로딩 (메모리 SET).
 
         Args:
             category: 특정 카테고리만 로딩. 빈 문자열이면 전체.
             ttl_hours: 0보다 크면 scanned_at 기준 N시간 이내 항목만 로딩.
+            exclude_oldest_n: 0보다 크면 scanned_at 오래된 순 N건을 제외 (재스캔 허용).
         """
         conditions = []
         params: list = []
@@ -519,12 +521,25 @@ class Database:
             params.append(f"-{ttl_hours} hours")
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        if exclude_oldest_n > 0:
+            # 오래된 순 N건의 goods_no를 먼저 구한 뒤 제외
+            exclude_cursor = await self.db.execute(
+                f"SELECT goods_no FROM category_scan_history{where}"
+                " ORDER BY scanned_at ASC LIMIT ?",
+                (*params, exclude_oldest_n),
+            )
+            exclude_rows = await exclude_cursor.fetchall()
+            exclude_set = {row["goods_no"] for row in exclude_rows}
+        else:
+            exclude_set = set()
+
         cursor = await self.db.execute(
             f"SELECT goods_no FROM category_scan_history{where}",
             tuple(params),
         )
         rows = await cursor.fetchall()
-        return {row["goods_no"] for row in rows}
+        return {row["goods_no"] for row in rows} - exclude_set
 
     async def save_category_scan(
         self,
