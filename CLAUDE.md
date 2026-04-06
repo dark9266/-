@@ -85,6 +85,23 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `/api/p/options/display?product_id={id}` — 사이즈별 시세
 - `/api/p/e/products/{id}/sales` — 거래 내역
 
+## 개발 자동화 인프라
+
+### Stop 훅 (`.claude/settings.json`)
+- `Edit`/`Write` 도구 실행 후 자동으로 pytest 실행
+- 실패 시 Claude Code가 즉시 수정 루프 진입
+
+### 슬래시 명령 (`.claude/commands/`)
+- `/commit` — git add + 메시지 자동 생성 + commit + push
+- `/verify` — verify.py + pytest + 문법 검증 파이프라인
+- `/status` — DB 현황 + 워치리스트 + 최근 알림 대시보드
+
+### 서브에이전트 (`.claude/agents/`)
+- `verify-agent` — verify.py + pytest 전담, 실패 시 자동 수정 (최대 3회)
+- `api-prober` — 새 소싱처 API 탐색 (GET 전용, 응답 구조 문서화)
+- `code-reviewer` — 코드 리뷰 전담 (보안/성능/품질 체크리스트)
+- `kream-monitor` — 크림 DB 거래량/시세 모니터링 (SELECT 전용)
+
 ## Configuration
 
 Environment variables in `.env` (see `.env.example`):
