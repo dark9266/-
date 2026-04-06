@@ -61,7 +61,7 @@ class KreamPriceRefresher:
     async def refresh_product(self, product_id: str) -> bool:
         """단일 상품 시세 + 거래량 갱신. 성공 여부 반환."""
         try:
-            detail = await kream_crawler.get_product_detail_with_prices(product_id)
+            detail = await kream_crawler.get_full_product_info(product_id)
             if not detail:
                 logger.warning("시세 갱신 실패 (상세 없음): %s", product_id)
                 return False

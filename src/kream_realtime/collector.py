@@ -78,23 +78,23 @@ class KreamCollector:
         for page in range(1, max_pages + 1):
             await _random_delay()
 
-            params = {
-                "keyword": keyword,
-                "sort": "date",
-                "page": page,
-                "per_page": 40,
-                "tab": "products",
-            }
-            data = await kream_crawler._request(
-                "GET", "/api/p/e/search/products", params=params, max_retries=2,
-            )
+            url = f"{KREAM_BASE}/search?keyword={keyword}&tab=products&sort=date&page={page}"
+            html = await kream_crawler._request("GET", url, parse_json=False, max_retries=2)
+            if not html:
+                empty_streak += 1
+                if empty_streak >= 2:
+                    break
+                continue
+
+            data = kream_crawler._extract_page_data(html)
             if not data:
                 empty_streak += 1
                 if empty_streak >= 2:
                     break
                 continue
 
-            products = self._parse_search_response(data, category_name)
+            raw_products = kream_crawler._extract_listing_products(data)
+            products = self._enrich_listing_products(raw_products, category_name)
             if not products:
                 empty_streak += 1
                 if empty_streak >= 2:
@@ -132,6 +132,26 @@ class KreamCollector:
         elapsed = (datetime.now() - started).total_seconds()
         logger.info("수집 완료: 신규 %d건, %.0f초", total_new, elapsed)
         return {"total_new": total_new, "by_category": stats, "elapsed": elapsed}
+
+    @staticmethod
+    def _enrich_listing_products(raw_products: list[dict], category: str) -> list[dict]:
+        """_extract_listing_products 결과에 category 추가 및 키 정규화."""
+        results = []
+        for p in raw_products:
+            pid = str(p.get("product_id") or p.get("id") or "")
+            if not pid or pid == "None":
+                continue
+            results.append({
+                "product_id": pid,
+                "name": str(p.get("name", "")).strip(),
+                "brand": str(p.get("brand", "")).strip(),
+                "model_number": str(p.get("model_number", "")).strip(),
+                "category": category,
+                "image_url": p.get("image_url", ""),
+                "url": p.get("url", f"{KREAM_BASE}/products/{pid}"),
+                "trading_volume": int(p.get("trading_volume", 0) or 0),
+            })
+        return results
 
     @staticmethod
     def _parse_search_response(data: dict, category: str) -> list[dict]:
