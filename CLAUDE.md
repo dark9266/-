@@ -56,6 +56,34 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `src/models/database.py` — Async SQLite (aiosqlite), 11 tables: products, price history, trade volume, alerts, keywords, settings.
 - `src/config.py` — Pydantic `BaseSettings`, loads from `.env`.
 - `src/scan_cache.py` — JSON 기반 모델번호 스캔 캐시. 24시간 TTL (수익 발생 시 6시간). 중복 스캔 방지.
+- `src/kream_realtime/collector.py` — 크림 신규 상품 자동 수집 (카테고리별 date순 검색, 6시간 주기).
+- `src/kream_realtime/price_refresher.py` — 거래량 기반 우선순위 시세 갱신 (hot 30분/cold 6시간, 배치 큐).
+- `src/kream_realtime/volume_spike_detector.py` — 거래량 급등 감지 (스냅샷 비교, 2배 이상 → hot 승격).
+
+### 실시간 DB 레이어
+
+3개 루프가 `scheduler.py`에서 독립 실행:
+
+| 루프 | 주기 | 모듈 | 역할 |
+|------|------|------|------|
+| `collect_loop` | 6시간 | `src/kream_realtime/collector.py` | 카테고리별 신규 상품 수집 (date순) |
+| `refresh_loop` | 10분 | `src/kream_realtime/price_refresher.py` | 우선순위 큐 시세 갱신 (hot 30분/cold 6시간) |
+| `spike_loop` | 60분 | `src/kream_realtime/volume_spike_detector.py` | 거래량 급등 감지 + hot 승격 |
+
+**Tier 분류:**
+- `hot`: 7일 거래량 >= 5 → 30분마다 시세 갱신
+- `cold`: 7일 거래량 < 5 → 6시간마다 시세 갱신
+- 급등 감지 시 cold → hot 자동 승격
+
+**DB 확장:**
+- `kream_products`: +`volume_7d`, `volume_30d`, `last_volume_check`, `refresh_tier`, `last_price_refresh`
+- `kream_volume_snapshots`: 거래량 시계열 스냅샷 (급등 비교용)
+
+**API (GET 전용):**
+- `/api/p/e/search/products` (keyword, sort=date, page, per_page) — 신규 수집
+- `/api/p/e/products/{id}` — 상세
+- `/api/p/options/display?product_id={id}` — 사이즈별 시세
+- `/api/p/e/products/{id}/sales` — 거래 내역
 
 ## Configuration
 
