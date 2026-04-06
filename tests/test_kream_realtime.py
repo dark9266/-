@@ -217,3 +217,114 @@ async def test_refresher_updates_tier():
     row = await cursor.fetchone()
     assert row["refresh_tier"] == "hot"
     await db.close()
+
+
+# -- VolumeSpikeDetector 테스트 --
+
+
+@pytest.mark.asyncio
+async def test_spike_detection():
+    """이전 스냅샷 대비 2배 이상 증가하면 급등 감지."""
+    from src.kream_realtime.volume_spike_detector import VolumeSpikeDetector
+
+    db = await _create_db()
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, volume_7d, refresh_tier)
+        VALUES ('sp1', 'Spike Shoe', 'SP-001', 5, 'cold')"""
+    )
+    await db.execute(
+        """INSERT INTO kream_volume_snapshots
+        (product_id, volume_7d, volume_30d, snapshot_at)
+        VALUES ('sp1', 5, 20, datetime('now', '-2 hours'))"""
+    )
+    await db.commit()
+
+    detector = VolumeSpikeDetector(db)
+    spikes = await detector.detect_spikes(
+        current_volumes=[{"product_id": "sp1", "volume_7d": 12, "volume_30d": 40}]
+    )
+    assert len(spikes) == 1
+    assert spikes[0]["product_id"] == "sp1"
+    assert spikes[0]["ratio"] > 2.0
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_no_spike_for_small_change():
+    """1.5배 증가는 급등 아님 (threshold=2.0)."""
+    from src.kream_realtime.volume_spike_detector import VolumeSpikeDetector
+
+    db = await _create_db()
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, volume_7d, refresh_tier)
+        VALUES ('ns1', 'Normal Shoe', 'NS-001', 10, 'hot')"""
+    )
+    await db.execute(
+        """INSERT INTO kream_volume_snapshots
+        (product_id, volume_7d, volume_30d, snapshot_at)
+        VALUES ('ns1', 10, 30, datetime('now', '-2 hours'))"""
+    )
+    await db.commit()
+
+    detector = VolumeSpikeDetector(db)
+    spikes = await detector.detect_spikes(
+        current_volumes=[{"product_id": "ns1", "volume_7d": 15, "volume_30d": 35}]
+    )
+    assert len(spikes) == 0
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_spike_promotes_to_hot():
+    """급등 감지 시 cold → hot으로 승격되는지 확인."""
+    from src.kream_realtime.volume_spike_detector import VolumeSpikeDetector
+
+    db = await _create_db()
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, volume_7d, refresh_tier)
+        VALUES ('pr1', 'Promote Shoe', 'PR-001', 3, 'cold')"""
+    )
+    await db.execute(
+        """INSERT INTO kream_volume_snapshots
+        (product_id, volume_7d, volume_30d, snapshot_at)
+        VALUES ('pr1', 3, 10, datetime('now', '-2 hours'))"""
+    )
+    await db.commit()
+
+    detector = VolumeSpikeDetector(db)
+    spikes = await detector.detect_spikes(
+        current_volumes=[{"product_id": "pr1", "volume_7d": 8, "volume_30d": 25}]
+    )
+    assert len(spikes) == 1
+
+    await detector.promote_spiked_products(spikes)
+
+    cursor = await db.execute("SELECT refresh_tier FROM kream_products WHERE product_id = 'pr1'")
+    row = await cursor.fetchone()
+    assert row["refresh_tier"] == "hot"
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_spike_save_snapshots():
+    """스냅샷 저장 후 조회 확인."""
+    from src.kream_realtime.volume_spike_detector import VolumeSpikeDetector
+
+    db = await _create_db()
+    await db.execute(
+        "INSERT INTO kream_products (product_id, name, model_number) VALUES ('ss1', 'Snap', 'SS-001')"
+    )
+    await db.commit()
+
+    detector = VolumeSpikeDetector(db)
+    await detector.save_snapshots([
+        {"product_id": "ss1", "volume_7d": 7, "volume_30d": 25}
+    ])
+
+    cursor = await db.execute("SELECT volume_7d FROM kream_volume_snapshots WHERE product_id = 'ss1'")
+    row = await cursor.fetchone()
+    assert row["volume_7d"] == 7
+    await db.close()
