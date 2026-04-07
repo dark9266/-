@@ -120,8 +120,10 @@ class Scheduler:
                     t1_result = await self.bot.tier1_scanner.run()
                     await self.bot.log_to_channel(
                         f"Tier1 완료 ({cat_elapsed:.0f}초) | "
-                        f"스캔 {t1_result.scanned} / 매칭 {t1_result.matched} / "
-                        f"워치리스트 +{t1_result.added}"
+                        f"역방향: hot {t1_result.reverse_hot}/소싱 {t1_result.reverse_sourced}"
+                        f"/수익 {t1_result.reverse_profitable} | "
+                        f"카테고리: 스캔 {t1_result.scanned}/매칭 {t1_result.matched}"
+                        f"/추가 +{t1_result.added}"
                     )
                 except Exception as e:
                     error_aggregator.add("tier1_watchlist", e)

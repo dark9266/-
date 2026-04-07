@@ -1,7 +1,8 @@
 """Tier 1 워치리스트 빌더.
 
-30분 주기로 무신사 카테고리 리스팅 → 크림 DB 매칭 → gap 스크리닝 → watchlist 추가.
-상세 페이지 방문 없이 리스팅 가격만으로 빠르게 스크리닝한다.
+2단계 구성:
+1. 역방향 스캔: 크림 hot 상품 → 소싱처 5곳 가격 조회 (주력)
+2. 카테고리 스캔: 무신사 리스팅 → 크림 매칭 → gap 스크리닝 (보조)
 """
 
 import asyncio
@@ -14,6 +15,7 @@ from src.crawlers.musinsa_httpx import musinsa_crawler
 from src.crawlers.registry import get_active, record_failure, record_success
 from src.matcher import extract_model_from_name, normalize_model_number
 from src.models.database import Database
+from src.reverse_scanner import ReverseLookupScanner
 from src.utils.logging import setup_logger
 from src.utils.rate_limiter import AsyncRateLimiter
 from src.watchlist import Watchlist, WatchlistItem
@@ -28,17 +30,22 @@ class Tier1Result:
     scanned: int = 0
     matched: int = 0
     added: int = 0
+    # 역방향 스캔 결과
+    reverse_hot: int = 0
+    reverse_sourced: int = 0
+    reverse_profitable: int = 0
     started_at: datetime = field(default_factory=datetime.now)
     finished_at: datetime | None = None
 
 
 class Tier1Scanner:
-    """워치리스트 빌더 — 리스팅 가격 기반 gap 스크리닝."""
+    """워치리스트 빌더 — 역방향 스캔(주력) + 카테고리 gap 스크리닝(보조)."""
 
     def __init__(
         self,
         db: Database,
         watchlist: Watchlist,
+        scan_cache=None,
     ):
         self.db = db
         self.watchlist = watchlist
@@ -46,20 +53,36 @@ class Tier1Scanner:
             max_concurrent=settings.httpx_concurrency,
             min_interval=settings.musinsa_min_interval,
         )
+        self.reverse_scanner = ReverseLookupScanner(
+            db=db, watchlist=watchlist, scan_cache=scan_cache,
+        )
 
     async def run(self, categories: list[str] | None = None) -> Tier1Result:
         """워치리스트 빌더 실행.
 
-        1. 무신사 카테고리 리스팅 (1페이지=60건)
-        2. 리스팅에서 모델번호 추출
-        3. 크림 DB 매칭 → 시세 확인
-        4. gap 기준 이하면 워치리스트 추가
+        1단계 (주력): 역방향 스캔 — 크림 hot 상품 → 소싱처 5곳 가격 조회
+        2단계 (보조): 카테고리 스캔 — 무신사 리스팅 → gap 스크리닝
         """
         result = Tier1Result()
+
+        # ── 1단계: 역방향 스캔 (주력) ──
+        try:
+            reverse_result = await self.reverse_scanner.run(limit=50)
+            result.reverse_hot = reverse_result.hot_count
+            result.reverse_sourced = reverse_result.sourced
+            result.reverse_profitable = reverse_result.profitable
+            logger.info(
+                "역방향 스캔: hot %d → 소싱 %d → 수익 %d",
+                reverse_result.hot_count, reverse_result.sourced,
+                reverse_result.profitable,
+            )
+        except Exception as e:
+            logger.error("역방향 스캔 실패: %s", e)
+
+        # ── 2단계: 카테고리 gap 스크리닝 (보조) ──
         if categories is None:
             categories = ["103"]
 
-        # 카테고리별 리스팅 수집
         all_listings = []
         for cat in categories:
             try:
@@ -71,9 +94,8 @@ class Tier1Scanner:
                 logger.error("카테고리 %s 리스팅 실패: %s", cat, e)
 
         result.scanned = len(all_listings)
-        logger.info("Tier1: %d건 리스팅 수집", result.scanned)
+        logger.info("Tier1 카테고리: %d건 리스팅 수집", result.scanned)
 
-        # 병렬 매칭
         sem = asyncio.Semaphore(settings.httpx_concurrency)
 
         async def process_listing(listing: dict) -> None:
@@ -87,7 +109,9 @@ class Tier1Scanner:
 
         result.finished_at = datetime.now()
         logger.info(
-            "Tier1 완료: 스캔 %d / 매칭 %d / 워치리스트 +%d",
+            "Tier1 완료: 역방향 hot=%d/소싱=%d/수익=%d | "
+            "카테고리 스캔=%d/매칭=%d/추가=%d",
+            result.reverse_hot, result.reverse_sourced, result.reverse_profitable,
             result.scanned, result.matched, result.added,
         )
         return result

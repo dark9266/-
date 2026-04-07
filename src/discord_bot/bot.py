@@ -68,7 +68,10 @@ class KreamBot(commands.Bot):
         from src.tier2_monitor import Tier2Monitor
 
         self.watchlist = Watchlist()
-        self.tier1_scanner = Tier1Scanner(db=self.db, watchlist=self.watchlist)
+        self.tier1_scanner = Tier1Scanner(
+            db=self.db, watchlist=self.watchlist,
+            scan_cache=self.scanner.scan_cache if self.scanner else None,
+        )
         self.tier2_monitor = Tier2Monitor(
             watchlist=self.watchlist,
             alert_callback=self.send_auto_scan_alert,
@@ -517,13 +520,13 @@ _reverse_scan_task: asyncio.Task | None = None
 
 @bot.command(name="역방향스캔")
 async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
-    """브랜드별 무신사 검색 → 크림 DB 매칭 역방향 스캔.
+    """크림 hot 상품 → 소싱처 5곳 가격 조회 역방향 스캔.
 
     사용법:
-        !역방향스캔          → TOP 20 브랜드 스캔
-        !역방향스캔 테스트    → 테스트 (브랜드 5개)
-        !역방향스캔 전체      → 전체 브랜드 스캔
-        !역방향스캔 전체 20   → 전체 + 브랜드당 20건
+        !역방향스캔          → hot 상품 50건
+        !역방향스캔 100      → hot 상품 100건
+        !역방향스캔 테스트    → hot 상품 10건
+        !역방향스캔 레거시    → 기존 브랜드→무신사 방식
     """
     global _reverse_scan_task
 
@@ -531,33 +534,28 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
         await ctx.send("⚠️ 역방향 스캔이 이미 실행 중입니다.")
         return
 
-    # 인자 파싱
-    max_per_brand = 10
-    max_brands = 20  # 기본: TOP 20 브랜드
     parts = args.strip().split()
 
+    # 레거시 모드 분기
+    if "레거시" in parts:
+        await _run_legacy_reverse_scan(ctx, parts)
+        return
+
+    # 새 역방향 스캔: hot 상품 기준
+    scan_limit = 50
     for part in parts:
-        if part == "전체":
-            max_brands = 0  # 제한 없음
-        elif part == "테스트":
-            max_brands = 5
+        if part == "테스트":
+            scan_limit = 10
         else:
             try:
-                max_per_brand = int(part)
+                scan_limit = int(part)
             except ValueError:
                 pass
 
-    if max_brands == 5:
-        mode_label = "테스트 (5개 브랜드)"
-    elif max_brands > 0:
-        mode_label = f"TOP {max_brands} 브랜드"
-    else:
-        mode_label = "전체 브랜드"
     progress_msg = await ctx.send(
-        f"🔄 **역방향 스캔 시작** [{mode_label}]\n"
-        f"• 크림 DB 브랜드 → 무신사 한글 검색\n"
-        f"• 브랜드당 최대 {max_per_brand}건 상세 조회\n"
-        f"• 정가·할인가 모두 크림 대비 수익 분석"
+        f"🔄 **역방향 스캔 시작** [hot {scan_limit}건]\n"
+        f"• 크림 hot 상품 → 소싱처 5곳 가격 조회\n"
+        f"• 모델번호 검색 + 사이즈별 수익 분석"
     )
 
     async def on_opportunity(opportunity):
@@ -576,6 +574,98 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
 
     async def run_reverse():
         try:
+            from src.reverse_scanner import ReverseLookupScanner
+
+            scanner = ReverseLookupScanner(
+                db=bot.db,
+                watchlist=getattr(bot, 'watchlist', None),
+                scan_cache=bot.scanner.scan_cache if bot.scanner else None,
+            )
+            result = await scanner.run(
+                limit=scan_limit,
+                on_opportunity=on_opportunity,
+                on_progress=on_progress,
+            )
+
+            bot.daily_stats["scan_count"] += 1
+            bot.daily_stats["product_count"] += result.searched
+
+            elapsed = 0.0
+            if result.finished_at and result.started_at:
+                elapsed = (result.finished_at - result.started_at).total_seconds()
+
+            # 개별 수익 알림 전송 (BUY 이상만)
+            sent_count = 0
+            for op in result.opportunities:
+                if op.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    continue
+                try:
+                    if await bot.send_auto_scan_alert(op):
+                        sent_count += 1
+                except Exception as e:
+                    logger.error("역방향 개별 알림 실패: %s", e)
+
+            await progress_msg.edit(
+                content=(
+                    f"✅ **역방향 스캔 완료** ({elapsed:.0f}초) — "
+                    f"hot {result.hot_count}건 → 소싱 {result.sourced}건 → "
+                    f"수익기회 {result.profitable}건 | 알림 {sent_count}건 전송"
+                )
+            )
+
+        except Exception as e:
+            logger.error("역방향 스캔 실패: %s", e)
+            await ctx.send(f"❌ 역방향 스캔 실패: {e}")
+
+    _reverse_scan_task = asyncio.create_task(run_reverse())
+
+
+async def _run_legacy_reverse_scan(ctx: commands.Context, parts: list[str]):
+    """레거시 역방향 스캔 (브랜드별 무신사 → 크림 DB 매칭)."""
+    global _reverse_scan_task
+
+    max_per_brand = 10
+    max_brands = 20
+    for part in parts:
+        if part == "전체":
+            max_brands = 0
+        elif part == "테스트":
+            max_brands = 5
+        elif part != "레거시":
+            try:
+                max_per_brand = int(part)
+            except ValueError:
+                pass
+
+    if max_brands == 5:
+        mode_label = "테스트 (5개 브랜드)"
+    elif max_brands > 0:
+        mode_label = f"TOP {max_brands} 브랜드"
+    else:
+        mode_label = "전체 브랜드"
+
+    progress_msg = await ctx.send(
+        f"🔄 **레거시 역방향 스캔 시작** [{mode_label}]\n"
+        f"• 크림 DB 브랜드 → 무신사 한글 검색\n"
+        f"• 브랜드당 최대 {max_per_brand}건 상세 조회"
+    )
+
+    async def on_opportunity(opportunity):
+        if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+            return
+        try:
+            await bot.send_auto_scan_alert(opportunity)
+        except Exception as e:
+            logger.error("레거시 역방향 알림 실패: %s", e)
+
+    async def on_progress(message):
+        try:
+            await progress_msg.edit(content=f"🔄 {message}")
+        except Exception:
+            pass
+
+    async def run_legacy():
+        try:
             result = await bot.scanner.reverse_scan(
                 on_opportunity=on_opportunity,
                 on_progress=on_progress,
@@ -583,7 +673,6 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
                 max_brands=max_brands,
             )
 
-            # 통계 업데이트
             bot.daily_stats["scan_count"] += 1
             bot.daily_stats["product_count"] += result.detail_fetched
 
@@ -603,25 +692,19 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
             )
             await ctx.send(embed=summary_embed)
 
-            # 개별 수익 알림 전송 (BUY 이상만)
             sent_count = 0
             for op in result.opportunities:
                 if op.signal not in (Signal.STRONG_BUY, Signal.BUY):
-                    logger.debug(
-                        "역방향 알림 스킵: signal=%s profit=%d %s",
-                        op.signal.value, op.best_confirmed_profit,
-                        op.kream_product.name[:30],
-                    )
                     continue
                 try:
                     if await bot.send_auto_scan_alert(op):
                         sent_count += 1
                 except Exception as e:
-                    logger.error("역방향 개별 알림 실패: %s", e)
+                    logger.error("레거시 역방향 개별 알림 실패: %s", e)
 
             await progress_msg.edit(
                 content=(
-                    f"✅ **역방향 스캔 완료** — "
+                    f"✅ **레거시 역방향 스캔 완료** — "
                     f"검색 {result.sale_collected}건 → DB매칭 {result.db_matched}건 → "
                     f"수익기회 {len(result.opportunities)}건 "
                     f"(확정 {result.confirmed_count} / 예상 {result.estimated_count}) "
@@ -630,10 +713,10 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
             )
 
         except Exception as e:
-            logger.error("역방향 스캔 실패: %s", e)
-            await ctx.send(f"❌ 역방향 스캔 실패: {e}")
+            logger.error("레거시 역방향 스캔 실패: %s", e)
+            await ctx.send(f"❌ 레거시 역방향 스캔 실패: {e}")
 
-    _reverse_scan_task = asyncio.create_task(run_reverse())
+    _reverse_scan_task = asyncio.create_task(run_legacy())
 
 
 # 카테고리스캔 태스크 추적

@@ -309,6 +309,42 @@ class Database:
         )
         await self.db.commit()
 
+    # -- 역방향 스캔 (hot 상품 조회) --
+
+    async def get_hot_products(self, limit: int = 50) -> list[dict]:
+        """hot 상품 조회 (역방향 스캔용).
+
+        refresh_tier='hot' AND model_number != '' 상품을 volume_7d 내림차순으로 반환.
+        각 상품의 최신 사이즈별 시세(sell_now_price)를 함께 조회한다.
+        """
+        cursor = await self.db.execute(
+            """SELECT product_id, name, model_number, brand, category,
+                      image_url, url, volume_7d, volume_30d, refresh_tier
+            FROM kream_products
+            WHERE refresh_tier = 'hot' AND model_number != ''
+            ORDER BY volume_7d DESC
+            LIMIT ?""",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        products = []
+        for row in rows:
+            product = dict(row)
+            # 최신 사이즈별 시세 조인
+            prices = await self.get_latest_kream_prices(product["product_id"])
+            product["size_prices"] = [dict(p) for p in prices]
+            products.append(product)
+        return products
+
+    async def get_hot_product_count(self) -> int:
+        """hot 상품 수."""
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) as cnt FROM kream_products "
+            "WHERE refresh_tier = 'hot' AND model_number != ''"
+        )
+        row = await cursor.fetchone()
+        return row["cnt"] if row else 0
+
     # -- 배치스캔용 조회 --
 
     async def get_kream_product_count(self) -> int:
