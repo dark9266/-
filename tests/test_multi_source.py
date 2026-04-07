@@ -148,12 +148,12 @@ class TestWatchlistMultiSource:
         wl.add(WatchlistItem(
             kream_product_id="3",
             model_number="C-003",
-            kream_name="ABC마트 상품",
+            kream_name="29CM 상품",
             musinsa_product_id="",
             musinsa_price=0,
             kream_price=110000,
             gap=-25000,
-            source="abcmart",
+            source="29cm",
             source_product_id="456",
             source_price=85000,
         ))
@@ -161,4 +161,4 @@ class TestWatchlistMultiSource:
         assert wl.size == 3
         assert wl.get("A-001").source == "musinsa"
         assert wl.get("B-002").source == "nike"
-        assert wl.get("C-003").source == "abcmart"
+        assert wl.get("C-003").source == "29cm"

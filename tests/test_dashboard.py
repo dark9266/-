@@ -122,27 +122,24 @@ class TestCrawlerRegistration:
     """크롤러 레지스트리 등록 테스트."""
 
     def test_all_crawlers_register(self):
-        """5개 소싱처 모듈 임포트 시 레지스트리 등록."""
+        """4개 소싱처 모듈 임포트 시 레지스트리 등록."""
         from src.crawlers.registry import RETAIL_CRAWLERS
         RETAIL_CRAWLERS.clear()
 
         import importlib
         import src.crawlers.musinsa_httpx
         import src.crawlers.twentynine_cm
-        import src.crawlers.abcmart
         import src.crawlers.nike
         import src.crawlers.adidas
 
         # 모듈 리로드로 register() 재실행
         importlib.reload(src.crawlers.musinsa_httpx)
         importlib.reload(src.crawlers.twentynine_cm)
-        importlib.reload(src.crawlers.abcmart)
         importlib.reload(src.crawlers.nike)
         importlib.reload(src.crawlers.adidas)
 
         assert "musinsa" in RETAIL_CRAWLERS
         assert "29cm" in RETAIL_CRAWLERS
-        assert "abcmart" in RETAIL_CRAWLERS
         assert "nike" in RETAIL_CRAWLERS
         assert "adidas" in RETAIL_CRAWLERS
 

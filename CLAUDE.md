@@ -32,7 +32,7 @@ ruff format src/ tests/
 
 **Core pipeline:** Scanner orchestrates the flow:
 ```
-Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matcher (model# matching) → Profit Calculator → Discord Alerts
+Multi-Source Crawlers (무신사/29CM/나이키/아디다스) → Matcher (model# matching) → Profit Calculator → Discord Alerts
 ```
 
 **Key modules:**
@@ -41,7 +41,6 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `src/crawlers/kream.py` — Parses Kream's Nuxt `__NUXT_DATA__` (devalue format) for sizes, prices, trade volume.
 - `src/crawlers/musinsa_httpx.py` — httpx 기반 무신사 크롤러. 세션 쿠키(`data/musinsa_session.json`)로 등급할인가 수집.
 - `src/crawlers/twentynine_cm.py` — 29CM 크롤러. 검색 API v4/products + HTML 파싱 (schema.org + RSC payload).
-- `src/crawlers/abcmart.py` — ABC마트 크롤러. JSON API (검색 /display/search-word/result-total/list, 상세 /product/info).
 - `src/crawlers/nike.py` — 나이키 공식몰 크롤러. __NEXT_DATA__ JSON 파싱 (2024+ selectedProduct 구조).
 - `src/crawlers/adidas.py` — 아디다스 공식몰 크롤러. taxonomy API (/api/search/taxonomy, 사이즈/가격 포함).
 - `src/crawlers/registry.py` — 소싱처 크롤러 레지스트리. 서킷브레이커: 연속 3회 실패 시 30분 비활성화, 자동 재활성화.
@@ -123,7 +122,6 @@ Environment variables in `.env` (see `.env.example`):
   - 무신사: 안정 (API 검증 완료)
   - 29CM: 안정 (검색 API v4/products 엔드포인트, 2024-04 검증)
   - 나이키: 안정 (검색 Wall + PDP selectedProduct.sizes 2024+ 구조 적용)
-  - ABC마트: 안정 (JSON API 전환 — 검색 /display/search-word/result-total/list, 상세 /product/info)
   - 아디다스: 안정 (taxonomy API 전환 — /api/search/taxonomy, Akamai WAF 우회 성공)
 
 ## Code Style
@@ -233,7 +231,7 @@ WSL2 + Windows: bot runs on Linux. 무신사 세션 쿠키는 `data/musinsa_sess
 - 1티어: asyncio 병렬(동시 10개) 워치리스트 빌더 - 30분 주기 + 멀티소스 최저가 비교
 - 2티어: watchlist.json 대상 Pinia API 60초 폴링 - 독립 병렬 실행
 - 수익 조건 도달 즉시 웹훅 발송
-- 소싱처: 무신사, 29CM, ABC마트, 나이키, 아디다스 (레지스트리 자동 등록)
+- 소싱처: 무신사, 29CM, 나이키, 아디다스 (레지스트리 자동 등록)
 
 ### Known Issues
 - MFS(다중재고) 상품 품절 필터 한계 — inventory API 근본 미작동, 15/17까지만 축소 가능 (MT410CK5 등)

@@ -10,7 +10,6 @@ from datetime import datetime
 
 import httpx
 
-from src.crawlers.registry import register
 from src.models.product import RetailProduct, RetailSizeInfo
 from src.utils.logging import setup_logger
 from src.utils.rate_limiter import AsyncRateLimiter
@@ -241,6 +240,5 @@ class AbcMartCrawler:
         logger.info("ABC마트 크롤러 연결 해제")
 
 
-# 싱글톤
+# 싱글톤 — 레지스트리 미등록 (모델번호 검색 불가로 역방향 매칭 부적합)
 abcmart_crawler = AbcMartCrawler()
-register("abcmart", abcmart_crawler, "ABC마트")
