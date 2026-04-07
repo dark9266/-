@@ -55,7 +55,7 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `src/discord_bot/bot.py` — 16+ slash commands, rich embed alerts, 1-hour alert dedup cooldown.
 - `src/models/database.py` — Async SQLite (aiosqlite), 11 tables: products, price history, trade volume, alerts, keywords, settings.
 - `src/config.py` — Pydantic `BaseSettings`, loads from `.env`.
-- `src/scan_cache.py` — JSON 기반 모델번호 스캔 캐시. 24시간 TTL (수익 발생 시 6시간). 중복 스캔 방지.
+- `src/scan_cache.py` — JSON 기반 모델번호 스캔 캐시. 일반 24시간, 역방향 2시간, 수익 발생 6시간 TTL. 중복 스캔 방지.
 - `src/kream_realtime/collector.py` — 크림 신규 상품 자동 수집 (카테고리별 date순 검색, 6시간 주기).
 - `src/kream_realtime/price_refresher.py` — 거래량 기반 우선순위 시세 갱신 (hot 30분/cold 6시간, 배치 큐).
 - `src/kream_realtime/volume_spike_detector.py` — 거래량 급등 감지 (스냅샷 비교, 2배 이상 → hot 승격).
@@ -188,7 +188,7 @@ WSL2 + Windows: bot runs on Linux. 무신사 세션 쿠키는 `data/musinsa_sess
 - Plan 모드: 큰 작업은 Shift+Tab 두 번 → 설계 먼저, 승인 후 실행
 - 검증: 수정 후 반드시 !역방향스캔 테스트로 수치 검증 (수집 건수, 매칭률, 에러 수)
 - 커밋: 작업 완료 시 git commit + 디스코드 웹훅 알림
-- 웹훅 URL: https://discord.com/api/webhooks/1488503869183889446/PEqriAS5fVPkdeGsqqzDASVsbd_yYMDy01e5rDIBHh03RbagsvNeb5LClRsuKCpY5ty6
+- 웹훅 URL: https://discord.com/api/webhooks/1490976364868931704/vhyCn1X42x3OBIz1GvcNCVuiGSOjOdADkF4ttkcCIskIR_fnmzZkRCu9MYptN1dxFWN3
 
 ### 버그 수정 원칙
 - 3회 실패 시 방법 지정 금지 — 문제+제약+실패이력만 제공, 최적 방법은 Claude Code가 탐색
@@ -213,7 +213,7 @@ WSL2 + Windows: bot runs on Linux. 무신사 세션 쿠키는 `data/musinsa_sess
 
 ### 스캔 캐시 (`src/scan_cache.py`)
 - 모델번호 기반 중복 스캔 방지 (`data/scan_cache.json`)
-- 일반 상품 24시간, 수익 발생 상품 6시간 TTL
+- TTL: 일반 24시간, 역방향 스캔(reverse) 2시간, 수익 발생 6시간
 - Scanner 초기화 시 만료 항목 자동 정리
 - 카테고리 스캔에서 캐시 히트 시 상세 방문 스킵
 

@@ -15,6 +15,7 @@ logger = setup_logger("scan_cache")
 CACHE_PATH = Path("data/scan_cache.json")
 DEFAULT_TTL = 24  # 시간
 PROFIT_TTL = 6  # 수익 발생 시 TTL
+REVERSE_TTL = 2  # 역방향 스캔용 TTL (시간)
 
 
 class ScanCache:
@@ -75,9 +76,15 @@ class ScanCache:
 
     def record(self, model_number: str, profitable: bool = False, source: str = ""):
         """스캔 결과 기록."""
+        if profitable:
+            ttl = PROFIT_TTL
+        elif source == "reverse":
+            ttl = REVERSE_TTL
+        else:
+            ttl = DEFAULT_TTL
         self._cache[model_number] = {
             "scanned_at": datetime.now().isoformat(),
-            "ttl_hours": PROFIT_TTL if profitable else DEFAULT_TTL,
+            "ttl_hours": ttl,
             "profitable": profitable,
             "source": source,
         }

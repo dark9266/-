@@ -179,11 +179,11 @@ class ReverseLookupScanner:
         model_number = product["model_number"]
         normalized = normalize_model_number(model_number)
 
-        # 캐시 체크
+        result.searched += 1
+
+        # 캐시 체크 (searched 카운트 후 스킵 판정)
         if self.scan_cache and self.scan_cache.should_skip(normalized):
             return None
-
-        result.searched += 1
 
         # 소싱처 5곳 병렬 검색
         source_results = await self._search_all_sources(normalized)

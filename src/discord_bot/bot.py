@@ -103,14 +103,12 @@ class KreamBot(commands.Bot):
         await self.log_to_channel("봇이 시작되었습니다. 자동 스캔이 활성화됩니다.")
 
     async def log_to_channel(self, message: str) -> None:
-        """로그 채널에 메시지 전송 (#매수-알림 채널에는 절대 보내지 않음)."""
-        if (
-            settings.channel_log
-            and settings.channel_log != settings.channel_profit_alert
-        ):
-            channel = self.get_channel(settings.channel_log)
-            if channel:
-                await channel.send(f"📝 {message}")
+        """로그 채널에 메시지 전송."""
+        if not settings.channel_log:
+            return
+        channel = self.get_channel(settings.channel_log)
+        if channel:
+            await channel.send(f"📝 {message}")
 
     async def send_match_review(self, message: str) -> None:
         """매칭 검토 채널(#수정)에 매칭 애매한 건 기록."""

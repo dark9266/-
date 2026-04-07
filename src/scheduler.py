@@ -182,6 +182,7 @@ class Scheduler:
                 await self.bot.log_to_channel(
                     f"카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
                     f"리스팅 {cat_result.listing_fetched} → "
+                    f"브랜드필터 {cat_result.brand_filtered} → "
                     f"상세 {cat_result.detail_fetched} → "
                     f"수익기회 {len(cat_result.opportunities)}"
                 )
