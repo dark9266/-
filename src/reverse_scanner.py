@@ -36,6 +36,7 @@ class ReverseLookupResult:
     hot_count: int = 0
     searched: int = 0
     sourced: int = 0  # 소싱처에서 발견
+    no_prices: int = 0  # 크림 시세 미수집 (size_prices 빈 리스트)
     profitable: int = 0
     opportunities: list[AutoScanOpportunity] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -156,16 +157,18 @@ class ReverseLookupScanner:
         )
 
         logger.info(
-            "역방향 스캔 완료: hot %d → 검색 %d → 소싱 %d → 수익 %d (에러 %d, %.0f초)",
+            "역방향 스캔 완료: hot %d → 검색 %d → 소싱 %d → 시세없음 %d → 수익 %d"
+            " (에러 %d, %.0f초)",
             result.hot_count, result.searched, result.sourced,
-            result.profitable, len(result.errors), elapsed_sec,
+            result.no_prices, result.profitable, len(result.errors), elapsed_sec,
         )
 
         if on_progress:
             elapsed_min = elapsed_sec / 60
             await on_progress(
-                f"✅ 역방향 완료: {result.hot_count}/{result.hot_count}건\n"
+                f"✅ 역방향 완료: {result.hot_count}건\n"
                 f"- 소싱 매칭: {result.sourced}건\n"
+                f"- 시세 미수집: {result.no_prices}건\n"
                 f"- 수익 기회: {result.profitable}건\n"
                 f"- 소요시간: {elapsed_min:.1f}분"
             )
@@ -185,6 +188,17 @@ class ReverseLookupScanner:
         if self.scan_cache and self.scan_cache.should_skip(normalized):
             return None
 
+        # 크림 시세 먼저 확인 (없으면 소싱처 검색 불필요)
+        kream_product = self._build_kream_product(product)
+
+        if not kream_product.size_prices:
+            result.no_prices += 1
+            logger.debug(
+                "시세 미수집 탈락: %s [%s] — kream_price_history 없음",
+                kream_product.name[:30], normalized,
+            )
+            return None
+
         # 소싱처 5곳 병렬 검색
         source_results = await self._search_all_sources(normalized)
 
@@ -195,12 +209,6 @@ class ReverseLookupScanner:
             return None
 
         result.sourced += 1
-
-        # 크림 시세 구축 (DB에서 조회한 size_prices 활용)
-        kream_product = self._build_kream_product(product)
-
-        if not kream_product.size_prices:
-            return None
 
         # 소싱처별 최저 사이즈 가격 맵 구축
         best_sizes, best_source_prices, best_source_urls = self._build_best_size_map(
@@ -272,7 +280,50 @@ class ReverseLookupScanner:
             if verified:
                 source_results[key] = verified
 
+        # 사이즈 미반환 소싱처 → 상세 페이지에서 사이즈 보강
+        await self._enrich_missing_sizes(source_results, active)
+
         return source_results
+
+    async def _enrich_missing_sizes(
+        self,
+        source_results: dict[str, list[dict]],
+        active: dict[str, dict],
+    ) -> None:
+        """검색 결과에 sizes가 없는 상품의 상세 페이지에서 사이즈 보강."""
+        for key, items in source_results.items():
+            crawler = active[key]["crawler"]
+            if not hasattr(crawler, "get_product_detail"):
+                continue
+
+            for item in items:
+                if item.get("sizes"):
+                    continue  # 이미 사이즈 있음
+
+                pid = item.get("product_id", "")
+                if not pid:
+                    continue
+
+                try:
+                    detail = await crawler.get_product_detail(pid)
+                    if detail and detail.sizes:
+                        item["sizes"] = [
+                            {
+                                "size": s.size,
+                                "price": s.price,
+                                "in_stock": s.in_stock,
+                            }
+                            for s in detail.sizes
+                        ]
+                        logger.debug(
+                            "%s 상세 사이즈 보강: %s → %d개",
+                            active[key]["label"], pid, len(detail.sizes),
+                        )
+                except Exception as e:
+                    logger.debug(
+                        "%s 상세 조회 실패: %s — %s",
+                        active[key]["label"], pid, e,
+                    )
 
     def _build_kream_product(self, product: dict) -> KreamProduct:
         """DB 조회 결과를 KreamProduct로 변환."""

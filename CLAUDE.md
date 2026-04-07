@@ -55,6 +55,7 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 - `src/discord_bot/bot.py` — 16+ slash commands, rich embed alerts, 1-hour alert dedup cooldown.
 - `src/models/database.py` — Async SQLite (aiosqlite), 11 tables: products, price history, trade volume, alerts, keywords, settings.
 - `src/config.py` — Pydantic `BaseSettings`, loads from `.env`.
+- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot 상품 → 소싱처 5곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수) → 수익 분석. sizes 미반환 소싱처는 상세 페이지에서 사이즈 보강.
 - `src/scan_cache.py` — JSON 기반 모델번호 스캔 캐시. 일반 24시간, 역방향 2시간, 수익 발생 6시간 TTL. 중복 스캔 방지.
 - `src/kream_realtime/collector.py` — 크림 신규 상품 자동 수집 (카테고리별 date순 검색, 6시간 주기).
 - `src/kream_realtime/price_refresher.py` — 거래량 기반 우선순위 시세 갱신 (hot 30분/cold 6시간, 배치 큐).
