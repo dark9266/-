@@ -81,7 +81,9 @@ class ReverseLookupScanner:
 
         logger.info("역방향 스캔 시작: hot %d건", result.hot_count)
         if on_progress:
-            await on_progress(f"hot 상품 {result.hot_count}건 로드 완료")
+            await on_progress(
+                f"🔍 역방향 스캔 시작: hot {result.hot_count}건 처리 예정"
+            )
 
         # 2. 병렬 처리
         sem = asyncio.Semaphore(settings.httpx_concurrency)
@@ -123,19 +125,34 @@ class ReverseLookupScanner:
             # 진행 보고 (매 10건)
             if on_progress and (i + 1) % 10 == 0:
                 await on_progress(
-                    f"진행: {i + 1}/{result.hot_count} "
-                    f"(소싱 {result.sourced} / 수익 {result.profitable})"
+                    f"⏳ 역방향 스캔 진행 중: {i + 1}/{result.hot_count}건 완료 "
+                    f"(소싱 {result.sourced}건 발견)"
                 )
 
         # 정렬: 확정 수익 내림차순
         result.opportunities.sort(key=lambda o: -o.best_confirmed_profit)
         result.finished_at = datetime.now()
 
-        logger.info(
-            "역방향 스캔 완료: hot %d → 검색 %d → 소싱 %d → 수익 %d (에러 %d)",
-            result.hot_count, result.searched, result.sourced,
-            result.profitable, len(result.errors),
+        elapsed_sec = (
+            (result.finished_at - result.started_at).total_seconds()
+            if result.finished_at and result.started_at else 0
         )
+
+        logger.info(
+            "역방향 스캔 완료: hot %d → 검색 %d → 소싱 %d → 수익 %d (에러 %d, %.0f초)",
+            result.hot_count, result.searched, result.sourced,
+            result.profitable, len(result.errors), elapsed_sec,
+        )
+
+        if on_progress:
+            elapsed_min = elapsed_sec / 60
+            await on_progress(
+                f"✅ 역방향 완료: {result.hot_count}/{result.hot_count}건\n"
+                f"- 소싱 매칭: {result.sourced}건\n"
+                f"- 수익 기회: {result.profitable}건\n"
+                f"- 소요시간: {elapsed_min:.1f}분"
+            )
+
         return result
 
     async def _process_hot_product(

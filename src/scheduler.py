@@ -85,9 +85,43 @@ class Scheduler:
     async def tier1_loop(self) -> None:
         """카테고리스캔 → 크림 매칭 → 워치리스트 빌더."""
         logger.info("=== Tier1 워치리스트 빌더 시작 ===")
-        await self.bot.log_to_channel("🔄 **Tier1 시작** | 카테고리스캔 + 워치리스트 빌더")
 
         try:
+            # ── 콜백 정의 ──
+
+            async def on_reverse_progress(message: str):
+                """역방향 스캔 진행 상황 → Discord."""
+                logger.info("Tier1: %s", message)
+                await self.bot.log_to_channel(message)
+
+            async def on_reverse_opportunity(opportunity):
+                """수익 기회 발견 → Discord 즉시 알림."""
+                if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    return
+                # 상세 알림
+                kp = opportunity.kream_product
+                top_sp = opportunity.size_profits[0] if opportunity.size_profits else None
+                if top_sp:
+                    await self.bot.log_to_channel(
+                        f"💰 수익 기회 발견!\n"
+                        f"- 상품: {kp.name[:40]}\n"
+                        f"- 모델번호: {kp.model_number}\n"
+                        f"- 소싱처: {top_sp.source} {top_sp.musinsa_price:,}원\n"
+                        f"- 크림 시세: {top_sp.kream_bid_price:,}원\n"
+                        f"- 실수익: {top_sp.confirmed_profit:,}원"
+                        if top_sp.kream_bid_price else
+                        f"💰 수익 기회 발견!\n"
+                        f"- 상품: {kp.name[:40]}\n"
+                        f"- 모델번호: {kp.model_number}\n"
+                        f"- 소싱처: {top_sp.source} {top_sp.musinsa_price:,}원\n"
+                        f"- 실수익: {top_sp.confirmed_profit:,}원"
+                    )
+                await self.bot.send_auto_scan_alert(opportunity)
+
+            async def on_error(message: str):
+                """에러 → Discord."""
+                await self.bot.log_to_channel(f"⚠️ 에러: {message}")
+
             async def on_cat_opportunity(opportunity):
                 if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
                     return
@@ -98,9 +132,11 @@ class Scheduler:
                 if "필터 완료" in message:
                     await self.bot.log_to_channel(f"📋 {message}")
 
+            # ── 카테고리 스캔 ──
+
             cat_result = await self.bot.scanner.run_category_scan(
                 categories=["103"],
-                max_pages=1,  # httpx 직접 API: 1페이지(60건)
+                max_pages=1,
                 on_opportunity=on_cat_opportunity,
                 on_progress=on_cat_progress,
                 resume=True,
@@ -114,10 +150,23 @@ class Scheduler:
             self.bot.daily_stats["product_count"] += cat_result.detail_fetched
             self.last_tier1_run = datetime.now()
 
-            # Tier1 워치리스트 빌더 실행
+            # ── Tier1 워치리스트 빌더 (역방향 + 카테고리 gap) ──
+
             if hasattr(self.bot, 'tier1_scanner') and self.bot.tier1_scanner:
                 try:
-                    t1_result = await self.bot.tier1_scanner.run()
+                    # hot 상품 수 미리 조회하여 시작 알림
+                    hot_count = await self.bot.db.get_hot_product_count()
+                    await self.bot.log_to_channel(
+                        f"🔍 Tier1 스캔 시작\n"
+                        f"- 역방향: hot {hot_count}건 처리 예정\n"
+                        f"- 카테고리: 60건 처리 예정"
+                    )
+
+                    t1_result = await self.bot.tier1_scanner.run(
+                        on_progress=on_reverse_progress,
+                        on_opportunity=on_reverse_opportunity,
+                        on_error=on_error,
+                    )
                     await self.bot.log_to_channel(
                         f"Tier1 완료 ({cat_elapsed:.0f}초) | "
                         f"역방향: hot {t1_result.reverse_hot}/소싱 {t1_result.reverse_sourced}"
@@ -128,6 +177,7 @@ class Scheduler:
                 except Exception as e:
                     error_aggregator.add("tier1_watchlist", e)
                     logger.error("Tier1 워치리스트 빌더 실패: %s", e)
+                    await self.bot.log_to_channel(f"⚠️ 에러: Tier1 워치리스트 빌더 실패 — {e}")
             else:
                 await self.bot.log_to_channel(
                     f"카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
@@ -139,7 +189,7 @@ class Scheduler:
         except Exception as e:
             error_aggregator.add("tier1_loop", e)
             logger.error("Tier1 실패: %s", e)
-            await self.bot.log_to_channel(f"⚠️ Tier1 실패: {e}")
+            await self.bot.log_to_channel(f"⚠️ 에러: Tier1 실패 — {e}")
 
     @tier1_loop.before_loop
     async def before_tier1(self) -> None:

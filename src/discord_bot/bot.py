@@ -562,13 +562,25 @@ async def cmd_reverse_scan(ctx: commands.Context, *, args: str = ""):
         if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
             return
         try:
+            kp = opportunity.kream_product
+            top_sp = opportunity.size_profits[0] if opportunity.size_profits else None
+            if top_sp:
+                kream_price = f"{top_sp.kream_bid_price:,}" if top_sp.kream_bid_price else "?"
+                await ctx.send(
+                    f"💰 수익 기회 발견!\n"
+                    f"- 상품: {kp.name[:40]}\n"
+                    f"- 모델번호: {kp.model_number}\n"
+                    f"- 소싱처: {top_sp.source} {top_sp.musinsa_price:,}원\n"
+                    f"- 크림 시세: {kream_price}원\n"
+                    f"- 실수익: {top_sp.confirmed_profit:,}원"
+                )
             await bot.send_auto_scan_alert(opportunity)
         except Exception as e:
             logger.error("역방향스캔 알림 콜백 실패: %s", e)
 
     async def on_progress(message):
         try:
-            await progress_msg.edit(content=f"🔄 {message}")
+            await ctx.send(message)
         except Exception:
             pass
 

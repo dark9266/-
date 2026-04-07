@@ -57,17 +57,32 @@ class Tier1Scanner:
             db=db, watchlist=watchlist, scan_cache=scan_cache,
         )
 
-    async def run(self, categories: list[str] | None = None) -> Tier1Result:
+    async def run(
+        self,
+        categories: list[str] | None = None,
+        on_progress=None,
+        on_opportunity=None,
+        on_error=None,
+    ) -> Tier1Result:
         """워치리스트 빌더 실행.
 
         1단계 (주력): 역방향 스캔 — 크림 hot 상품 → 소싱처 5곳 가격 조회
         2단계 (보조): 카테고리 스캔 — 무신사 리스팅 → gap 스크리닝
+
+        Args:
+            on_progress: 진행 상황 콜백 (async, str)
+            on_opportunity: 수익 기회 콜백 (async, AutoScanOpportunity)
+            on_error: 에러 콜백 (async, str)
         """
         result = Tier1Result()
 
         # ── 1단계: 역방향 스캔 (주력) ──
         try:
-            reverse_result = await self.reverse_scanner.run(limit=50)
+            reverse_result = await self.reverse_scanner.run(
+                limit=50,
+                on_opportunity=on_opportunity,
+                on_progress=on_progress,
+            )
             result.reverse_hot = reverse_result.hot_count
             result.reverse_sourced = reverse_result.sourced
             result.reverse_profitable = reverse_result.profitable
@@ -78,6 +93,11 @@ class Tier1Scanner:
             )
         except Exception as e:
             logger.error("역방향 스캔 실패: %s", e)
+            if on_error:
+                try:
+                    await on_error(f"역방향 스캔 실패: {e}")
+                except Exception:
+                    pass
 
         # ── 2단계: 카테고리 gap 스크리닝 (보조) ──
         if categories is None:
