@@ -93,6 +93,22 @@ class KreamBot(commands.Bot):
         self._kream_refresher = KreamPriceRefresher(self.db.db)
         self._kream_spike_detector = VolumeSpikeDetector(self.db.db)
 
+        # v2 연속 배치 스캐너
+        # scan_cache=None: 연속 스캔은 next_scan_at으로 자체 스케줄링하므로
+        # 역방향 스캔의 scan_cache와 충돌 방지 (캐시 스킵 → 소싱 0건 문제)
+        from src.continuous_scanner import ContinuousScanner
+        from src.reverse_scanner import ReverseLookupScanner
+
+        self.reverse_scanner = ReverseLookupScanner(
+            db=self.db,
+            watchlist=self.watchlist,
+            scan_cache=None,
+        )
+        self.continuous_scanner = ContinuousScanner(
+            db=self.db,
+            scanner=self.reverse_scanner,
+        )
+
         logger.info("봇 초기화 완료")
 
     async def on_ready(self) -> None:

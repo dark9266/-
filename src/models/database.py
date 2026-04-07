@@ -182,12 +182,26 @@ class Database:
             "ALTER TABLE kream_products ADD COLUMN last_volume_check TIMESTAMP",
             "ALTER TABLE kream_products ADD COLUMN refresh_tier TEXT DEFAULT 'cold'",
             "ALTER TABLE kream_products ADD COLUMN last_price_refresh TIMESTAMP",
+            # v2 연속 배치 스캔
+            "ALTER TABLE kream_products ADD COLUMN scan_priority TEXT DEFAULT 'cold'",
+            "ALTER TABLE kream_products ADD COLUMN next_scan_at TIMESTAMP",
+            "ALTER TABLE kream_products ADD COLUMN last_batch_scan_at TIMESTAMP",
         ]
         for sql in migrations:
             try:
                 await self.db.execute(sql)
             except Exception:
                 pass  # 이미 존재하는 컬럼 무시
+
+        # 인덱스 (멱등)
+        try:
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_next_scan "
+                "ON kream_products(scan_priority, next_scan_at)"
+            )
+        except Exception:
+            pass
+
         await self.db.commit()
         logger.info("실시간 DB 마이그레이션 완료")
 
@@ -654,3 +668,120 @@ class Database:
         stats["_total_matched"] = matched["cnt"] if matched else 0
 
         return stats
+
+    # -- v2 연속 배치 스캔 --
+
+    async def get_continuous_scan_queue(self, batch_size: int = 50) -> list[dict]:
+        """우선순위 큐에서 스캔 대상 조회.
+
+        next_scan_at이 NULL이거나 현재 시각 이전인 상품을 우선순위 순으로 반환.
+        hot > warm > cold 순, 같은 우선순위 내에서는 next_scan_at ASC (NULL 우선).
+        """
+        cursor = await self.db.execute(
+            """SELECT product_id, name, model_number, brand, category,
+                      image_url, url, volume_7d, volume_30d, scan_priority, next_scan_at
+            FROM kream_products
+            WHERE model_number != ''
+              AND (next_scan_at IS NULL OR next_scan_at <= datetime('now'))
+            ORDER BY
+              CASE scan_priority WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END,
+              CASE WHEN next_scan_at IS NULL THEN 0 ELSE 1 END,
+              next_scan_at ASC
+            LIMIT ?""",
+            (batch_size,),
+        )
+        rows = await cursor.fetchall()
+        products = []
+        for row in rows:
+            product = dict(row)
+            prices = await self.get_latest_kream_prices(product["product_id"])
+            product["size_prices"] = [dict(p) for p in prices]
+            products.append(product)
+        return products
+
+    async def update_scan_schedule(
+        self, product_id: str, priority: str, next_scan_at: str,
+    ) -> None:
+        """스캔 완료 후 다음 스케줄 업데이트."""
+        await self.db.execute(
+            """UPDATE kream_products
+            SET scan_priority = ?, next_scan_at = ?, last_batch_scan_at = datetime('now')
+            WHERE product_id = ?""",
+            (priority, next_scan_at, product_id),
+        )
+        await self.db.commit()
+
+    async def backfill_scan_schedule(
+        self, hot_ttl_h: int, warm_ttl_h: int, cold_ttl_h: int,
+        first_batch_size: int = 50,
+    ) -> int:
+        """next_scan_at NULL인 상품에 우선순위 + 랜덤 스케줄 배정.
+
+        first_batch_size: 첫 배치에 즉시 스캔될 상품 수 (next_scan_at = NOW).
+        Returns: 업데이트된 상품 수.
+        """
+        # 1) scan_priority 일괄 업데이트 (volume_7d 기준)
+        await self.db.execute(
+            """UPDATE kream_products SET scan_priority = 'hot'
+            WHERE model_number != '' AND volume_7d >= 10 AND next_scan_at IS NULL"""
+        )
+        await self.db.execute(
+            """UPDATE kream_products SET scan_priority = 'warm'
+            WHERE model_number != '' AND volume_7d >= 3 AND volume_7d < 10
+            AND next_scan_at IS NULL"""
+        )
+        await self.db.execute(
+            """UPDATE kream_products SET scan_priority = 'cold'
+            WHERE model_number != '' AND volume_7d < 3 AND next_scan_at IS NULL"""
+        )
+
+        # 2) 첫 배치: hot 우선으로 즉시 스캔 대상 배정
+        await self.db.execute(
+            """UPDATE kream_products SET next_scan_at = datetime('now')
+            WHERE product_id IN (
+                SELECT product_id FROM kream_products
+                WHERE model_number != '' AND next_scan_at IS NULL
+                ORDER BY
+                    CASE scan_priority WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END,
+                    volume_7d DESC
+                LIMIT ?
+            )""",
+            (first_batch_size,),
+        )
+
+        # 3) 나머지: TTL 범위 내 랜덤 분산
+        for priority, ttl_h in [("hot", hot_ttl_h), ("warm", warm_ttl_h), ("cold", cold_ttl_h)]:
+            ttl_sec = ttl_h * 3600
+            await self.db.execute(
+                f"""UPDATE kream_products
+                SET next_scan_at = datetime('now', '+' || (ABS(RANDOM()) % ?) || ' seconds')
+                WHERE scan_priority = ? AND next_scan_at IS NULL AND model_number != ''""",
+                (ttl_sec, priority),
+            )
+
+        await self.db.commit()
+
+        # 업데이트 건수 확인
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) as cnt FROM kream_products "
+            "WHERE next_scan_at IS NOT NULL AND model_number != ''"
+        )
+        row = await cursor.fetchone()
+        count = row["cnt"] if row else 0
+        logger.info("배치 스캔 스케줄 backfill 완료: %d건 (첫배치 즉시=%d건)", count, first_batch_size)
+        return count
+
+    async def get_scan_queue_stats(self) -> dict:
+        """스캔 큐 통계 (모니터링용)."""
+        cursor = await self.db.execute(
+            """SELECT scan_priority,
+                      COUNT(*) as total,
+                      SUM(CASE WHEN next_scan_at <= datetime('now') OR next_scan_at IS NULL
+                          THEN 1 ELSE 0 END) as ready
+            FROM kream_products
+            WHERE model_number != ''
+            GROUP BY scan_priority"""
+        )
+        rows = await cursor.fetchall()
+        return {row["scan_priority"]: {"total": row["total"], "ready": row["ready"]}
+                for row in rows}

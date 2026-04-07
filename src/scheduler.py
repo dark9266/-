@@ -1,6 +1,7 @@
 """자동 스캔 스케줄러.
 
-discord.ext.tasks 기반 2티어 실시간 아키텍처:
+discord.ext.tasks 기반 3티어 실시간 아키텍처:
+- Tier 0: v2 연속 배치 스캔 (5분 주기, 50건/배치)
 - Tier 1: 워치리스트 빌더 (30분 주기)
 - Tier 2: 실시간 폴링 모니터 (60초 주기)
 - 일일 리포트 (자정)
@@ -30,6 +31,7 @@ class Scheduler:
         self.bot = bot
         self.last_tier1_run: datetime | None = None
         self.last_tier2_run: datetime | None = None
+        self.last_continuous_run: datetime | None = None
 
     def start(self) -> None:
         """모든 스케줄 태스크 시작."""
@@ -45,6 +47,8 @@ class Scheduler:
             self.refresh_loop.start()
         if not self.spike_loop.is_running():
             self.spike_loop.start()
+        if not self.continuous_loop.is_running():
+            self.continuous_loop.start()
 
         # 스캔 캐시 정리
         if hasattr(self.bot, 'scanner') and hasattr(self.bot.scanner, 'scan_cache'):
@@ -61,6 +65,7 @@ class Scheduler:
         self.collect_loop.cancel()
         self.refresh_loop.cancel()
         self.spike_loop.cancel()
+        self.continuous_loop.cancel()
         logger.info("스케줄러 중지")
 
     def start_auto_scan(self) -> None:
@@ -331,3 +336,39 @@ class Scheduler:
     async def before_spike(self) -> None:
         await self.bot.wait_until_ready()
         await asyncio.sleep(600)
+
+    # ─── v2 연속 배치 스캔 (5분 주기) ────────────────────
+
+    @tasks.loop(minutes=settings.continuous_scan_interval_minutes)
+    async def continuous_loop(self) -> None:
+        """v2 연속 배치 스캔 — hot/warm/cold 우선순위 큐."""
+        if not hasattr(self.bot, 'continuous_scanner') or not self.bot.continuous_scanner:
+            return
+
+        try:
+            async def on_opportunity(opportunity):
+                if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
+                    return
+                await self.bot.send_auto_scan_alert(opportunity)
+
+            async def on_progress(message: str):
+                logger.info("연속스캔: %s", message)
+                await self.bot.progress_to_channel(message)
+
+            result = await self.bot.continuous_scanner.run_batch(
+                on_progress=on_progress,
+                on_opportunity=on_opportunity,
+            )
+
+            self.last_continuous_run = datetime.now()
+            self.bot.daily_stats["scan_count"] += 1
+            self.bot.daily_stats["product_count"] += result.processed
+
+        except Exception as e:
+            error_aggregator.add("continuous_loop", e)
+            logger.error("연속 스캔 실패: %s", e)
+
+    @continuous_loop.before_loop
+    async def before_continuous(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(180)

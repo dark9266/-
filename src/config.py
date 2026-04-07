@@ -105,6 +105,13 @@ class Settings(BaseSettings):
     realtime_collect_pages_per_keyword: int = 5    # 수집 시 키워드당 페이지 수
     realtime_refresh_batch_size: int = 20          # 1회 시세 갱신 배치 크기
 
+    # v2 연속 배치 스캔
+    continuous_scan_interval_minutes: int = 5      # 배치 주기
+    continuous_scan_batch_size: int = 50           # 1회 배치 크기
+    continuous_hot_ttl_hours: int = 2              # hot 재스캔 주기
+    continuous_warm_ttl_hours: int = 8             # warm 재스캔 주기
+    continuous_cold_ttl_hours: int = 48            # cold 재스캔 주기
+
     # 알림 최소 기준 (하드 플로어)
     alert_min_profit: int = 10_000  # 최소 순수익 (원)
     alert_min_roi: float = 5.0  # 최소 ROI (%)
