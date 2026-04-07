@@ -85,22 +85,25 @@ class ReverseLookupScanner:
                 f"🔍 역방향 스캔 시작: hot {result.hot_count}건 처리 예정"
             )
 
-        # 2. 병렬 처리
+        # 2. 순차 병렬 처리 (Semaphore로 동시 제한, 개별 완료 시 즉시 콜백)
         sem = asyncio.Semaphore(settings.httpx_concurrency)
+        completed = 0  # 완료 카운터 (콜백용)
 
         async def process_one(product: dict) -> AutoScanOpportunity | None:
-            async with sem:
-                return await self._process_hot_product(product, result)
+            nonlocal completed
+            res = None
+            try:
+                async with sem:
+                    res = await self._process_hot_product(product, result)
+            except Exception as exc:
+                model = product.get("model_number", "?")
+                result.errors.append(f"{model}: {exc}")
+                logger.debug("역방향 처리 실패: %s — %s", model, exc)
 
-        tasks = [process_one(p) for p in hot_products]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            completed += 1
 
-        for i, res in enumerate(results):
-            if isinstance(res, Exception):
-                model = hot_products[i].get("model_number", "?")
-                result.errors.append(f"{model}: {res}")
-                logger.debug("역방향 처리 실패: %s — %s", model, res)
-            elif res is not None:
+            # 결과 처리 + 콜백 (개별 완료 즉시)
+            if res is not None:
                 result.opportunities.append(res)
                 result.profitable += 1
                 # 수익 기회 상세 로그
@@ -122,12 +125,19 @@ class ReverseLookupScanner:
                     except Exception as e:
                         logger.debug("콜백 실패: %s", e)
 
-            # 진행 보고 (매 10건)
-            if on_progress and (i + 1) % 10 == 0:
+            # 진행 보고 (10건마다)
+            if on_progress and completed % 10 == 0:
                 await on_progress(
-                    f"⏳ 역방향 스캔 진행 중: {i + 1}/{result.hot_count}건 완료 "
+                    f"⏳ 역방향 스캔 진행 중: {completed}/{result.hot_count}건 완료 "
                     f"(소싱 {result.sourced}건 발견)"
                 )
+
+            return res
+
+        await asyncio.gather(
+            *[process_one(p) for p in hot_products],
+            return_exceptions=True,
+        )
 
         # 정렬: 확정 수익 내림차순
         result.opportunities.sort(key=lambda o: -o.best_confirmed_profit)
