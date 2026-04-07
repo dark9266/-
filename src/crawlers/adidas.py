@@ -41,14 +41,12 @@ def _build_headers() -> dict:
     """Akamai WAF 우회를 위한 브라우저 유사 헤더."""
     return {
         "User-Agent": _random_ua(),
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;"
-            "q=0.9,image/avif,image/webp,*/*;q=0.8"
-        ),
+        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
+        "Referer": "https://www.adidas.co.kr/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
     }
 
 
@@ -101,7 +99,7 @@ class AdidasCrawler:
 
     def __init__(self):
         self._client: httpx.AsyncClient | None = None
-        self._rate_limiter = AsyncRateLimiter(max_concurrent=3, min_interval=2.0)
+        self._rate_limiter = AsyncRateLimiter(max_concurrent=2, min_interval=5.0)
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:

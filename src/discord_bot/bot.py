@@ -81,6 +81,7 @@ class KreamBot(commands.Bot):
         import src.crawlers.abcmart  # noqa: F401
         import src.crawlers.nike  # noqa: F401
         import src.crawlers.adidas  # noqa: F401
+        import src.crawlers.twentynine_cm  # noqa: F401
 
         self.scheduler = Scheduler(self)
 

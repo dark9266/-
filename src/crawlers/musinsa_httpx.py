@@ -156,59 +156,66 @@ class MusinsaHttpxCrawler:
     # ─── 검색 ────────────────────────────────────────────
 
     async def search_products(self, keyword: str, category: str = "") -> list[dict]:
-        """무신사 키워드 검색 (HTML 파싱)."""
+        """무신사 키워드 검색 — api.musinsa.com API 호출.
+
+        기존 HTML 파싱은 CSR 전환으로 깨짐. 카테고리 리스팅과 동일한
+        /api2/dp/v1/plp/goods 엔드포인트를 caller=SEARCH로 호출한다.
+        """
         client = await self.connect()
         try:
-            search_url = f"{MUSINSA_BASE}/search/goods?keyword={keyword}"
+            params = {
+                "keyword": keyword,
+                "caller": "SEARCH",
+                "page": 1,
+                "size": 30,
+                "sortCode": "POPULAR",
+            }
             if category:
-                search_url += f"&category={category}"
+                params["category"] = category
 
             async with self._rate_limiter.acquire():
-                resp = await client.get(search_url)
+                resp = await client.get(
+                    f"{MUSINSA_API_BASE}/goods",
+                    params=params,
+                    headers=_API_HEADERS,
+                )
 
             if resp.status_code != 200:
                 logger.warning("무신사 검색 실패: status=%d", resp.status_code)
                 return []
 
-            html = resp.text
-            results = []
-            seen_ids: set[str] = set()
+            data = resp.json()
+            goods_list = (data.get("data") or {}).get("list") or []
 
-            # HTML에서 상품 링크 추출
-            for m in re.finditer(
-                r'href="(/products/(\d+))"[^>]*>([^<]+)</a>', html,
-            ):
-                product_id = m.group(2)
-                if product_id in seen_ids:
+            results = []
+            for item in goods_list:
+                goods_no = str(item.get("goodsNo", ""))
+                if not goods_no:
                     continue
-                name = m.group(3).strip()
-                if not name or len(name) < 3:
-                    continue
-                seen_ids.add(product_id)
+                name = item.get("goodsName", "")
+                brand = item.get("brand", "") or item.get("brandName", "")
+                price = int(item.get("price", 0) or 0)
+                coupon_price = item.get("couponPrice")
+                if coupon_price and int(coupon_price) > 0:
+                    price = int(coupon_price)
+
+                # 상품명 끝 "/ MODEL-NUMBER" 패턴에서 모델번호 추출
+                model_number = ""
+                if " / " in name:
+                    model_number = name.rsplit(" / ", 1)[-1].strip()
+
                 results.append({
-                    "product_id": product_id,
+                    "product_id": goods_no,
                     "name": name,
-                    "brand": "",
-                    "url": f"{MUSINSA_BASE}/products/{product_id}",
-                    "price": 0,
+                    "brand": brand,
+                    "model_number": model_number,
+                    "url": f"{MUSINSA_BASE}/products/{goods_no}",
+                    "price": price,
+                    "is_sold_out": bool(item.get("isSoldOut")),
                 })
 
-            # 추가: JSON-LD 또는 script 태그에서도 검색
-            if not results:
-                for m in re.finditer(r'/products/(\d+)', html):
-                    pid = m.group(1)
-                    if pid not in seen_ids:
-                        seen_ids.add(pid)
-                        results.append({
-                            "product_id": pid,
-                            "name": "",
-                            "brand": "",
-                            "url": f"{MUSINSA_BASE}/products/{pid}",
-                            "price": 0,
-                        })
-
             logger.info("무신사 검색 '%s': %d건", keyword, len(results))
-            return results[:30]
+            return results
 
         except Exception as e:
             logger.warning("무신사 검색 실패 (%s): %s", keyword, e)
