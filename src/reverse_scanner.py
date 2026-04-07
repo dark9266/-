@@ -88,6 +88,7 @@ class ReverseLookupScanner:
         # 2. 순차 병렬 처리 (Semaphore로 동시 제한, 개별 완료 시 즉시 콜백)
         sem = asyncio.Semaphore(settings.httpx_concurrency)
         completed = 0  # 완료 카운터 (콜백용)
+        scan_start = datetime.now()
 
         async def process_one(product: dict) -> AutoScanOpportunity | None:
             nonlocal completed
@@ -112,12 +113,13 @@ class ReverseLookupScanner:
                 if top_sp:
                     logger.info(
                         "수익 발견: %s [%s] | %s %s원 → 크림 %s원 | "
-                        "실수익 %s원 (ROI %.1f%%) | 시그널: %s",
+                        "실수익 %s원 (ROI %.1f%%) | 시그널: %s | 매칭사이즈: %s",
                         kp.name[:30], kp.model_number,
                         top_sp.source, f"{top_sp.musinsa_price:,}",
                         f"{top_sp.kream_bid_price:,}" if top_sp.kream_bid_price else "?",
                         f"{top_sp.confirmed_profit:,}", top_sp.confirmed_roi,
                         res.signal.value,
+                        ", ".join(res.matched_sizes[:5]) if res.matched_sizes else "?",
                     )
                 if on_opportunity:
                     try:
@@ -125,11 +127,16 @@ class ReverseLookupScanner:
                     except Exception as e:
                         logger.debug("콜백 실패: %s", e)
 
-            # 진행 보고 (10건마다)
+            # 진행 보고 (10건마다 + ETA)
             if on_progress and completed % 10 == 0:
+                elapsed = (datetime.now() - scan_start).total_seconds()
+                remaining = result.hot_count - completed
+                eta_sec = (elapsed / completed * remaining) if completed > 0 else 0
+                eta_min = eta_sec / 60
                 await on_progress(
-                    f"⏳ 역방향 스캔 진행 중: {completed}/{result.hot_count}건 완료 "
-                    f"(소싱 {result.sourced}건 발견)"
+                    f"⏳ 진행 중: {completed}/{result.hot_count}건 완료 "
+                    f"| 소싱 {result.sourced} | 수익 {result.profitable} "
+                    f"| 예상 완료: {eta_min:.1f}분 후"
                 )
 
             return res
@@ -196,14 +203,16 @@ class ReverseLookupScanner:
             return None
 
         # 소싱처별 최저 사이즈 가격 맵 구축
-        best_sizes, best_source_prices = self._build_best_size_map(source_results)
+        best_sizes, best_source_prices, best_source_urls = self._build_best_size_map(
+            source_results,
+        )
 
         if not best_sizes:
             return None
 
         # 수익 분석
         opportunity = self._analyze_profit(
-            kream_product, best_sizes, best_source_prices,
+            kream_product, best_sizes, best_source_prices, best_source_urls,
         )
 
         # 캐시 기록
@@ -292,15 +301,17 @@ class ReverseLookupScanner:
 
     def _build_best_size_map(
         self, source_results: dict[str, list[dict]],
-    ) -> tuple[dict[str, tuple[int, str, str]], dict[str, int]]:
+    ) -> tuple[dict[str, tuple[int, str, str]], dict[str, int], dict[str, str]]:
         """소싱처 결과에서 사이즈별 최저가 맵 구축.
 
         Returns:
             best_sizes: {normalized_size: (price, source_key, source_url)}
             best_source_prices: {source_label: min_price}
+            best_source_urls: {source_label: url}
         """
         best_sizes: dict[str, tuple[int, str, str]] = {}
         best_source_prices: dict[str, int] = {}
+        best_source_urls: dict[str, str] = {}
 
         for source_key, items in source_results.items():
             for item in items:
@@ -322,20 +333,21 @@ class ReverseLookupScanner:
                             best_sizes[norm_size] = (s_price, source_key, item_url)
                 elif item_price > 0:
                     # 사이즈 정보 없이 단일 가격만 있는 경우
-                    # "ONE_SIZE"로 저장 (Tier1처럼 리스팅 가격으로 gap 스크리닝)
                     current = best_sizes.get("ONE_SIZE")
                     if current is None or item_price < current[0]:
                         best_sizes["ONE_SIZE"] = (item_price, source_key, item_url)
 
-                # 소싱처별 최저가
+                # 소싱처별 최저가 + URL
                 if item_price > 0:
                     from src.crawlers.registry import get_label
                     label = get_label(source_key)
                     cur = best_source_prices.get(label)
                     if cur is None or item_price < cur:
                         best_source_prices[label] = item_price
+                        if item_url:
+                            best_source_urls[label] = item_url
 
-        return best_sizes, best_source_prices
+        return best_sizes, best_source_prices, best_source_urls
 
     def _normalize_size(self, size: str) -> str:
         """사이즈 정규화 (profit_calculator와 동일 로직)."""
@@ -353,9 +365,11 @@ class ReverseLookupScanner:
         kream_product: KreamProduct,
         best_sizes: dict[str, tuple[int, str, str]],
         best_source_prices: dict[str, int],
+        best_source_urls: dict[str, str] | None = None,
     ) -> AutoScanOpportunity | None:
-        """사이즈별 수익 분석."""
+        """사이즈별 수익 분석 (sell_now > 0 교차 매칭 필터 적용)."""
         size_profits: list[AutoScanSizeProfit] = []
+        matched_sizes: list[str] = []  # 교차 매칭된 사이즈 목록
 
         # 최근 체결가 맵
         recent_prices: dict[str, int] = {}
@@ -365,6 +379,10 @@ class ReverseLookupScanner:
 
         for ksp in kream_product.size_prices:
             kream_size = self._normalize_size(ksp.size)
+
+            # ★ 사이즈 교차 매칭 필터: sell_now_price > 0인 사이즈만 수익 계산
+            if not ksp.sell_now_price or ksp.sell_now_price <= 0:
+                continue
 
             # best_sizes에서 매칭
             source_info = best_sizes.get(kream_size)
@@ -377,6 +395,8 @@ class ReverseLookupScanner:
             if source_price <= 0:
                 continue
 
+            matched_sizes.append(ksp.size)
+
             from src.crawlers.registry import get_label
             source_label = get_label(source_key)
 
@@ -384,6 +404,7 @@ class ReverseLookupScanner:
                 size=ksp.size,
                 musinsa_price=source_price,
                 source=source_label,
+                source_url=source_url,
                 kream_bid_price=ksp.sell_now_price,
                 kream_recent_price=recent_prices.get(kream_size) or ksp.last_sale_price,
                 bid_count=ksp.bid_count,
@@ -391,13 +412,12 @@ class ReverseLookupScanner:
             )
 
             # 확정 수익 (즉시판매가 기반)
-            if ksp.sell_now_price and ksp.sell_now_price > 0:
-                fees = calculate_kream_fees(ksp.sell_now_price)
-                total_cost = source_price + fees["total_fees"]
-                sp.confirmed_profit = ksp.sell_now_price - total_cost
-                sp.confirmed_roi = round(
-                    (sp.confirmed_profit / source_price * 100) if source_price > 0 else 0, 1
-                )
+            fees = calculate_kream_fees(ksp.sell_now_price)
+            total_cost = source_price + fees["total_fees"]
+            sp.confirmed_profit = ksp.sell_now_price - total_cost
+            sp.confirmed_roi = round(
+                (sp.confirmed_profit / source_price * 100) if source_price > 0 else 0, 1
+            )
 
             # 예상 수익 (최근 체결가 기반)
             recent_price = sp.kream_recent_price
@@ -422,7 +442,13 @@ class ReverseLookupScanner:
         if signal == Signal.NOT_RECOMMENDED:
             return None
 
-        # 소싱처 URL (최고 수익 사이즈 기준)
+        # 소싱처 URL 수집 (best_source_urls 우선, size_profits fallback)
+        source_urls: dict[str, str] = dict(best_source_urls or {})
+        for sp in size_profits:
+            if sp.source_url and sp.source not in source_urls:
+                source_urls[sp.source] = sp.source_url
+
+        # 최고 수익 사이즈의 소싱처 URL
         best_source_info = best_sizes.get(
             self._normalize_size(best_confirmed.size), ("", "", "")
         )
@@ -440,6 +466,8 @@ class ReverseLookupScanner:
             volume_7d=kream_product.volume_7d,
             signal=signal,
             source_prices=best_source_prices,
+            source_urls=source_urls,
+            matched_sizes=matched_sizes,
         )
 
     def _add_to_watchlist(

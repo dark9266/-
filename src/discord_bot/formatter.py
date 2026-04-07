@@ -310,12 +310,17 @@ def format_auto_scan_alert(opportunity: AutoScanOpportunity) -> discord.Embed:
         embed.set_thumbnail(url=kp.image_url)
 
     # 상품 정보
+    size_info = f"{len(opportunity.size_profits)}개 매칭"
+    if opportunity.matched_sizes:
+        size_info = ", ".join(opportunity.matched_sizes[:8])
+        if len(opportunity.matched_sizes) > 8:
+            size_info += f" 외 {len(opportunity.matched_sizes) - 8}개"
     embed.add_field(
         name="상품 정보",
         value=(
             f"**모델번호:** `{kp.model_number}`\n"
             f"**브랜드:** {kp.brand}\n"
-            f"**사이즈:** {len(opportunity.size_profits)}개 매칭"
+            f"**매칭 사이즈:** {size_info}"
         ),
         inline=False,
     )
@@ -341,16 +346,24 @@ def format_auto_scan_alert(opportunity: AutoScanOpportunity) -> discord.Embed:
         embed.add_field(name="수익 분석", value="\n".join(profit_lines), inline=False)
 
     # 매입처 정보
-    if opportunity.musinsa_url:
-        source_info = f"**상품명:** {opportunity.musinsa_name}\n"
-        if opportunity.source_prices:
-            source_info += "**소싱처별 가격:**\n"
-            for src, price in sorted(opportunity.source_prices.items(), key=lambda x: x[1]):
+    if opportunity.source_prices:
+        source_info = ""
+        source_urls = getattr(opportunity, "source_urls", {}) or {}
+        for src, price in sorted(opportunity.source_prices.items(), key=lambda x: x[1]):
+            url = source_urls.get(src, "")
+            if url:
+                source_info += f"  🛒 [{src} **{price:,}원**]({url})\n"
+            else:
                 source_info += f"  {src} **{price:,}원**\n"
-        source_info += f"[최저가 구매 링크]({opportunity.musinsa_url})"
         embed.add_field(
             name="리테일 매입",
-            value=source_info,
+            value=source_info.strip(),
+            inline=True,
+        )
+    elif opportunity.musinsa_url:
+        embed.add_field(
+            name="리테일 매입",
+            value=f"[최저가 구매 링크]({opportunity.musinsa_url})",
             inline=True,
         )
 
@@ -377,14 +390,15 @@ def format_auto_scan_alert(opportunity: AutoScanOpportunity) -> discord.Embed:
     embed.add_field(name="사이즈별 수익", value=size_table, inline=False)
 
     # 링크
-    embed.add_field(
-        name="링크",
-        value=(
-            f"[크림 상품 페이지]({kp.url})"
-            + (f" | [최저가 구매]({opportunity.musinsa_url})" if opportunity.musinsa_url else "")
-        ),
-        inline=False,
-    )
+    links = [f"[크림]({kp.url})"]
+    source_urls = getattr(opportunity, "source_urls", {}) or {}
+    if source_urls:
+        for src, url in source_urls.items():
+            if url:
+                links.append(f"[{src}]({url})")
+    elif opportunity.musinsa_url:
+        links.append(f"[최저가 구매]({opportunity.musinsa_url})")
+    embed.add_field(name="링크", value=" | ".join(links), inline=False)
 
     embed.set_footer(text=f"{urgency} • 크림 ID: {kp.product_id}")
 

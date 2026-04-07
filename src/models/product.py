@@ -109,6 +109,7 @@ class AutoScanSizeProfit:
     size: str
     musinsa_price: int  # 리테일 매입가 (최저가 소싱처)
     source: str = "무신사"  # 소싱처 ("무신사", "29CM" 등)
+    source_url: str = ""  # 소싱처 상품 URL
     # 1순위: 확정 수익 (즉시판매 = bid 기반)
     kream_bid_price: int | None = None  # 크림 즉시구매가 (= 내가 받는 가격)
     confirmed_profit: int = 0  # 확정 순수익
@@ -146,3 +147,7 @@ class AutoScanOpportunity:
     signal: Signal = Signal.NOT_RECOMMENDED
     # 소싱처별 최저가 {"무신사": 109000, "29CM": 105000}
     source_prices: dict[str, int] = field(default_factory=dict)
+    # 소싱처별 구매 URL {"무신사": "https://...", "29CM": "https://..."}
+    source_urls: dict[str, str] = field(default_factory=dict)
+    # 교차 매칭된 사이즈 목록 (sell_now > 0 & 소싱처 재고 있음)
+    matched_sizes: list[str] = field(default_factory=list)
