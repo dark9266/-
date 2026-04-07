@@ -100,7 +100,7 @@ class KreamBot(commands.Bot):
         # 스케줄러 시작
         if self.scheduler:
             self.scheduler.start()
-        await self.log_to_channel("봇이 시작되었습니다. 자동 스캔이 활성화됩니다.")
+        await self.progress_to_channel("🟢 봇이 시작되었습니다. 자동 스캔이 활성화됩니다.")
 
     async def log_to_channel(self, message: str) -> None:
         """로그 채널에 메시지 전송."""
