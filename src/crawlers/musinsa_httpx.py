@@ -288,51 +288,70 @@ class MusinsaHttpxCrawler:
     # ─── 상품 상세 ───────────────────────────────────────
 
     async def get_product_detail(self, product_id: str) -> RetailProduct | None:
-        """상품 상세 — HTML 파싱 + options/inventory API."""
+        """상품 상세 — goods-detail API(가격) + options/inventory API(사이즈)."""
         client = await self.connect()
 
         try:
-            # Phase A: HTML 가져오기
             url = f"{MUSINSA_BASE}/products/{product_id}"
-            async with self._rate_limiter.acquire():
-                resp = await client.get(url)
 
-            if resp.status_code != 200:
-                logger.warning("무신사 상품 조회 실패: pid=%s status=%d", product_id, resp.status_code)
-                return None
+            # Phase A: goods-detail API에서 이름/브랜드/가격/모델번호 조회
+            api_id = product_id
+            goods_data = await self._fetch_goods_detail_api(api_id)
 
-            html = resp.text
+            if goods_data:
+                name = goods_data.get("goodsNm") or ""
+                brand_info = goods_data.get("brandInfo")
+                brand = (
+                    brand_info.get("brandName", "")
+                    if isinstance(brand_info, dict)
+                    else goods_data.get("brand", "")
+                )
+                model_number = goods_data.get("styleNo") or ""
+                image_url = goods_data.get("thumbnailImageUrl") or ""
+                goods_price = goods_data.get("goodsPrice") or {}
+                sale_price = goods_price.get("salePrice") or 0
+                original_price = goods_price.get("normalPrice") or sale_price
+                discount_rate = round(goods_price.get("discountRate", 0) / 100, 3)
+                discount_type = "할인" if discount_rate > 0 else ""
+                api_id = str(goods_data.get("goodsNo") or product_id)
+            else:
+                # API 실패 시 HTML 폴백
+                async with self._rate_limiter.acquire():
+                    resp = await client.get(url)
+                if resp.status_code != 200:
+                    logger.warning("무신사 상품 조회 실패: pid=%s status=%d", product_id, resp.status_code)
+                    return None
+                html = resp.text
+                if self._is_offline_or_upcoming(html):
+                    return None
+                name, brand = self._extract_name_brand_from_html(html)
+                model_number = self._extract_model_from_html(html)
+                original_price, sale_price, discount_type, discount_rate = (
+                    self._extract_prices_from_html(html)
+                )
+                image_url = ""
+                m = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', html)
+                if m:
+                    image_url = m.group(1)
+                numeric_id = self._extract_numeric_id(html, product_id)
+                api_id = numeric_id or product_id
 
-            # 오프라인/발매예정 필터
-            if self._is_offline_or_upcoming(html):
-                return None
-
-            # HTML에서 기본 정보 추출
-            name, brand = self._extract_name_brand_from_html(html)
             if not name:
                 name = f"상품 {product_id}"
-            model_number = self._extract_model_from_html(html)
-            original_price, sale_price, discount_type, discount_rate = (
-                self._extract_prices_from_html(html)
-            )
 
-            # 이미지
-            image_url = ""
-            m = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', html)
-            if m:
-                image_url = m.group(1)
+            # 모델번호가 무신사 SKU면 상품명에서 재추출
+            if model_number and self._is_musinsa_sku(model_number):
+                from src.matcher import extract_model_from_name
+                name_model = extract_model_from_name(name)
+                if name_model:
+                    model_number = name_model
 
             # Phase B: options API → 사이즈 데이터
-            # product_id가 문자열 슬러그일 수 있으므로 숫자 ID 추출
-            numeric_id = self._extract_numeric_id(html, product_id)
-            api_id = numeric_id or product_id
-
             options_data = await self._fetch_options_api(api_id)
 
             # Phase C: inventory API → 품절 필터
             inventory_data = None
             if options_data:
-                # 다중 옵션 상품이면 컬러 선택값 필요
                 color_values = self._get_color_option_values(options_data)
                 inventory_data = await self._fetch_inventories_api(
                     api_id, color_values if color_values else None,
@@ -368,6 +387,25 @@ class MusinsaHttpxCrawler:
 
         except Exception as e:
             logger.error("무신사 상품 조회 실패 (%s): %s", product_id, e)
+            return None
+
+    async def _fetch_goods_detail_api(self, product_id: str) -> dict | None:
+        """goods-detail API에서 상품 기본 정보 조회 (가격 포함)."""
+        client = await self.connect()
+        api_url = f"{GOODS_DETAIL_BASE}/api2/goods/{product_id}"
+        try:
+            async with self._rate_limiter.acquire():
+                resp = await client.get(api_url, headers=_API_HEADERS)
+            if resp.status_code != 200:
+                logger.debug("goods-detail API 실패: pid=%s status=%d", product_id, resp.status_code)
+                return None
+            body = resp.json()
+            data = body.get("data") if isinstance(body, dict) else body
+            if isinstance(data, dict) and data.get("goodsNo"):
+                return data
+            return None
+        except Exception as e:
+            logger.debug("goods-detail API 예외: pid=%s %s", product_id, e)
             return None
 
     # ─── API 호출 ────────────────────────────────────────

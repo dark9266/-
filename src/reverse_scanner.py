@@ -101,6 +101,19 @@ class ReverseLookupScanner:
             elif res is not None:
                 result.opportunities.append(res)
                 result.profitable += 1
+                # 수익 기회 상세 로그
+                kp = res.kream_product
+                top_sp = res.size_profits[0] if res.size_profits else None
+                if top_sp:
+                    logger.info(
+                        "수익 발견: %s [%s] | %s %s원 → 크림 %s원 | "
+                        "실수익 %s원 (ROI %.1f%%) | 시그널: %s",
+                        kp.name[:30], kp.model_number,
+                        top_sp.source, f"{top_sp.musinsa_price:,}",
+                        f"{top_sp.kream_bid_price:,}" if top_sp.kream_bid_price else "?",
+                        f"{top_sp.confirmed_profit:,}", top_sp.confirmed_roi,
+                        res.signal.value,
+                    )
                 if on_opportunity:
                     try:
                         await on_opportunity(res)
