@@ -90,36 +90,18 @@ class Scheduler:
             # ── 콜백 정의 ──
 
             async def on_reverse_progress(message: str):
-                """역방향 스캔 진행 상황 → Discord."""
+                """역방향 스캔 진행 상황 → 진행 채널."""
                 logger.info("Tier1: %s", message)
-                await self.bot.log_to_channel(message)
+                await self.bot.progress_to_channel(message)
 
             async def on_reverse_opportunity(opportunity):
-                """수익 기회 발견 → Discord 즉시 알림."""
+                """수익 기회 발견 → 매수알림 채널."""
                 if opportunity.signal not in (Signal.STRONG_BUY, Signal.BUY):
                     return
-                # 상세 알림
-                kp = opportunity.kream_product
-                top_sp = opportunity.size_profits[0] if opportunity.size_profits else None
-                if top_sp:
-                    await self.bot.log_to_channel(
-                        f"💰 수익 기회 발견!\n"
-                        f"- 상품: {kp.name[:40]}\n"
-                        f"- 모델번호: {kp.model_number}\n"
-                        f"- 소싱처: {top_sp.source} {top_sp.musinsa_price:,}원\n"
-                        f"- 크림 시세: {top_sp.kream_bid_price:,}원\n"
-                        f"- 실수익: {top_sp.confirmed_profit:,}원"
-                        if top_sp.kream_bid_price else
-                        f"💰 수익 기회 발견!\n"
-                        f"- 상품: {kp.name[:40]}\n"
-                        f"- 모델번호: {kp.model_number}\n"
-                        f"- 소싱처: {top_sp.source} {top_sp.musinsa_price:,}원\n"
-                        f"- 실수익: {top_sp.confirmed_profit:,}원"
-                    )
                 await self.bot.send_auto_scan_alert(opportunity)
 
             async def on_error(message: str):
-                """에러 → Discord."""
+                """에러 → 로그 채널."""
                 await self.bot.log_to_channel(f"⚠️ 에러: {message}")
 
             async def on_cat_opportunity(opportunity):
@@ -130,7 +112,7 @@ class Scheduler:
             async def on_cat_progress(message):
                 logger.info("Tier1: %s", message)
                 if "필터 완료" in message:
-                    await self.bot.log_to_channel(f"📋 {message}")
+                    await self.bot.progress_to_channel(f"📋 {message}")
 
             # ── 카테고리 스캔 ──
 
@@ -156,7 +138,7 @@ class Scheduler:
                 try:
                     # hot 상품 수 미리 조회하여 시작 알림
                     hot_count = await self.bot.db.get_hot_product_count()
-                    await self.bot.log_to_channel(
+                    await self.bot.progress_to_channel(
                         f"🔍 Tier1 스캔 시작\n"
                         f"- 역방향: hot {hot_count}건 처리 예정\n"
                         f"- 카테고리: 60건 처리 예정"
@@ -167,8 +149,8 @@ class Scheduler:
                         on_opportunity=on_reverse_opportunity,
                         on_error=on_error,
                     )
-                    await self.bot.log_to_channel(
-                        f"Tier1 완료 ({cat_elapsed:.0f}초) | "
+                    await self.bot.progress_to_channel(
+                        f"✅ Tier1 완료 ({cat_elapsed:.0f}초) | "
                         f"역방향: hot {t1_result.reverse_hot}/소싱 {t1_result.reverse_sourced}"
                         f"/수익 {t1_result.reverse_profitable} | "
                         f"카테고리: 스캔 {t1_result.scanned}/매칭 {t1_result.matched}"
@@ -179,8 +161,8 @@ class Scheduler:
                     logger.error("Tier1 워치리스트 빌더 실패: %s", e)
                     await self.bot.log_to_channel(f"⚠️ 에러: Tier1 워치리스트 빌더 실패 — {e}")
             else:
-                await self.bot.log_to_channel(
-                    f"카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
+                await self.bot.progress_to_channel(
+                    f"✅ 카테고리스캔 완료 ({cat_elapsed:.0f}초) | "
                     f"리스팅 {cat_result.listing_fetched} → "
                     f"브랜드필터 {cat_result.brand_filtered} → "
                     f"상세 {cat_result.detail_fetched} → "
@@ -285,7 +267,7 @@ class Scheduler:
         try:
             result = await self.bot._kream_collector.run()
             if result["total_new"] > 0:
-                await self.bot.log_to_channel(
+                await self.bot.progress_to_channel(
                     f"📦 신규 상품 수집: +{result['total_new']}건 ({result['elapsed']:.0f}초)"
                 )
             logger.info("신규 수집: %d건 (%.0f초)", result["total_new"], result["elapsed"])
@@ -333,7 +315,7 @@ class Scheduler:
         try:
             result = await self.bot._kream_spike_detector.run()
             if result["spikes"] > 0:
-                await self.bot.log_to_channel(
+                await self.bot.progress_to_channel(
                     f"🔥 거래량 급등: {result['spikes']}건 감지 "
                     f"(승격: {', '.join(result['promoted'][:5])})"
                 )

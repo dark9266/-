@@ -108,7 +108,7 @@ Multi-Source Crawlers (무신사/29CM/ABC마트/나이키/아디다스) → Matc
 ## Configuration
 
 Environment variables in `.env` (see `.env.example`):
-- `DISCORD_TOKEN`, `CHANNEL_*` — Discord bot token and channel IDs
+- `DISCORD_TOKEN`, `CHANNEL_*` — Discord bot token and channel IDs (`CHANNEL_PROGRESS`: 스캔 진행상황, `CHANNEL_PROFIT_ALERT`: 매수 알림, `CHANNEL_LOG`: 에러/운영 로그)
 - `MUSINSA_EMAIL/PASSWORD` — Optional auto-login credentials
 - Thresholds: `AUTO_SCAN_CONFIRMED_ROI=5.0`, `AUTO_SCAN_ESTIMATED_ROI=10.0`
 - Tier settings: `TIER1_INTERVAL_MINUTES=30`, `TIER2_INTERVAL_SECONDS=60`, `HTTPX_CONCURRENCY=10`

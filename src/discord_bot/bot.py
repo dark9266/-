@@ -110,6 +110,15 @@ class KreamBot(commands.Bot):
         if channel:
             await channel.send(f"📝 {message}")
 
+    async def progress_to_channel(self, message: str) -> None:
+        """진행상황 알림 채널에 전송 (스캔 시작/진행/완료)."""
+        ch_id = settings.channel_progress or settings.channel_log
+        if not ch_id:
+            return
+        channel = self.get_channel(ch_id)
+        if channel:
+            await channel.send(message)
+
     async def send_match_review(self, message: str) -> None:
         """매칭 검토 채널(#수정)에 매칭 애매한 건 기록."""
         if not settings.channel_match_review:

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     channel_manual_search: int = 0
     channel_settings: int = 0
     channel_log: int = 0
+    channel_progress: int = 0  # 스캔 진행상황 알림 채널
     channel_match_review: int = 0  # 매칭 애매한 경우 검토용 채널
 
     # 배송비
