@@ -38,6 +38,21 @@
       "expected_alert": false,
       "bug_date": "2026-04-05",
       "status": "fixed"
+    },
+    {
+      "id": "nike_oos_size_alert",
+      "description": "나이키 품절 사이즈에 매수 알림 발생 (HQ4307-001 size 240)",
+      "type": "stock_filter",
+      "input": {
+        "model_number": "HQ4307-001",
+        "size": "240",
+        "threads_api_level": "OOS",
+        "threads_api_available": false,
+        "pdp_status": "ACTIVE"
+      },
+      "expected": "skip",
+      "bug_date": "2026-04-08",
+      "status": "fixed"
     }
   ]
 }

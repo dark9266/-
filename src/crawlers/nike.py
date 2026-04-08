@@ -109,6 +109,45 @@ def _parse_sizes_from_pdp(html: str) -> list[dict]:
     return sizes
 
 
+def _parse_stock_from_threads(data: dict) -> dict[str, bool]:
+    """threads API 응답에서 사이즈별 재고 매핑 파싱.
+
+    Returns: {"240": False, "250": True, ...}
+    """
+    objects = data.get("objects", [])
+    if not objects:
+        return {}
+
+    product_info_list = objects[0].get("productInfo", [])
+    if not product_info_list:
+        return {}
+
+    pi = product_info_list[0]
+
+    # GTIN → localizedSize 매핑
+    gtin_to_size: dict[str, str] = {}
+    for sku in pi.get("skus", []):
+        gtin = sku.get("gtin", "")
+        if not gtin:
+            continue
+        for spec in sku.get("countrySpecifications", []):
+            localized = spec.get("localizedSize", "")
+            if localized:
+                gtin_to_size[gtin] = localized
+                break
+
+    # GTIN별 available 확인
+    stock_map: dict[str, bool] = {}
+    for ag in pi.get("availableGtins", []):
+        gtin = ag.get("gtin", "")
+        available = ag.get("available", False)
+        size = gtin_to_size.get(gtin)
+        if size:
+            stock_map[size] = available
+
+    return stock_map
+
+
 class NikeCrawler:
     """나이키 공식몰 크롤러."""
 
@@ -124,6 +163,37 @@ class NikeCrawler:
                 follow_redirects=True,
             )
         return self._client
+
+    async def _fetch_stock_by_threads_api(self, style_color: str) -> dict[str, bool]:
+        """product_feed/threads API로 사이즈별 재고 조회.
+
+        Returns: {localizedSize: available} (예: {"240": False, "250": True})
+        API 실패 시 빈 딕셔너리 반환 (기존 로직 fallback).
+        """
+        client = await self._get_client()
+        url = "https://api.nike.com/product_feed/threads/v3/"
+        params = [
+            ("filter", "marketplace(KR)"),
+            ("filter", "language(ko)"),
+            ("filter", f"productInfo.merchProduct.styleColor({style_color})"),
+        ]
+        try:
+            async with self._rate_limiter.acquire():
+                resp = await client.get(
+                    url, params=params, headers={"User-Agent": _random_ua()}
+                )
+            if resp.status_code != 200:
+                logger.warning(
+                    "Nike threads API 실패 (HTTP %d): %s", resp.status_code, style_color
+                )
+                return {}
+            data = resp.json()
+            stock_map = _parse_stock_from_threads(data)
+            logger.debug("Nike threads 재고: %s → %s", style_color, stock_map)
+            return stock_map
+        except Exception as e:
+            logger.warning("Nike threads API 에러 (%s): %s", style_color, e)
+            return {}
 
     async def search_products(self, keyword: str, limit: int = 30) -> list[dict]:
         """Nike KR 검색.
@@ -184,9 +254,18 @@ class NikeCrawler:
 
             # 사이즈 파싱
             size_data = _parse_sizes_from_pdp(html)
+
+            # threads API로 실제 재고 확인
+            stock_map = await self._fetch_stock_by_threads_api(product_id)
+
             sizes = []
             for s in size_data:
                 if not s.get("available", False):
+                    continue
+
+                # threads API 재고 체크 (결과 있을 때만 적용)
+                if stock_map and not stock_map.get(s["size"], False):
+                    logger.debug("Nike 품절 사이즈 스킵: %s %s", product_id, s["size"])
                     continue
 
                 discount_rate = 0.0
