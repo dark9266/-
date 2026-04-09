@@ -1,7 +1,7 @@
 """디스코드 봇 코어 및 명령어 핸들러."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import discord
 from discord.ext import commands
@@ -24,10 +24,9 @@ from src.discord_bot.formatter import (
     format_status,
     format_watchlist_embed,
 )
-from src.kream_db_builder import build_kream_db, CATEGORIES
+from src.kream_db_builder import CATEGORIES, build_kream_db
 from src.models.database import Database
 from src.models.product import Signal
-from src.profit_calculator import analyze_opportunity
 from src.scanner import Scanner
 from src.scheduler import Scheduler
 from src.utils.logging import setup_logger
@@ -63,9 +62,9 @@ class KreamBot(commands.Bot):
         self.scanner._match_review_callback = self.send_match_review
 
         # 2티어 아키텍처 초기화
-        from src.watchlist import Watchlist
         from src.tier1_scanner import Tier1Scanner
         from src.tier2_monitor import Tier2Monitor
+        from src.watchlist import Watchlist
 
         self.watchlist = Watchlist()
         self.tier1_scanner = Tier1Scanner(
@@ -78,8 +77,9 @@ class KreamBot(commands.Bot):
         )
 
         # 소싱처 크롤러 등록 (임포트 시 register() 자동 호출)
-        import src.crawlers.nike  # noqa: F401
         import src.crawlers.adidas  # noqa: F401
+        import src.crawlers.kasina  # noqa: F401
+        import src.crawlers.nike  # noqa: F401
         import src.crawlers.twentynine_cm  # noqa: F401
 
         self.scheduler = Scheduler(self)
@@ -779,7 +779,7 @@ async def cmd_category_scan(ctx: commands.Context, *, args: str = ""):
         total = stats.pop("_total_scanned", 0)
         matched = stats.pop("_total_matched", 0)
         lines = [
-            f"📂 **카테고리 스캔 현황**",
+            "📂 **카테고리 스캔 현황**",
             f"• 총 스캔: {total}건 / 크림 매칭: {matched}건",
         ]
         for cat, info in stats.items():
