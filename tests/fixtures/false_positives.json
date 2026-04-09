@@ -40,18 +40,20 @@
       "status": "fixed"
     },
     {
-      "id": "nike_oos_size_alert",
-      "description": "나이키 품절 사이즈에 매수 알림 발생 (HQ4307-001 size 240)",
+      "id": "nike_launch_product_alert",
+      "description": "나이키 LAUNCH 상품에 매수 알림 발생 (HQ4307-001). 이전 threads API 기반 수정은 KR 채널 미지원으로 동작하지 않았음.",
       "type": "stock_filter",
       "input": {
         "model_number": "HQ4307-001",
-        "size": "240",
-        "threads_api_level": "OOS",
-        "threads_api_available": false,
-        "pdp_status": "ACTIVE"
+        "consumerReleaseType": "LAUNCH",
+        "statusModifier": "BUYABLE_LINE"
       },
       "expected": "skip",
+      "root_cause": "LAUNCH(SNKRS 큐) 상품은 구매 보장 안 됨 + SSR에 per-size 재고 정보 없음. threads API는 KR에서 totalResources=0 반환.",
+      "fix": "src/crawlers/nike.py get_product_detail()에서 consumerReleaseType=LAUNCH 또는 statusModifier in (BUYABLE_LINE, NOT_BUYABLE, HOLD, UNAVAILABLE) 시 None 반환",
+      "verification": "PYTHONPATH=. python scripts/verify_nike_launch_skip.py",
       "bug_date": "2026-04-08",
+      "refix_date": "2026-04-09",
       "status": "fixed"
     }
   ]
