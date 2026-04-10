@@ -138,6 +138,8 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | `reverse-scanner` | 역방향 소싱처 가격 조회 + 수익 탐색 | Read + Bash(GET) |
 | `queue-inspector` | 스캔 큐 상태 진단, 적체/소화율 | Read + Bash(SELECT) |
 | `scan-debugger` | 상품별 스캔 파이프라인 추적 | Read + Bash(GET+SELECT) |
+| `live-tester` | 크롤러 실서버 end-to-end 검증 (검색→상세→매칭) | Read + Bash(GET) |
+| `coverage-analyzer` | 크림 DB 대비 소싱처별 커버율/갭 분석 | Read + Bash(SELECT) |
 
 ### 슬래시 명령 (`.claude/commands/`)
 
@@ -149,6 +151,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | `/queue` | 스캔 큐 현황 — priority별 분포, 적체, ETA |
 | `/trace` | 특정 모델번호 스캔 파이프라인 추적 |
 | `/health` | 소싱처 10곳 헬스체크 — 응답시간, 서킷브레이커 |
+| `/add-source` | URL 하나로 소싱처 추가 원스텝 (탐색→구현→테스트→커밋) |
 
 ### PostToolUse 훅
 - Edit/Write 후 자동 pytest 실행 → 실패 시 즉시 수정 루프
