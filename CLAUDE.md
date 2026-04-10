@@ -18,7 +18,7 @@ ruff format src/ tests/          # 포맷
 ### 핵심 파이프라인
 
 ```
-크림 DB (47k) → 우선순위 큐 → 소싱처 8곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
+크림 DB (47k) → 우선순위 큐 → 소싱처 10곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
 ```
 
 ### 3티어 스캔 구조
@@ -47,13 +47,13 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ## Key Modules
 
 ### 스캐너
-- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 8곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수) → 수익 분석
+- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 10곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수) → 수익 분석
 - `src/scanner.py` — 카테고리 스캔, 키워드 스캔 오케스트레이터
 - `src/tier1_scanner.py` — 워치리스트 빌더. 역방향 + 카테고리 gap 스크리닝
 - `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링
 - `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
 
-### 크롤러 (8개 소싱처)
+### 크롤러 (10개 소싱처)
 - `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
 - `src/crawlers/twentynine_cm.py` — 29CM. 검색 API v4/products + HTML 파싱
 - `src/crawlers/nike.py` — 나이키 공식몰. `__NEXT_DATA__` JSON 파싱 (selectedProduct 구조). LAUNCH 상품 자동 스킵
@@ -61,6 +61,8 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/crawlers/kasina.py` — 카시나. NHN shopby API. Nike/adidas EXACT(`productManagementCd`), NB는 브랜드 덤프+regex. 사이즈별 재고(`saleType`+`forcedSoldOut`) 직접 노출
 - `src/crawlers/abcmart.py` — 그랜드스테이지/온더스팟. a-rt.com 멀티채널 API, prefix 검색 + 상세 API 모델번호 보강
 - `src/crawlers/tune.py` — 튠. Shopify Storefront GraphQL API (GET), variant title에서 모델번호/사이즈 파싱
+- `src/crawlers/eql.py` — EQL. 한섬 편집숍. HTML 파싱 (검색 godNm 속성 + 상세 sizeItmNm/onlineUsefulInvQty)
+- `src/crawlers/nbkorea.py` — 뉴발란스 공식몰. 카테고리 SSR 매핑 + getOtherColorOptInfo GET API
 - `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
 
 ### 크림 데이터
@@ -102,6 +104,8 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | 그랜드스테이지 | 3 | 2.0초 | ~1,800건 |
 | 온더스팟 | 3 | 2.0초 | ~1,800건 |
 | 튠 | 2 | 1.0초 | ~3,600건 |
+| EQL | 2 | 1.5초 | ~2,400건 |
+| 뉴발란스 | 2 | 2.0초 | ~1,800건 |
 
 ## 수수료 계산
 
@@ -144,7 +148,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | `/status` | DB 현황 + 워치리스트 + 최근 알림 |
 | `/queue` | 스캔 큐 현황 — priority별 분포, 적체, ETA |
 | `/trace` | 특정 모델번호 스캔 파이프라인 추적 |
-| `/health` | 소싱처 8곳 헬스체크 — 응답시간, 서킷브레이커 |
+| `/health` | 소싱처 10곳 헬스체크 — 응답시간, 서킷브레이커 |
 
 ### PostToolUse 훅
 - Edit/Write 후 자동 pytest 실행 → 실패 시 즉시 수정 루프
@@ -216,7 +220,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 
 ### 장애 격리 (서킷브레이커)
 - `registry.py`: 연속 3회 실패 → 30분 비활성화, 자동 재활성화
-- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정)
+- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정)
 
 ## Dev Environment
 
