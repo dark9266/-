@@ -53,7 +53,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링
 - `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
 
-### 크롤러 (12개 소싱처)
+### 크롤러 (13개 소싱처)
 - `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
 - `src/crawlers/twentynine_cm.py` — 29CM. 검색 API v4/products + HTML 파싱
 - `src/crawlers/nike.py` — 나이키 공식몰. `__NEXT_DATA__` JSON 파싱 (selectedProduct 구조). LAUNCH 상품 자동 스킵
@@ -65,6 +65,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/crawlers/nbkorea.py` — 뉴발란스 공식몰. 카테고리 SSR 매핑 + getOtherColorOptInfo GET API
 - `src/crawlers/salomon.py` — 살로몬 공식몰. Shopify products.json REST API. SKU=크림 모델번호(L+8자리), handle 직접 조회
 - `src/crawlers/arcteryx.py` — 아크테릭스 코리아. api.arcteryx.co.kr Laravel REST API. 검색+옵션(사이즈/재고) 조합
+- `src/crawlers/vans.py` — 반스 공식몰. Topick Commerce 플랫폼. 검색 JSON API + HTML data-sku-data 사이즈별 재고 파싱
 - `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
 
 ### 크림 데이터
@@ -110,6 +111,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | 뉴발란스 | 2 | 2.0초 | ~1,800건 |
 | 살로몬 | 2 | 1.0초 | ~3,600건 |
 | 아크테릭스 | 2 | 2.0초 | ~1,800건 |
+| 반스 | 2 | 1.5초 | ~2,400건 |
 
 ## 수수료 계산
 
