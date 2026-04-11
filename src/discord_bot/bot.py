@@ -260,10 +260,14 @@ class KreamBot(commands.Bot):
             opportunity.best_confirmed_roi,
             opportunity.best_estimated_roi,
         )
-        if best_profit < settings.alert_min_profit or best_roi < settings.alert_min_roi:
+        is_confirmed = opportunity.best_confirmed_profit > 0
+        # 예상 전용(확정 없음)은 기준 2배 — buy_now 기반이라 실매도 불확실
+        min_profit = settings.alert_min_profit if is_confirmed else settings.alert_min_profit * 2
+        min_roi = settings.alert_min_roi if is_confirmed else settings.alert_min_roi * 1.5
+        if best_profit < min_profit or best_roi < min_roi:
             logger.debug(
-                "최소기준 미달 스킵: %s (profit=%d, roi=%.1f%%)",
-                product_name, best_profit, best_roi,
+                "최소기준 미달 스킵: %s (profit=%d, roi=%.1f%%, confirmed=%s)",
+                product_name, best_profit, best_roi, is_confirmed,
             )
             return False
 
