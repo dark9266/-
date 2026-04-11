@@ -156,6 +156,8 @@ class Database:
         """DB 연결 및 스키마 초기화."""
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA busy_timeout = 5000")
+        await self._db.execute("PRAGMA journal_mode = WAL")
         await self._db.executescript(SCHEMA_SQL)
         await self._db.commit()
         await self.migrate_realtime_columns()
@@ -773,17 +775,17 @@ class Database:
         return count
 
     async def reclassify_scan_priorities(self) -> dict:
-        """현재 volume_7d 기준으로 scan_priority 강제 재분류 (전체 상품 대상)."""
+        """현재 volume_7d 기준으로 scan_priority + refresh_tier 동기화 재분류."""
         await self.db.execute(
-            "UPDATE kream_products SET scan_priority = 'hot' "
+            "UPDATE kream_products SET scan_priority = 'hot', refresh_tier = 'hot' "
             "WHERE model_number != '' AND volume_7d >= 10"
         )
         await self.db.execute(
-            "UPDATE kream_products SET scan_priority = 'warm' "
+            "UPDATE kream_products SET scan_priority = 'warm', refresh_tier = 'warm' "
             "WHERE model_number != '' AND volume_7d >= 3 AND volume_7d < 10"
         )
         await self.db.execute(
-            "UPDATE kream_products SET scan_priority = 'cold' "
+            "UPDATE kream_products SET scan_priority = 'cold', refresh_tier = 'cold' "
             "WHERE model_number != '' AND volume_7d < 3"
         )
         await self.db.commit()

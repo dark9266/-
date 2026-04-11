@@ -15,7 +15,7 @@ import random
 import re
 from datetime import datetime
 
-import aiohttp
+from curl_cffi.requests import AsyncSession
 
 from src.config import settings
 from src.models.product import KreamProduct, KreamSizePrice
@@ -27,28 +27,35 @@ KREAM_BASE = "https://kream.co.kr"
 
 # ─── 브라우저 위장 헤더 ─────────────────────────────────
 
-_COMMON_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+_SAFARI_USER_AGENTS = [
+    (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/18.0 Mobile/15E148 Safari/604.1"
     ),
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/17.4 Mobile/15E148 Safari/604.1"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/17.4 Safari/605.1.15"
+    ),
+]
+
+_COMMON_HEADERS = {
+    "User-Agent": _SAFARI_USER_AGENTS[0],
+    "Accept-Language": "ko-KR,ko;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://kream.co.kr/",
-    "Origin": "https://kream.co.kr",
-    "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
     "Connection": "keep-alive",
 }
 
 _API_HEADERS = {
     **_COMMON_HEADERS,
     "Accept": "application/json, text/plain, */*",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
     "x-kream-api-version": "22",
     "x-kream-device-id": "web;unknown",
 }
@@ -59,10 +66,6 @@ _PAGE_HEADERS = {
         "text/html,application/xhtml+xml,application/xml;"
         "q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
 }
 
@@ -169,13 +172,13 @@ class KreamCrawler:
     """
 
     def __init__(self):
-        self._session: aiohttp.ClientSession | None = None
+        self._session: AsyncSession | None = None
         self._initialized: bool = False
         self._logged_in: bool = False
 
     @property
     def is_active(self) -> bool:
-        return self._session is not None and not self._session.closed
+        return self._session is not None
 
     @property
     def is_logged_in(self) -> bool:
@@ -183,11 +186,11 @@ class KreamCrawler:
 
     # ─── 세션 관리 ──────────────────────────────────────
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                cookie_jar=aiohttp.CookieJar(),
-                timeout=aiohttp.ClientTimeout(total=30),
+    async def _get_session(self) -> AsyncSession:
+        if self._session is None:
+            self._session = AsyncSession(
+                impersonate="safari17_0",
+                timeout=30,
             )
             self._initialized = False
             self._logged_in = False
@@ -200,20 +203,20 @@ class KreamCrawler:
     async def _init_cookies(self) -> None:
         """크림 메인 페이지 방문으로 세션 쿠키 확보."""
         try:
-            async with self._session.get(
+            resp = await self._session.get(
                 KREAM_BASE, headers=_PAGE_HEADERS, allow_redirects=True
-            ) as resp:
-                logger.info(
-                    "초기 쿠키 확보: status=%d, 쿠키=%d개",
-                    resp.status, len(self._session.cookie_jar),
-                )
-                self._initialized = True
+            )
+            logger.info(
+                "초기 쿠키 확보: status=%d",
+                resp.status_code,
+            )
+            self._initialized = True
         except Exception as e:
             logger.warning("초기 쿠키 확보 실패 (계속 진행): %s", e)
             self._initialized = True
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
+        if self._session is not None:
             await self._session.close()
             self._session = None
             self._initialized = False
@@ -248,55 +251,54 @@ class KreamCrawler:
             url = f"{KREAM_BASE}{url}"
 
         req_headers = dict(_API_HEADERS if parse_json else _PAGE_HEADERS)
+        req_headers["User-Agent"] = random.choice(_SAFARI_USER_AGENTS)
         if headers:
             req_headers.update(headers)
 
         for attempt in range(max_retries):
             try:
-                async with session.request(
-                    method, url, headers=req_headers, params=params
-                ) as resp:
-                    status = resp.status
+                resp = await session.request(
+                    method, url, headers=req_headers, params=params,
+                    allow_redirects=True,
+                )
+                status = resp.status_code
 
-                    if 200 <= status < 300:
-                        if parse_json:
-                            return await resp.json(content_type=None)
-                        return await resp.text()
+                if 200 <= status < 300:
+                    if parse_json:
+                        return resp.json()
+                    return resp.text
 
-                    if status == 429:
-                        wait = (2 ** attempt) * 10
-                        logger.warning("요청 제한(429) — %d초 대기 (%d/%d)", wait, attempt + 1, max_retries)
-                        await asyncio.sleep(wait)
+                if status == 429:
+                    wait = (2 ** attempt) * 10
+                    logger.warning("요청 제한(429) — %d초 대기 (%d/%d)", wait, attempt + 1, max_retries)
+                    await asyncio.sleep(wait)
+                    continue
+
+                if status >= 500:
+                    wait = (2 ** attempt) * 3
+                    logger.warning("서버 에러 %d — %d초 후 재시도 (%d/%d)", status, wait, attempt + 1, max_retries)
+                    await asyncio.sleep(wait)
+                    continue
+
+                if status == 403:
+                    logger.error("접근 차단(403): %s", url)
+                    if attempt == 0:
+                        self._initialized = False
+                        await self._init_cookies()
                         continue
-
-                    if status >= 500:
-                        wait = (2 ** attempt) * 3
-                        logger.warning("서버 에러 %d — %d초 후 재시도 (%d/%d)", status, wait, attempt + 1, max_retries)
-                        await asyncio.sleep(wait)
-                        continue
-
-                    if status == 403:
-                        logger.error("접근 차단(403): %s", url)
-                        if attempt == 0:
-                            self._initialized = False
-                            await self._init_cookies()
-                            continue
-                        return None
-
-                    logger.error("HTTP %d: %s", status, url)
                     return None
+
+                logger.error("HTTP %d: %s", status, url)
+                return None
 
             except asyncio.TimeoutError:
                 wait = (2 ** attempt) * 2
                 logger.warning("타임아웃 (%s) — %d초 후 재시도", url, wait)
                 await asyncio.sleep(wait)
-            except aiohttp.ClientError as e:
+            except Exception as e:
                 wait = (2 ** attempt) * 2
                 logger.warning("연결 에러 (%s): %s — %d초 후 재시도", url, e, wait)
                 await asyncio.sleep(wait)
-            except Exception as e:
-                logger.error("예상치 못한 에러 (%s): %s", url, e)
-                return None
 
         logger.error("최대 재시도(%d회) 초과: %s", max_retries, url)
         return None

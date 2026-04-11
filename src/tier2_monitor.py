@@ -56,7 +56,7 @@ class Tier2Monitor:
             result.finished_at = datetime.now()
             return result
 
-        sem = asyncio.Semaphore(settings.httpx_concurrency)
+        sem = asyncio.Semaphore(min(3, settings.httpx_concurrency))
 
         async def check_item(item: WatchlistItem) -> None:
             async with sem:
