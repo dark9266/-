@@ -82,83 +82,29 @@ async def _fetch_category_page_api(
     page: int,
     per_page: int = 40,
 ) -> list[dict]:
-    """API 엔드포인트로 한 페이지 수집 (폴백)."""
-    params = {
-        "keyword": keyword,
-        "sort": "popular",
-        "page": page,
-        "per_page": per_page,
-        "tab": "products",
-    }
-    data = await kream_crawler._request(
-        "GET", "/api/p/e/search/products", params=params, max_retries=2
-    )
-    if not data:
-        return []
-
-    items = (
-        data.get("items")
-        or data.get("products")
-        or (data.get("data", {}).get("items") if isinstance(data.get("data"), dict) else None)
-        or (data.get("data", {}).get("products") if isinstance(data.get("data"), dict) else None)
-        or (data.get("data") if isinstance(data.get("data"), list) else None)
-        or []
-    )
-
+    """search_products로 한 페이지 수집 (폴백)."""
+    if page > 1:
+        return []  # nuxt 검색은 페이지네이션 미지원 — 1페이지만
+    search_results = await kream_crawler.search_products(keyword)
     results = []
-    for item in items:
+    for item in search_results:
         if not isinstance(item, dict):
             continue
-        product_id = str(item.get("id") or item.get("product_id") or "")
-        if not product_id or product_id == "None":
+        product_id = str(item.get("product_id") or "")
+        if not product_id:
             continue
-
-        name = item.get("name") or item.get("translated_name") or ""
-        brand_raw = item.get("brand")
-        if isinstance(brand_raw, dict):
-            brand = brand_raw.get("name", "")
-        else:
-            brand = item.get("brand_name") or item.get("brandName") or str(brand_raw or "")
-
-        model_number = (
-            item.get("style_code")
-            or item.get("styleCode")
-            or item.get("model_number")
-            or ""
-        )
-
-        # 즉시구매가 / 즉시판매가
-        buy_now = item.get("market", {}).get("buy_now") if isinstance(item.get("market"), dict) else None
-        sell_now = item.get("market", {}).get("sell_now") if isinstance(item.get("market"), dict) else None
-        if buy_now is None:
-            buy_now = item.get("buy_now_price") or item.get("lowest_ask") or 0
-        if sell_now is None:
-            sell_now = item.get("sell_now_price") or item.get("highest_bid") or 0
-
-        # 거래량
-        volume = item.get("trading_volume") or item.get("trade_count") or item.get("total_sales") or 0
-
-        # 이미지
-        image_url = ""
-        img = item.get("image") or item.get("thumbnail") or item.get("image_url")
-        if isinstance(img, dict):
-            image_url = img.get("url") or img.get("path") or ""
-        elif isinstance(img, str):
-            image_url = img
-
         results.append({
             "product_id": product_id,
-            "name": str(name).strip(),
-            "brand": str(brand).strip(),
-            "model_number": str(model_number).strip(),
+            "name": str(item.get("name", "")).strip(),
+            "brand": str(item.get("brand", "")).strip(),
+            "model_number": str(item.get("model_number", "")).strip(),
             "category": category_name,
-            "buy_now_price": int(buy_now) if buy_now else 0,
-            "sell_now_price": int(sell_now) if sell_now else 0,
-            "trading_volume": int(volume) if volume else 0,
-            "image_url": image_url,
-            "url": f"{KREAM_BASE}/products/{product_id}",
+            "buy_now_price": 0,
+            "sell_now_price": 0,
+            "trading_volume": 0,
+            "image_url": item.get("image_url", ""),
+            "url": item.get("url", f"{KREAM_BASE}/products/{product_id}"),
         })
-
     return results
 
 

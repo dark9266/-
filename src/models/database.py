@@ -778,11 +778,11 @@ class Database:
         """현재 volume_7d 기준으로 scan_priority + refresh_tier 동기화 재분류."""
         await self.db.execute(
             "UPDATE kream_products SET scan_priority = 'hot', refresh_tier = 'hot' "
-            "WHERE model_number != '' AND volume_7d >= 10"
+            "WHERE model_number != '' AND volume_7d >= 5"
         )
         await self.db.execute(
             "UPDATE kream_products SET scan_priority = 'warm', refresh_tier = 'warm' "
-            "WHERE model_number != '' AND volume_7d >= 3 AND volume_7d < 10"
+            "WHERE model_number != '' AND volume_7d >= 3 AND volume_7d < 5"
         )
         await self.db.execute(
             "UPDATE kream_products SET scan_priority = 'cold', refresh_tier = 'cold' "

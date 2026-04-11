@@ -194,7 +194,7 @@ class ReverseLookupScanner:
         kream_product = self._build_kream_product(product)
 
         if not kream_product.size_prices and priority in ("hot", "warm"):
-            # 시세 미수집 → warm 이상만 크림 API 즉석 조회 (cold는 API 절약)
+            # 시세 미수집 → warm 이상은 크림 전체 정보 즉석 조회
             try:
                 full_info = await kream_crawler.get_full_product_info(product["product_id"])
                 if full_info and full_info.size_prices:
@@ -211,6 +211,16 @@ class ReverseLookupScanner:
                     logger.debug("시세 즉석 조회 성공: %s (%d사이즈)", kream_product.name[:30], len(kream_product.size_prices))
             except Exception as e:
                 logger.debug("시세 즉석 조회 실패 (%s): %s", product["product_id"], e)
+
+        if not kream_product.size_prices and priority == "cold":
+            # cold: 경량 options/display API로 사이즈별 가격만 확보
+            try:
+                api_prices = await kream_crawler._fetch_options_display(product["product_id"])
+                if api_prices:
+                    kream_product.size_prices = api_prices
+                    logger.debug("cold 시세 경량 조회: %s (%d사이즈)", model_number, len(api_prices))
+            except Exception as e:
+                logger.debug("cold 시세 조회 실패 (%s): %s", product["product_id"], e)
 
         if not kream_product.size_prices:
             result.no_prices += 1

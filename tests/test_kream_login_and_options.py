@@ -236,24 +236,9 @@ class TestFetchOptionsDisplay:
         assert prices[2].bid_count == 5
 
     @pytest.mark.asyncio
-    async def test_fetch_returns_empty_when_not_logged_in(self):
-        """로그인 안 됐고 자동 로그인도 실패하면 빈 리스트 반환."""
+    async def test_fetch_works_without_login(self):
+        """로그인 없이도 API 호출 가능 (X-KREAM 인증 헤더 사용)."""
         self.crawler._logged_in = False
-        self.crawler.ensure_login = AsyncMock(return_value=False)
-
-        prices = await self.crawler._fetch_options_display("12345")
-        assert prices == []
-
-    @pytest.mark.asyncio
-    async def test_fetch_with_auto_login(self):
-        """로그인 안 됐으면 자동 로그인 시도 후 API 호출."""
-        self.crawler._logged_in = False
-
-        async def mock_ensure_login():
-            self.crawler._logged_in = True
-            return True
-
-        self.crawler.ensure_login = mock_ensure_login
 
         async def mock_request(method, url, *, headers=None, params=None, max_retries=3, parse_json=True):
             if params and params.get("picker_type") == "buying":

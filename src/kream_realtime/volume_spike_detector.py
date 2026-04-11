@@ -133,7 +133,7 @@ class VolumeSpikeDetector:
             # volume_7d + scan_priority + refresh_tier 함께 갱신
             new_vol = trade.get("volume_7d", 0)
             new_tier = "hot" if new_vol >= settings.realtime_hot_volume_min else "cold"
-            if new_vol >= 10:
+            if new_vol >= 5:
                 scan_pri = "hot"
             elif new_vol >= 3:
                 scan_pri = "warm"

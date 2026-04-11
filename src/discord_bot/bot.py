@@ -122,6 +122,13 @@ class KreamBot(commands.Bot):
 
     async def on_ready(self) -> None:
         logger.info("봇 로그인: %s (ID: %s)", self.user.name, self.user.id)
+        # scan_priority 재분류 (volume_7d 기준 hot/warm/cold 동기화)
+        try:
+            stats = await self.db.reclassify_scan_priorities()
+            hot = stats.get("hot", {}).get("total", 0)
+            logger.info("시작 시 scan_priority 재분류: hot=%d", hot)
+        except Exception as e:
+            logger.error("scan_priority 재분류 실패: %s", e)
         # 스케줄러 시작
         if self.scheduler:
             self.scheduler.start()

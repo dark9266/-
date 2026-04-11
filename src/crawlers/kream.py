@@ -24,6 +24,7 @@ from src.utils.logging import setup_logger
 logger = setup_logger("kream_crawler")
 
 KREAM_BASE = "https://kream.co.kr"
+KREAM_API_BASE = "https://api.kream.co.kr"
 
 # ─── 브라우저 위장 헤더 ─────────────────────────────────
 
@@ -56,8 +57,7 @@ _COMMON_HEADERS = {
 _API_HEADERS = {
     **_COMMON_HEADERS,
     "Accept": "application/json, text/plain, */*",
-    "x-kream-api-version": "22",
-    "x-kream-device-id": "web;unknown",
+    "Origin": "https://kream.co.kr",
 }
 
 _PAGE_HEADERS = {
@@ -175,6 +175,9 @@ class KreamCrawler:
         self._session: AsyncSession | None = None
         self._initialized: bool = False
         self._logged_in: bool = False
+        self._api_version: str = "56"
+        self._build_version: str = ""
+        self._device_id: str = ""
 
     @property
     def is_active(self) -> bool:
@@ -201,14 +204,25 @@ class KreamCrawler:
         return self._session
 
     async def _init_cookies(self) -> None:
-        """크림 메인 페이지 방문으로 세션 쿠키 확보."""
+        """크림 메인 페이지 방문으로 세션 쿠키 + API 설정값 확보."""
         try:
             resp = await self._session.get(
                 KREAM_BASE, headers=_PAGE_HEADERS, allow_redirects=True
             )
+            # 쿠키에서 device ID 추출
+            self._device_id = str(self._session.cookies.get("webDid", ""))
+            # HTML에서 API 설정값 추출
+            if resp.status_code == 200:
+                html = resp.text
+                m = re.search(r'apiVersion["\']?\s*[:=]\s*["\']([^"\']+)', html)
+                if m:
+                    self._api_version = m.group(1)
+                m = re.search(r'buildVersion["\']?\s*[:=]\s*["\']([^"\']+)', html)
+                if m:
+                    self._build_version = m.group(1)
             logger.info(
-                "초기 쿠키 확보: status=%d",
-                resp.status_code,
+                "초기 쿠키 확보: status=%d, api_ver=%s, build=%s",
+                resp.status_code, self._api_version, self._build_version,
             )
             self._initialized = True
         except Exception as e:
@@ -233,6 +247,22 @@ class KreamCrawler:
         logger.debug("pinia 전용 모드 — 로그인 스킵")
         return False
 
+    def _build_api_auth_headers(self) -> dict:
+        """api.kream.co.kr 호출에 필요한 인증 헤더 생성."""
+        from datetime import datetime as dt
+
+        device_id = f"web;{self._device_id}" if self._device_id else "web;unknown"
+        client_dt = dt.now().strftime("%Y%m%d%H%M%S") + "+0900"
+        auth = {
+            "X-KREAM-DEVICE-ID": device_id,
+            "X-KREAM-CLIENT-DATETIME": client_dt,
+            "X-KREAM-API-VERSION": self._api_version,
+            "X-KREAM-WEB-REQUEST-SECRET": "kream-djscjsghdkd",
+        }
+        if self._build_version:
+            auth["X-KREAM-WEB-BUILD-VERSION"] = self._build_version
+        return auth
+
     # ─── HTTP 요청 (재시도 + 지수 백오프) ─────────────────
 
     async def _request(
@@ -247,11 +277,18 @@ class KreamCrawler:
     ) -> dict | str | None:
         session = await self._get_session()
 
-        if url.startswith("/"):
+        # API 호출은 api.kream.co.kr 도메인으로 라우팅 + 인증 헤더 추가
+        is_api_call = False
+        if url.startswith("/api/"):
+            url = f"{KREAM_API_BASE}{url}"
+            is_api_call = True
+        elif url.startswith("/"):
             url = f"{KREAM_BASE}{url}"
 
         req_headers = dict(_API_HEADERS if parse_json else _PAGE_HEADERS)
         req_headers["User-Agent"] = random.choice(_SAFARI_USER_AGENTS)
+        if is_api_call:
+            req_headers.update(self._build_api_auth_headers())
         if headers:
             req_headers.update(headers)
 
@@ -431,12 +468,7 @@ class KreamCrawler:
         if results:
             return results
 
-        # 2차: API 직접 호출
-        results = await self._search_via_api(keyword)
-        if results:
-            return results
-
-        # 3차: HTML 링크 추출
+        # 2차: HTML 링크 추출
         logger.info("검색 폴백(HTML 링크): '%s'", keyword)
         return await self._search_via_html_links(keyword)
 
@@ -491,20 +523,6 @@ class KreamCrawler:
         if results:
             logger.info("크림 검색 '%s': %d건 (NUXT_DATA)", keyword, len(results))
         return results[:20]
-
-    async def _search_via_api(self, keyword: str) -> list[dict]:
-        """크림 내부 검색 API 호출."""
-        params = {
-            "keyword": keyword,
-            "sort": "popular",
-            "page": 1,
-            "per_page": 20,
-            "tab": "products",
-        }
-        data = await self._request("GET", "/api/p/e/search/products", params=params)
-        if not data:
-            return []
-        return self._parse_search_response(data, keyword)
 
     async def _search_via_html_links(self, keyword: str) -> list[dict]:
         """HTML에서 /products/{id} 링크를 직접 추출 (최후의 수단)."""
@@ -599,12 +617,7 @@ class KreamCrawler:
         if product:
             return product
 
-        # 2차: API 호출
-        product = await self._detail_via_api(product_id)
-        if product:
-            return product
-
-        # 3차: 메타 태그
+        # 2차: 메타 태그
         logger.info("상세 폴백(메타): %s", product_id)
         return await self._detail_via_meta(product_id)
 
@@ -684,13 +697,6 @@ class KreamCrawler:
         )
         logger.info("크림 상품 (pinia): %s (%s)", product.name, product.model_number)
         return product
-
-    async def _detail_via_api(self, product_id: str) -> KreamProduct | None:
-        """상품 상세 API 직접 호출."""
-        data = await self._request("GET", f"/api/p/e/products/{product_id}")
-        if not data:
-            return None
-        return self._parse_product_data(data, product_id)
 
     async def _detail_via_meta(self, product_id: str) -> KreamProduct | None:
         """HTML 메타 태그에서 최소 정보 추출."""
@@ -800,22 +806,15 @@ class KreamCrawler:
         """
         await _random_delay()
 
-        # 1차: __NUXT_DATA__에서 시세 추출
+        # __NUXT_DATA__에서 시세 추출
         prices = await self._prices_from_nuxt(product_id)
         if prices:
             return prices
 
-        # 2차: API 엔드포인트 순차 시도
-        for endpoint in [
-            f"/api/p/e/products/{product_id}/prices",
-            f"/api/p/e/products/{product_id}/market",
-            f"/api/p/e/products/{product_id}/options",
-        ]:
-            data = await self._request("GET", endpoint, max_retries=2)
-            if data:
-                parsed = self._parse_market_prices_from_dict(data, product_id)
-                if parsed:
-                    return parsed
+        # 폴백: options/display API (SDUI)
+        api_prices = await self._fetch_options_display(product_id)
+        if api_prices:
+            return api_prices
 
         return []
 
@@ -1075,11 +1074,12 @@ class KreamCrawler:
         nuxt_result = await self._trades_from_nuxt(product_id)
 
         # pinia sales.items는 최근 5건 미리보기 → volume_7d 캡 발생
-        # volume이 pinia 아이템 수와 같으면(캡 의심) API로 정확한 수치 확보
+        # volume이 pinia 아이템 수와 같으면(캡 의심) screens API로 보충
+        pinia_count = nuxt_result.get("_pinia_items_count", 0) if nuxt_result else 0
         pinia_capped = (
             nuxt_result
-            and nuxt_result.get("_pinia_items_count", 0) > 0
-            and nuxt_result["volume_7d"] >= nuxt_result["_pinia_items_count"]
+            and pinia_count > 0
+            and nuxt_result["volume_7d"] >= pinia_count
         )
 
         if nuxt_result and not pinia_capped:
@@ -1087,71 +1087,112 @@ class KreamCrawler:
             if nuxt_result["volume_7d"] > 0 or nuxt_result["volume_30d"] > 0 or nuxt_result["last_trade_date"]:
                 return nuxt_result
 
-        # 2차: API로 정확한 거래량 수집 (per_page 200으로 30일치 충분히 확보)
-        api_result = await self._trades_from_api(product_id)
-        if api_result and (api_result["volume_7d"] > 0 or api_result["volume_30d"] > 0):
-            return api_result
+        # 2차: screens API로 거래 내역 + bids/asks 수 확인
+        screens_result = await self._trades_from_screens_api(product_id)
+        if screens_result and (screens_result["volume_7d"] > 0 or screens_result["volume_30d"] > 0):
+            return screens_result
 
-        # API 실패 시 pinia 결과라도 반환
+        # 모든 API 실패 시 pinia 결과 + 볼륨 추정
         if nuxt_result:
+            if pinia_capped and nuxt_result["volume_7d"] > 0:
+                nuxt_result["volume_7d"] = self._estimate_volume(
+                    nuxt_result["volume_7d"], pinia_count,
+                )
             nuxt_result.pop("_pinia_items_count", None)
             if nuxt_result["volume_7d"] > 0 or nuxt_result["volume_30d"] > 0 or nuxt_result["last_trade_date"]:
                 return nuxt_result
 
         return empty
 
-    async def _trades_from_api(self, product_id: str) -> dict | None:
-        """sales API로 정확한 거래량 수집. 커서 페이지네이션으로 30일치 확보."""
-        all_items = []
-        cursor = 0
-        max_pages = 5  # 최대 5페이지 (1,000건) — 30일치 충분
+    @staticmethod
+    def _estimate_volume(volume_7d: int, pinia_count: int) -> int:
+        """pinia 캡 도달 시 볼륨 추정.
 
-        for _ in range(max_pages):
-            await _random_delay()
-            data = await self._request(
-                "GET", f"/api/p/e/products/{product_id}/sales",
-                params={"cursor": cursor, "per_page": 200},
-                max_retries=1,
-            )
-            if not data:
-                break
+        5건 모두 7일 내 → 최소 5건이지만 실제로는 더 많을 가능성 높음.
+        보수적으로 캡의 2배 추정 (hot tier 진입 가능하도록).
+        """
+        if volume_7d >= pinia_count >= 4:
+            return max(volume_7d, pinia_count * 2)
+        return volume_7d
 
-            items = self._unwrap_list(data)
-            if items is None or not items:
-                break
+    async def _trades_from_screens_api(self, product_id: str) -> dict | None:
+        """screens API에서 거래 내역 추출.
 
-            all_items.extend(items)
-
-            # 마지막 항목이 30일 이전이면 더 이상 페이지네이션 불필요
-            last_item = items[-1] if items else None
-            if last_item and isinstance(last_item, dict):
-                date_str = str(
-                    last_item.get("date") or last_item.get("created_at")
-                    or last_item.get("date_created") or ""
-                )
-                last_date = self._parse_date(date_str)
-                if last_date and (datetime.now() - last_date).days > 30:
-                    break
-
-            # 다음 커서
-            if isinstance(data, dict) and "cursor" in data:
-                next_cursor = data["cursor"]
-                if next_cursor and next_cursor != cursor:
-                    cursor = next_cursor
-                else:
-                    break
-            else:
-                break
-
-        if not all_items:
+        /api/screens/products/{id} 의 transaction_history 섹션에서
+        sales/asks/bids 아이템을 가져온다.
+        """
+        await _random_delay()
+        data = await self._request(
+            "GET", f"/api/screens/products/{product_id}",
+            max_retries=2,
+        )
+        if not data or not isinstance(data, dict):
             return None
 
-        result = self._calculate_trade_stats(all_items, product_id)
+        # 재귀적으로 transaction_history 찾기
+        th = self._find_transaction_history_in_screens(data)
+        if not th:
+            return None
+
+        sales = th.get("sales", {}).get("items", [])
+        if not sales:
+            return None
+
+        trades_for_stats = []
+        for item in sales:
+            if not isinstance(item, dict):
+                continue
+            trades_for_stats.append({
+                "price": item.get("price"),
+                "date": item.get("date_created", ""),
+            })
+
+        if not trades_for_stats:
+            return None
+
+        result = self._calculate_trade_stats(trades_for_stats, product_id)
+
+        # bids/asks 수로 활성도 보강 — 5건 캡이라도 asks 5건이면 유동성 높음
+        asks_count = len(th.get("asks", {}).get("items", []))
+        bids_count = len(th.get("bids", {}).get("items", []))
+        result["_screens_asks"] = asks_count
+        result["_screens_bids"] = bids_count
+
+        # 캡 감지: 5건 모두 7일 내이고 bids+asks 충분 → 볼륨 추정
+        if result["volume_7d"] >= len(trades_for_stats) and len(trades_for_stats) >= 4:
+            if asks_count + bids_count >= 6:
+                result["volume_7d"] = max(result["volume_7d"], len(trades_for_stats) * 3)
+            else:
+                result["volume_7d"] = max(result["volume_7d"], len(trades_for_stats) * 2)
+
+        result.pop("_screens_asks", None)
+        result.pop("_screens_bids", None)
+
         logger.info(
-            "거래내역 (%s): [API] 7일=%d, 30일=%d (총 %d건 수집)",
-            product_id, result["volume_7d"], result["volume_30d"], len(all_items),
+            "거래내역 (%s): [screens] 7일=%d, 30일=%d (sales=%d, asks=%d, bids=%d)",
+            product_id, result["volume_7d"], result["volume_30d"],
+            len(trades_for_stats), asks_count, bids_count,
         )
         return result
+
+    @staticmethod
+    def _find_transaction_history_in_screens(data) -> dict | None:
+        """screens API 응답에서 transaction_history 딕셔너리 찾기."""
+        if isinstance(data, dict):
+            if "transaction_history" in data:
+                th = data["transaction_history"]
+                if isinstance(th, dict) and "sales" in th:
+                    return th
+            for v in data.values():
+                found = KreamCrawler._find_transaction_history_in_screens(v)
+                if found:
+                    return found
+        elif isinstance(data, list):
+            for item in data:
+                found = KreamCrawler._find_transaction_history_in_screens(item)
+                if found:
+                    return found
+        return None
 
     async def _trades_from_nuxt(self, product_id: str) -> dict | None:
         """상품 페이지 __NUXT_DATA__에서 거래 내역 추출."""
@@ -1330,63 +1371,58 @@ class KreamCrawler:
 
         if not product:
             await _random_delay()
-            product = await self._detail_via_api(product_id)
+            product = await self._detail_via_meta(product_id)
             if not product:
                 return None
 
-        # 2단계: 인증 API로 전체 사이즈별 가격 보충 (로그인된 경우만)
-        if self._logged_in:
-            api_prices = await self._fetch_options_display(product_id)
-            if api_prices:
-                # API 결과가 더 완전하면 교체, 아니면 병합
-                if len(api_prices) > len(size_prices):
-                    # API가 더 많은 사이즈를 가져왔으면, pinia 데이터로 보충
-                    api_map = {p.size: p for p in api_prices}
-                    for p in size_prices:
-                        if p.size in api_map:
-                            # pinia에서만 있는 필드 보충
-                            ap = api_map[p.size]
-                            if not ap.last_sale_price and p.last_sale_price:
-                                ap.last_sale_price = p.last_sale_price
-                                ap.last_sale_date = p.last_sale_date
-                        else:
-                            api_prices.append(p)
-                    api_prices.sort(key=lambda p: int(p.size) if p.size.isdigit() else 0)
-                    size_prices = api_prices
-                    logger.info("사이즈별 시세 보충: %d건 (API+pinia 병합)", len(size_prices))
-                elif not size_prices:
-                    size_prices = api_prices
+        # 2단계: options/display API로 전체 사이즈별 가격 보충
+        api_prices = await self._fetch_options_display(product_id)
+        if api_prices:
+            # API 결과가 더 완전하면 교체, 아니면 병합
+            if len(api_prices) > len(size_prices):
+                api_map = {p.size: p for p in api_prices}
+                for p in size_prices:
+                    if p.size in api_map:
+                        ap = api_map[p.size]
+                        if not ap.last_sale_price and p.last_sale_price:
+                            ap.last_sale_price = p.last_sale_price
+                            ap.last_sale_date = p.last_sale_date
+                    else:
+                        api_prices.append(p)
+                api_prices.sort(key=lambda p: int(p.size) if p.size.isdigit() else 0)
+                size_prices = api_prices
+                logger.info("사이즈별 시세 보충: %d건 (API+pinia 병합)", len(size_prices))
+            elif not size_prices:
+                size_prices = api_prices
 
-        # 3단계: 레거시 API 폴백 (pinia에서 시세를 전혀 못 가져온 경우만)
-        if not size_prices:
-            for endpoint in [
-                f"/api/p/e/products/{product_id}/prices",
-                f"/api/p/e/products/{product_id}/options",
-            ]:
-                await _random_delay()
-                api_data = await self._request("GET", endpoint, max_retries=1)
-                if api_data:
-                    size_prices = self._parse_market_prices_from_dict(api_data, product_id)
-                    if size_prices:
-                        break
-
-        # 거래내역도 pinia에서 가져왔으면 레거시 API 스킵
-        if not trade_result or (trade_result["volume_7d"] == 0 and trade_result["volume_30d"] == 0 and not trade_result.get("last_trade_date")):
-            for endpoint in [
-                f"/api/p/e/products/{product_id}/sales",
-                f"/api/p/e/products/{product_id}/trades",
-            ]:
-                await _random_delay()
-                api_data = await self._request("GET", endpoint, params={"cursor": 0, "per_page": 50}, max_retries=1)
-                if api_data:
-                    trade_result = self._parse_trade_data(api_data, product_id)
-                    if trade_result["volume_7d"] > 0 or trade_result["volume_30d"] > 0:
-                        break
+        # 거래내역 보강: pinia 캡 감지 시 screens API로 볼륨 추정
+        pinia_count = trade_result.get("_pinia_items_count", 0) if trade_result else 0
+        pinia_capped = (
+            trade_result
+            and pinia_count > 0
+            and trade_result["volume_7d"] >= pinia_count
+        )
+        if pinia_capped or not trade_result or (
+            trade_result["volume_7d"] == 0
+            and trade_result["volume_30d"] == 0
+            and not trade_result.get("last_trade_date")
+        ):
+            screens_trades = await self._trades_from_screens_api(product_id)
+            if screens_trades and (
+                screens_trades["volume_7d"] > trade_result.get("volume_7d", 0)
+                if trade_result else screens_trades["volume_7d"] > 0
+            ):
+                trade_result = screens_trades
+            elif pinia_capped and trade_result:
+                trade_result["volume_7d"] = self._estimate_volume(
+                    trade_result["volume_7d"], pinia_count,
+                )
 
         # 최종 조합
         product.size_prices = size_prices
 
         if trade_result:
+            trade_result.pop("_pinia_items_count", None)
             product.volume_7d = trade_result["volume_7d"]
             product.volume_30d = trade_result["volume_30d"]
             product.last_trade_date = trade_result["last_trade_date"]
@@ -1402,17 +1438,11 @@ class KreamCrawler:
         return product
 
     async def _fetch_options_display(self, product_id: str) -> list[KreamSizePrice]:
-        """인증 API /api/p/options/display 로 전체 사이즈별 가격 조회.
+        """API /api/p/options/display 로 전체 사이즈별 가격 조회.
 
         buying + selling 양쪽을 호출하여 즉시구매가/즉시판매가를 모두 수집.
-        로그인되지 않은 세션이면 빈 리스트 반환.
+        api.kream.co.kr 도메인 + X-KREAM 인증 헤더로 호출.
         """
-        if not self._logged_in:
-            # 자동 로그인 시도
-            logged_in = await self.ensure_login()
-            if not logged_in:
-                return []
-
         await _random_delay()
 
         size_map: dict[str, dict] = {}
@@ -1459,13 +1489,31 @@ class KreamCrawler:
     def _merge_options_into_map(self, data, size_map: dict, mode: str) -> None:
         """options/display API 응답을 size_map에 병합.
 
-        API 응답 구조 (예상):
-        - 리스트: [{size/option, price, ...}, ...]
-        - 또는 dict with "options"/"sizes"/"items" 키
+        SDUI 형식 응답에서 action parameters의 option_key + price 추출.
+        레거시 리스트 형식도 폴백으로 지원.
         """
+        # 1차: SDUI 형식 — action parameters에서 option_key/price 추출
+        sdui_pairs = self._extract_sdui_option_prices(data)
+        if sdui_pairs:
+            for pair in sdui_pairs:
+                size = pair["option_key"]
+                price = pair["price"]
+                if size not in size_map:
+                    size_map[size] = {}
+                if price:
+                    if mode == "buy":
+                        cur = size_map[size].get("buy_now_price")
+                        if cur is None or price < cur:
+                            size_map[size]["buy_now_price"] = price
+                    elif mode == "sell":
+                        cur = size_map[size].get("sell_now_price")
+                        if cur is None or price > cur:
+                            size_map[size]["sell_now_price"] = price
+            return
+
+        # 2차: 레거시 리스트 형식 폴백
         items = self._unwrap_list(data)
         if items is None and isinstance(data, dict):
-            # 직접 dict 구조: {size: price_info}
             for key in ("options", "sizes", "sales_options", "buying_options",
                         "selling_options", "product_options"):
                 val = data.get(key)
@@ -1480,7 +1528,6 @@ class KreamCrawler:
             if not isinstance(item, dict):
                 continue
 
-            # 사이즈 추출
             size = ""
             opt = item.get("product_option") or item.get("option")
             if isinstance(opt, dict):
@@ -1496,7 +1543,6 @@ class KreamCrawler:
             if size not in size_map:
                 size_map[size] = {}
 
-            # 가격 추출
             price = self._to_int(
                 item.get("price") or item.get("amount")
                 or item.get("display_price") or item.get("displayPrice")
@@ -1504,17 +1550,14 @@ class KreamCrawler:
 
             if price:
                 if mode == "buy":
-                    # buying picker → 즉시구매가 (최저 판매호가)
                     cur = size_map[size].get("buy_now_price")
                     if cur is None or price < cur:
                         size_map[size]["buy_now_price"] = price
                 elif mode == "sell":
-                    # selling picker → 즉시판매가 (최고 구매호가)
                     cur = size_map[size].get("sell_now_price")
                     if cur is None or price > cur:
                         size_map[size]["sell_now_price"] = price
 
-            # 최근 체결가
             last_sale = self._to_int(
                 item.get("last_sale_price") or item.get("lastSalePrice")
                 or item.get("last_price")
@@ -1522,10 +1565,39 @@ class KreamCrawler:
             if last_sale and "last_sale_price" not in size_map[size]:
                 size_map[size]["last_sale_price"] = last_sale
 
-            # 입찰 수량
             qty = item.get("quantity") or item.get("bid_count") or 0
             if isinstance(qty, int) and qty > 0 and mode == "sell":
                 size_map[size]["bid_count"] = size_map[size].get("bid_count", 0) + qty
+
+    @staticmethod
+    def _extract_sdui_option_prices(data) -> list[dict]:
+        """SDUI 응답에서 option_key + price 쌍 추출 (재귀)."""
+        results = []
+        seen = set()
+
+        def _walk(obj):
+            if isinstance(obj, dict):
+                params = obj.get("parameters")
+                if isinstance(params, dict):
+                    option_key = params.get("option_key")
+                    price = params.get("price")
+                    if option_key and price:
+                        ok = option_key[0] if isinstance(option_key, list) else option_key
+                        pr = price[0] if isinstance(price, list) else price
+                        if ok and pr and ok not in seen:
+                            seen.add(ok)
+                            try:
+                                results.append({"option_key": str(ok), "price": int(pr)})
+                            except (ValueError, TypeError):
+                                pass
+                for v in obj.values():
+                    _walk(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _walk(item)
+
+        _walk(data)
+        return results
 
     # ─── 유틸리티 ────────────────────────────────────────
 
@@ -1707,32 +1779,6 @@ class KreamCrawler:
 
         logger.info("급상승 상품 수집: %d건", len(all_results))
         return all_results[:limit]
-
-    async def _popular_via_api(
-        self, category: str, sort: str, page: int = 1
-    ) -> list[dict]:
-        """카테고리별 인기 상품 API 호출."""
-        for endpoint in [
-            "/api/p/e/categories/products",
-            "/api/p/e/search/products",
-        ]:
-            params = {
-                "category": category,
-                "sort": sort,
-                "page": page,
-                "per_page": 20,
-            }
-            if endpoint.endswith("search/products"):
-                params["tab"] = "products"
-                params.pop("category", None)
-                params["keyword"] = ""
-
-            data = await self._request("GET", endpoint, params=params, max_retries=2)
-            if data:
-                parsed = self._parse_search_response(data, f"popular_{category}")
-                if parsed:
-                    return parsed
-        return []
 
     def _extract_listing_products(self, data) -> list[dict]:
         """리스팅/검색 페이지 데이터에서 상품 목록 추출.
