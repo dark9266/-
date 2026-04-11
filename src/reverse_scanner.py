@@ -557,6 +557,17 @@ class ReverseLookupScanner:
 
             overlap = kream_en_keywords & item_keywords
             if len(overlap) >= 2:
+                # 3. 콜라보 불일치 검증: 크림=콜라보 + 소싱=일반 → 오매칭 차단
+                from src.matcher import _COLLAB_KEYWORDS
+                kream_is_collab = any(kw in kream_lower for kw in _COLLAB_KEYWORDS)
+                if kream_is_collab:
+                    item_is_collab = any(kw in item_name for kw in _COLLAB_KEYWORDS)
+                    if not item_is_collab:
+                        logger.debug(
+                            "콜라보 불일치 차단: 크림='%s' (콜라보) ↔ 소싱='%s' (일반)",
+                            kream_name[:40], item_name[:40],
+                        )
+                        continue
                 verified.append(item)
                 logger.debug(
                     "이름 매칭 성공: 크림='%s' ↔ 소싱='%s' (겹침: %s)",
