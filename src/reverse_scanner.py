@@ -338,6 +338,15 @@ class ReverseLookupScanner:
         # 사이즈 미반환 소싱처 → 상세 페이지에서 사이즈 보강
         await self._enrich_missing_sizes(source_results, active)
 
+        # 상세 조회 후 품절 확인된 item 제거
+        for key in list(source_results.keys()):
+            source_results[key] = [
+                item for item in source_results[key]
+                if not item.get("is_sold_out")
+            ]
+            if not source_results[key]:
+                del source_results[key]
+
         return source_results
 
     async def _enrich_missing_sizes(
@@ -373,6 +382,13 @@ class ReverseLookupScanner:
                         logger.debug(
                             "%s 상세 사이즈 보강: %s → %d개",
                             active[key]["label"], pid, len(detail.sizes),
+                        )
+                    elif not detail:
+                        # 상세 조회 실패 (품절/LAUNCH/비구매가능) → 제외 마킹
+                        item["is_sold_out"] = True
+                        logger.debug(
+                            "%s 상세 없음 → 품절 마킹: %s",
+                            active[key]["label"], pid,
                         )
                 except Exception as e:
                     logger.debug(
