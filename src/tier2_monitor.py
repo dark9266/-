@@ -112,12 +112,19 @@ class Tier2Monitor:
                 retail_price = (
                     item.source_price if item.source_price > 0 else item.musinsa_price
                 )
+                # 이상 시세 필터: 크림가가 소싱가 5배 이상이면 오매칭 의심
+                if retail_price > 0 and kream_price > retail_price * 5:
+                    continue
                 net_profit = kream_price - fees["total_fees"] - retail_price
                 roi = (net_profit / retail_price * 100) if retail_price > 0 else 0
 
                 if net_profit > best_profit:
                     best_profit = net_profit
                     best_roi = roi
+
+                # ROI 200% 이상은 오매칭 의심 → 알림 제외
+                if roi > 200:
+                    continue
 
                 if net_profit >= settings.alert_min_profit and roi >= settings.alert_min_roi:
                     profitable_sizes.append(AutoScanSizeProfit(
