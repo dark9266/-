@@ -130,9 +130,22 @@ class VolumeSpikeDetector:
                 "volume_7d": trade.get("volume_7d", 0),
                 "volume_30d": trade.get("volume_30d", 0),
             })
+            # volume_7d + scan_priority + refresh_tier 함께 갱신
+            new_vol = trade.get("volume_7d", 0)
+            new_tier = "hot" if new_vol >= settings.realtime_hot_volume_min else "cold"
+            if new_vol >= 10:
+                scan_pri = "hot"
+            elif new_vol >= 3:
+                scan_pri = "warm"
+            else:
+                scan_pri = "cold"
             await self.db.execute(
-                "UPDATE kream_products SET last_volume_check = CURRENT_TIMESTAMP WHERE product_id = ?",
-                (pid,),
+                """UPDATE kream_products SET
+                    volume_7d = ?, volume_30d = ?, refresh_tier = ?,
+                    scan_priority = ?,
+                    last_volume_check = CURRENT_TIMESTAMP
+                WHERE product_id = ?""",
+                (new_vol, trade.get("volume_30d", 0), new_tier, scan_pri, pid),
             )
 
         await self.db.commit()
