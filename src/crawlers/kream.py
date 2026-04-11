@@ -485,34 +485,52 @@ class KreamCrawler:
 
         results = []
 
-        # Nuxt 데이터에서 상품 목록 탐색
-        # 가능한 구조: data.products, data.items, 또는 깊은 중첩
-        product_lists = self._deep_find(data, "products")
-        if not product_lists:
-            product_lists = self._deep_find(data, "items")
-        if not product_lists:
-            product_lists = self._deep_find(data, "searchResult")
+        # 1차: pinia.search.productsResponse.items (레거시 구조)
+        if isinstance(data, dict):
+            pinia = data.get("pinia", {})
+            if isinstance(pinia, dict):
+                search_store = pinia.get("search", {})
+                if isinstance(search_store, dict):
+                    pr = search_store.get("productsResponse", {})
+                    if isinstance(pr, dict):
+                        api_items = pr.get("items", [])
+                        if isinstance(api_items, list):
+                            for item in api_items[:20]:
+                                parsed = self._extract_product_summary(item)
+                                if parsed:
+                                    results.append(parsed)
 
-        for pl in product_lists:
-            if isinstance(pl, list):
-                for item in pl[:20]:
-                    parsed = self._extract_product_summary(item)
-                    if parsed:
-                        results.append(parsed)
-                if results:
-                    break
-            elif isinstance(pl, dict):
-                # searchResult 같은 래퍼 dict
-                inner = pl.get("items") or pl.get("products") or pl.get("data")
-                if isinstance(inner, list):
-                    for item in inner[:20]:
+        # 2차: pinia.searchSdui SDUI 카드 구조 (현행 메인)
+        if not results and isinstance(data, dict):
+            results = self._extract_sdui_product_cards(data)
+
+        # 3차: deep_find 폴백 (products/items/searchResult 키)
+        if not results:
+            product_lists = self._deep_find(data, "products")
+            if not product_lists:
+                product_lists = self._deep_find(data, "items")
+            if not product_lists:
+                product_lists = self._deep_find(data, "searchResult")
+
+            for pl in product_lists:
+                if isinstance(pl, list):
+                    for item in pl[:20]:
                         parsed = self._extract_product_summary(item)
                         if parsed:
                             results.append(parsed)
                     if results:
                         break
+                elif isinstance(pl, dict):
+                    inner = pl.get("items") or pl.get("products") or pl.get("data")
+                    if isinstance(inner, list):
+                        for item in inner[:20]:
+                            parsed = self._extract_product_summary(item)
+                            if parsed:
+                                results.append(parsed)
+                        if results:
+                            break
 
-        # 상품 목록 키를 못 찾은 경우: id+name을 가진 dict 직접 탐색
+        # 4차: id+name을 가진 dict 직접 탐색
         if not results:
             candidates = self._deep_find_dict(data, {"id", "name"}, max_depth=8)
             for c in candidates[:30]:
@@ -523,6 +541,98 @@ class KreamCrawler:
         if results:
             logger.info("크림 검색 '%s': %d건 (NUXT_DATA)", keyword, len(results))
         return results[:20]
+
+    def _extract_sdui_product_cards(self, data: dict) -> list[dict]:
+        """SDUI(Server-Driven UI) 구조에서 상품 카드 추출.
+
+        크림 검색 결과는 pinia.searchSdui.sduiData.content.items 안에
+        product_card/product_wish_thumbnail 형태로 들어 있다.
+        각 카드의 id에서 product_id를, image_item.meta에서 name을 추출한다.
+        """
+        results = []
+        seen = set()
+
+        pinia = data.get("pinia", {})
+        if not isinstance(pinia, dict):
+            return results
+
+        sdui = pinia.get("searchSdui", {})
+        if not isinstance(sdui, dict):
+            return results
+
+        sdui_data = sdui.get("sduiData", {})
+        if not isinstance(sdui_data, dict):
+            return results
+
+        content = sdui_data.get("content", {})
+        if not isinstance(content, dict):
+            return results
+
+        sections = content.get("items", [])
+        if not isinstance(sections, list):
+            return results
+
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            items = section.get("items", [])
+            if not isinstance(items, list):
+                continue
+            for card in items:
+                parsed = self._parse_sdui_card(card, seen)
+                if parsed:
+                    results.append(parsed)
+
+        return results[:20]
+
+    def _parse_sdui_card(self, card: dict, seen: set) -> dict | None:
+        """SDUI 카드 한 장에서 product_id + name 추출."""
+        if not isinstance(card, dict):
+            return None
+
+        card_id = card.get("id", "")
+        if not isinstance(card_id, str):
+            return None
+
+        # id 형식: "product_card/{id}" 또는 "product_wish_thumbnail/{id}"
+        if "product" not in card_id or "/" not in card_id:
+            return None
+
+        product_id = card_id.rsplit("/", 1)[-1]
+        if not product_id.isdigit():
+            return None
+        if product_id in seen:
+            return None
+        seen.add(product_id)
+
+        # image_item.meta 에서 이름 추출
+        name = ""
+        translated_name = ""
+        image_url = ""
+        img_item = card.get("image_item")
+        if isinstance(img_item, dict):
+            meta = img_item.get("meta")
+            if isinstance(meta, dict):
+                name = meta.get("name", "")
+                translated_name = meta.get("translated_name", "")
+            # 이미지 URL
+            img_el = img_item.get("image_element")
+            if isinstance(img_el, dict):
+                dv = img_el.get("default_variation")
+                if isinstance(dv, dict):
+                    image_url = dv.get("url", "")
+
+        display_name = name or translated_name
+        if not display_name:
+            return None
+
+        return {
+            "product_id": product_id,
+            "name": str(display_name).strip(),
+            "brand": "",
+            "image_url": str(image_url),
+            "url": f"{KREAM_BASE}/products/{product_id}",
+        }
 
     async def _search_via_html_links(self, keyword: str) -> list[dict]:
         """HTML에서 product_card + img alt로 상품 목록 추출 (최후의 수단)."""

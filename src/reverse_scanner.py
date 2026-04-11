@@ -300,6 +300,11 @@ class ReverseLookupScanner:
         "Vans": {"vans"},
     }
 
+    # 브랜드 전용 소싱처 역인덱스: 해당 소싱처는 해당 브랜드 상품만 검색
+    BRAND_ONLY_SOURCES: dict[str, str] = {
+        src: brand for brand, srcs in BRAND_SOURCES.items() for src in srcs
+    }
+
     async def _search_all_sources(
         self, model_number: str, priority: str = "hot",
         product: dict | None = None,
@@ -346,6 +351,12 @@ class ReverseLookupScanner:
                 except TypeError:
                     search_tasks[key] = info["crawler"].search_products(name_keyword)
             else:
+                # 브랜드 전용 소싱처: 해당 브랜드 상품만 검색 (아디다스에 나이키 검색 방지)
+                if key in self.BRAND_ONLY_SOURCES:
+                    required_brand = self.BRAND_ONLY_SOURCES[key]
+                    product_brand = product.get("brand", "") if product else ""
+                    if product_brand != required_brand:
+                        continue
                 try:
                     search_tasks[key] = info["crawler"].search_products(
                         model_number, limit=5,
@@ -443,20 +454,32 @@ class ReverseLookupScanner:
             "올드스쿨": "old skool",
             "척 테일러": "chuck taylor", "척테일러": "chuck taylor",
             "클라우드몬스터": "cloudmonster",
+            "샥스": "shox", "코비": "kobe",
+            "줌 플라이": "zoom fly", "줌플라이": "zoom fly",
+            "에어 줌": "air zoom", "리액트": "react",
+            "클럽 C": "club c",
+            "ACG 마운틴": "ACG mountain fly",
+            "ACG 모르포": "ACG morpho",
+            "ACG 스톰핏": "ACG stormfit",
+            "문 슈": "moon shoe",
         }
 
         for kr, en in kr_to_en.items():
             if kr in name:
                 return en
 
-        # 영문 부분만 추출
-        en_parts = re.findall(r"[A-Za-z0-9][\w'-]*", name)
+        # 영문 부분만 추출 (최소 2글자, 순수 숫자 제외)
+        en_parts = [p for p in re.findall(r"[A-Za-z][\w'-]*", name)
+                    if len(p) >= 2]
         if en_parts:
-            return " ".join(en_parts[:3])
+            keyword = " ".join(en_parts[:3])
+            if len(keyword) >= 3:
+                return keyword
 
         # 한국어만 남은 경우 첫 2~3단어
         words = name.split()[:3]
-        return " ".join(words) if words else ""
+        keyword = " ".join(words) if words else ""
+        return keyword if len(keyword) >= 2 else ""
 
     def _verify_name_match(
         self, items: list[dict], kream_name: str, kream_brand: str,
