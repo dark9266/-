@@ -64,6 +64,12 @@ class KreamPriceRefresher:
             detail = await kream_crawler.get_full_product_info(product_id)
             if not detail:
                 logger.warning("시세 갱신 실패 (상세 없음): %s", product_id)
+                # 실패해도 last_price_refresh 갱신 → 무한 재시도 방지
+                await self.db.execute(
+                    "UPDATE kream_products SET last_price_refresh = CURRENT_TIMESTAMP WHERE product_id = ?",
+                    (product_id,),
+                )
+                await self.db.commit()
                 return False
 
             if detail.size_prices:
@@ -94,6 +100,14 @@ class KreamPriceRefresher:
 
         except Exception as e:
             logger.error("시세 갱신 에러 (%s): %s", product_id, e)
+            try:
+                await self.db.execute(
+                    "UPDATE kream_products SET last_price_refresh = CURRENT_TIMESTAMP WHERE product_id = ?",
+                    (product_id,),
+                )
+                await self.db.commit()
+            except Exception:
+                pass
             return False
 
     async def update_product_tier(self, product_id: str, new_volume_7d: int) -> None:
