@@ -51,6 +51,11 @@ MUSINSA_ONLY_BRANDS: set[str] = {
     "bodywild", "byt", "gentlemonster",  # gentlemonster는 안경
     # 생활용품/잡화 (신발 카테고리에 간혹 노출)
     "daiso",
+    # 아웃도어/등산 전문 (크림 리셀 시장 무관)
+    "k2", "nepa", "dynafit", "zamberlan", "aigle", "columbia",
+    # 패션 잡화/SPA (크림 거래 없음)
+    "massimodutti", "massimodutti2", "jillstuart", "jillstuartnywomensacc",
+    "shoopen", "saphir", "pemont", "yase",
 }
 
 
