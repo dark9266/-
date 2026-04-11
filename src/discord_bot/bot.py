@@ -79,10 +79,12 @@ class KreamBot(commands.Bot):
         # 소싱처 크롤러 등록 (임포트 시 register() 자동 호출)
         import src.crawlers.abcmart  # noqa: F401  (그랜드스테이지 + 온더스팟)
         import src.crawlers.adidas  # noqa: F401
+        import src.crawlers.arcteryx  # noqa: F401
         import src.crawlers.eql  # noqa: F401
         import src.crawlers.kasina  # noqa: F401
         import src.crawlers.nbkorea  # noqa: F401
         import src.crawlers.nike  # noqa: F401
+        import src.crawlers.salomon  # noqa: F401
         import src.crawlers.tune  # noqa: F401
         import src.crawlers.twentynine_cm  # noqa: F401
 

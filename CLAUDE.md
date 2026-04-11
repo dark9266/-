@@ -18,7 +18,7 @@ ruff format src/ tests/          # 포맷
 ### 핵심 파이프라인
 
 ```
-크림 DB (47k) → 우선순위 큐 → 소싱처 10곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
+크림 DB (47k) → 우선순위 큐 → 소싱처 12곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
 ```
 
 ### 3티어 스캔 구조
@@ -38,8 +38,8 @@ ruff format src/ tests/          # 포맷
 
 | 등급 | 조건 | 재스캔 주기 | 검색 소싱처 | 규모 |
 |------|------|-----------|-----------|------|
-| **hot** | 거래량 ≥ 10 | 2시간 | 8곳 전부 | ~2,000건 |
-| **warm** | 거래량 3~9 | 8시간 | 무신사+나이키+29CM+카시나+튠 | ~8,000건 |
+| **hot** | 거래량 ≥ 10 | 2시간 | 12곳 전부 | ~2,000건 |
+| **warm** | 거래량 3~9 | 8시간 | 무신사+나이키+29CM+카시나+튠+살로몬+아크테릭스 | ~8,000건 |
 | **cold** | 거래량 < 3 | 48시간 | 무신사+나이키+그랜드스테이지 | ~37,000건 |
 
 DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
@@ -53,7 +53,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링
 - `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
 
-### 크롤러 (10개 소싱처)
+### 크롤러 (12개 소싱처)
 - `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
 - `src/crawlers/twentynine_cm.py` — 29CM. 검색 API v4/products + HTML 파싱
 - `src/crawlers/nike.py` — 나이키 공식몰. `__NEXT_DATA__` JSON 파싱 (selectedProduct 구조). LAUNCH 상품 자동 스킵
@@ -63,6 +63,8 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/crawlers/tune.py` — 튠. Shopify Storefront GraphQL API (GET), variant title에서 모델번호/사이즈 파싱
 - `src/crawlers/eql.py` — EQL. 한섬 편집숍. HTML 파싱 (검색 godNm 속성 + 상세 sizeItmNm/onlineUsefulInvQty)
 - `src/crawlers/nbkorea.py` — 뉴발란스 공식몰. 카테고리 SSR 매핑 + getOtherColorOptInfo GET API
+- `src/crawlers/salomon.py` — 살로몬 공식몰. Shopify products.json REST API. SKU=크림 모델번호(L+8자리), handle 직접 조회
+- `src/crawlers/arcteryx.py` — 아크테릭스 코리아. api.arcteryx.co.kr Laravel REST API. 검색+옵션(사이즈/재고) 조합
 - `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
 
 ### 크림 데이터
@@ -106,6 +108,8 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | 튠 | 2 | 1.0초 | ~3,600건 |
 | EQL | 2 | 1.5초 | ~2,400건 |
 | 뉴발란스 | 2 | 2.0초 | ~1,800건 |
+| 살로몬 | 2 | 1.0초 | ~3,600건 |
+| 아크테릭스 | 2 | 2.0초 | ~1,800건 |
 
 ## 수수료 계산
 
@@ -223,7 +227,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 
 ### 장애 격리 (서킷브레이커)
 - `registry.py`: 연속 3회 실패 → 30분 비활성화, 자동 재활성화
-- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정)
+- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정), 살로몬(안정), 아크테릭스(안정)
 
 ## Dev Environment
 
