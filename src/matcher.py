@@ -99,6 +99,19 @@ def extract_model_from_name(name: str) -> str | None:
         candidate = m.group(1).strip()
         if re.match(r"[A-Z]{1,3}\d{3,5}[-\s]?\d{2,4}", candidate):
             return normalize_model_number(candidate)
+        # ASICS: 숫자시작 (1203A879-021)
+        if re.match(r"\d{4}[A-Z]\d{3,4}-\d{3}", candidate):
+            return normalize_model_number(candidate)
+
+    # ASICS: 숫자4자리+영문1자리+숫자3~4자리-숫자3자리 (1203A879-021, 1201A256-105)
+    m = re.search(r"\b(\d{4}[A-Z]\d{3,4}-\d{3})\b", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
+    # ASICS (구형): 영문2자리+숫자1+영문1+숫자1+영문1-숫자3 (TH7S2N-100)
+    m = re.search(r"\b([A-Z]{2}\d[A-Z]\d[A-Z]-\d{3})\b", text)
+    if m:
+        return normalize_model_number(m.group(1))
 
     # Nike/Jordan: XX1234-123
     m = re.search(r"\b([A-Z]{1,3}\d{3,5}-\d{2,4})\b", text)

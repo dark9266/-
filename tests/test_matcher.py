@@ -1,6 +1,6 @@
 """모델번호 매칭 엔진 단위 테스트."""
 
-from src.matcher import model_numbers_match, normalize_model_number
+from src.matcher import extract_model_from_name, model_numbers_match, normalize_model_number
 
 
 class TestNormalizeModelNumber:
@@ -71,3 +71,55 @@ class TestModelNumbersMatch:
     def test_nike_dunk_variants(self):
         """나이키 덩크 색상 코드가 다르면 불일치."""
         assert model_numbers_match("DQ8423-100", "DQ8423-001") is False
+
+    def test_asics_style(self):
+        """ASICS 스타일 모델번호."""
+        assert model_numbers_match("1203A879-021", "1203A879-021") is True
+        assert model_numbers_match("1203A879-021", "1203a879-021") is True
+        assert model_numbers_match("1203A879-021", "1203A879 021") is True
+
+    def test_asics_different_color(self):
+        """ASICS 색상 코드가 다르면 불일치."""
+        assert model_numbers_match("1203A879-021", "1203A879-100") is False
+
+    def test_asics_old_format(self):
+        """ASICS 구형 포맷 (Mexico 66 등)."""
+        assert model_numbers_match("TH7S2N-100", "TH7S2N-100") is True
+        assert model_numbers_match("TH7S2N-100", "TH7S2N-200") is False
+
+
+class TestExtractModelFromName:
+    def test_nike_slash(self):
+        """슬래시 뒤 나이키 모델번호."""
+        assert extract_model_from_name("덩크 로우 W - 세일:화이트 / IO4244-100") == "IO4244-100"
+
+    def test_asics_slash(self):
+        """슬래시 뒤 ASICS 모델번호."""
+        assert extract_model_from_name(
+            "젤-카야노 14 - 화이트:퓨어 골드 / 1203A879-021"
+        ) == "1203A879-021"
+
+    def test_asics_in_text(self):
+        """텍스트 내 ASICS 모델번호."""
+        assert extract_model_from_name(
+            "아식스 젤-카야노 14 1203A879-021 화이트"
+        ) == "1203A879-021"
+
+    def test_asics_nimbus(self):
+        """ASICS GEL-NIMBUS 모델번호."""
+        assert extract_model_from_name("젤-님버스 9 1201A256-105") == "1201A256-105"
+
+    def test_asics_old_format(self):
+        """ASICS 구형 포맷."""
+        assert extract_model_from_name("멕시코 66 TH7S2N-100") == "TH7S2N-100"
+
+    def test_nike_basic(self):
+        """나이키 기본."""
+        assert extract_model_from_name("나이키 덩크 로우 DQ8423-100") == "DQ8423-100"
+
+    def test_empty(self):
+        assert extract_model_from_name("") is None
+        assert extract_model_from_name(None) is None
+
+    def test_no_model(self):
+        assert extract_model_from_name("아식스 운동화") is None
