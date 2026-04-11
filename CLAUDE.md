@@ -125,7 +125,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ```
 
 ### 시그널 기준
-- STRONG_BUY: 순수익 ≥ 30,000 AND 7일 거래량 ≥ 10
+- STRONG_BUY: 순수익 ≥ 30,000 AND 7일 거래량 ≥ 5
 - BUY: 순수익 ≥ 15,000 AND 7일 거래량 ≥ 5
 - WATCH: 순수익 ≥ 5,000 AND 7일 거래량 ≥ 3
 - NOT_RECOMMENDED: 그 외

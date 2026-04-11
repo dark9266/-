@@ -74,9 +74,13 @@ class TestSignalBoundary:
     def test_profit_30001_vol10_strong_buy(self):
         assert determine_signal(30_001, 10) == Signal.STRONG_BUY
 
-    def test_profit_30000_vol9_buy(self):
-        """수익 충분하나 거래량 부족 → STRONG_BUY 아닌 BUY."""
-        assert determine_signal(30_000, 9) == Signal.BUY
+    def test_profit_30000_vol9_strong_buy(self):
+        """수익 충분 + 거래량 ≥ 5 → STRONG_BUY."""
+        assert determine_signal(30_000, 9) == Signal.STRONG_BUY
+
+    def test_profit_30000_vol4_watch(self):
+        """수익 충분하나 거래량 부족(< 5) → BUY 미달, WATCH."""
+        assert determine_signal(30_000, 4) == Signal.WATCH
 
 
 # === B. 수수료 계산 경계값 ===

@@ -34,7 +34,7 @@ class SignalThresholds(BaseSettings):
     """시그널 판정 기준."""
 
     strong_buy_profit: int = 30000  # 강력매수 순수익 기준
-    strong_buy_volume_7d: int = 10  # 강력매수 7일 거래량 기준
+    strong_buy_volume_7d: int = 5  # 강력매수 7일 거래량 기준
     buy_profit: int = 15000  # 매수 순수익 기준
     buy_volume_7d: int = 5  # 매수 7일 거래량 기준
     watch_profit: int = 5000  # 관망 순수익 기준
