@@ -18,7 +18,7 @@ ruff format src/ tests/          # 포맷
 ### 핵심 파이프라인
 
 ```
-크림 DB (47k) → 우선순위 큐 → 소싱처 14곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
+크림 DB (47k) → 우선순위 큐 → 소싱처 16곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
 ```
 
 ### 3티어 스캔 구조
@@ -38,8 +38,8 @@ ruff format src/ tests/          # 포맷
 
 | 등급 | 조건 | 재스캔 주기 | 검색 소싱처 | 규모 |
 |------|------|-----------|-----------|------|
-| **hot** | 거래량 ≥ 10 | 2시간 | 14곳 전부 | ~2,000건 |
-| **warm** | 거래량 3~9 | 8시간 | 무신사+나이키+29CM+카시나+튠+살로몬+아크테릭스+W컨셉 (8곳) | ~8,000건 |
+| **hot** | 거래량 ≥ 10 | 2시간 | 16곳 전부 | ~2,000건 |
+| **warm** | 거래량 3~9 | 8시간 | 무신사+나이키+29CM+카시나+튠+살로몬+아크테릭스+W컨셉+웍스아웃 (9곳) | ~8,000건 |
 | **cold** | 거래량 < 3 | 48시간 | 무신사+나이키+그랜드스테이지+온더스팟 (4곳) | ~37,000건 |
 
 DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
@@ -47,13 +47,13 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ## Key Modules
 
 ### 스캐너
-- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 10곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수) → 수익 분석
+- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 16곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수) → 수익 분석
 - `src/scanner.py` — 카테고리 스캔, 키워드 스캔 오케스트레이터
 - `src/tier1_scanner.py` — 워치리스트 빌더. 역방향 + 카테고리 gap 스크리닝
 - `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링
 - `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
 
-### 크롤러 (14개 소싱처)
+### 크롤러 (15개 소싱처)
 - `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
 - `src/crawlers/twentynine_cm.py` — 29CM. 검색 API v4/products + HTML 파싱
 - `src/crawlers/nike.py` — 나이키 공식몰. `__NEXT_DATA__` JSON 파싱 (selectedProduct 구조). LAUNCH 상품 자동 스킵
@@ -67,6 +67,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/crawlers/arcteryx.py` — 아크테릭스 코리아. api.arcteryx.co.kr Laravel REST API. 검색+옵션(사이즈/재고) 조합
 - `src/crawlers/vans.py` — 반스 공식몰. Topick Commerce 플랫폼. 검색 JSON API + HTML data-sku-data 사이즈별 재고 파싱
 - `src/crawlers/wconcept.py` — W컨셉. POST 검색 API (gw-front, DISPLAY-API-KEY) + GET 상세 HTML 파싱 (brazeJson/skuqty)
+- `src/crawlers/worksout.py` — 웍스아웃. REST API 검색(사이즈/재고 포함) + 상세. 모델번호 없음(역방향 이름 매칭)
 - `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
 
 ### 크림 데이터
@@ -114,6 +115,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | 아크테릭스 | 2 | 2.0초 | ~1,800건 |
 | 반스 | 2 | 1.5초 | ~2,400건 |
 | W컨셉 | 2 | 2.0초 | ~1,800건 |
+| 웍스아웃 | 2 | 2.0초 | ~1,800건 |
 
 ## 수수료 계산
 
@@ -158,7 +160,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | `/status` | DB 현황 + 워치리스트 + 최근 알림 |
 | `/queue` | 스캔 큐 현황 — priority별 분포, 적체, ETA |
 | `/trace` | 특정 모델번호 스캔 파이프라인 추적 |
-| `/health` | 소싱처 10곳 헬스체크 — 응답시간, 서킷브레이커 |
+| `/health` | 소싱처 16곳 헬스체크 — 응답시간, 서킷브레이커 |
 | `/add-source` | URL 하나로 소싱처 추가 원스텝 (탐색→구현→테스트→커밋) |
 
 ### PostToolUse 훅
@@ -234,7 +236,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 
 ### 장애 격리 (서킷브레이커)
 - `registry.py`: 연속 3회 실패 → 30분 비활성화, 자동 재활성화
-- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정), 살로몬(안정), 아크테릭스(안정), 반스(안정), W컨셉(안정)
+- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정), 살로몬(안정), 아크테릭스(안정), 반스(안정), W컨셉(안정), 웍스아웃(안정)
 
 ## Dev Environment
 
