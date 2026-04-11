@@ -281,6 +281,15 @@ class ReverseLookupScanner:
         "musinsa", "nike", "grandstage", "onthespot",
     })
 
+    # 브랜드 → 전용 소싱처 매핑 (cold에서도 브랜드 공식몰은 검색)
+    BRAND_SOURCES: dict[str, set[str]] = {
+        "Adidas": {"adidas"},
+        "New Balance": {"nbkorea"},
+        "Salomon": {"salomon"},
+        "Arc'teryx": {"arcteryx"},
+        "Vans": {"vans"},
+    }
+
     async def _search_all_sources(
         self, model_number: str, priority: str = "hot",
         product: dict | None = None,
@@ -294,7 +303,13 @@ class ReverseLookupScanner:
         if priority == "warm":
             active = {k: v for k, v in active.items() if k in self.WARM_SOURCES}
         elif priority == "cold":
-            active = {k: v for k, v in active.items() if k in self.COLD_SOURCES}
+            allowed = set(self.COLD_SOURCES)
+            # cold라도 해당 브랜드 전용 소싱처는 추가
+            if product:
+                brand = product.get("brand", "")
+                brand_extra = self.BRAND_SOURCES.get(brand, set())
+                allowed |= brand_extra
+            active = {k: v for k, v in active.items() if k in allowed}
 
         if not active:
             return {}
