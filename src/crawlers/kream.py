@@ -1069,23 +1069,87 @@ class KreamCrawler:
         empty = {"volume_7d": 0, "volume_30d": 0, "last_trade_date": None, "price_trend": ""}
         await _random_delay()
 
-        # 1차: __NUXT_DATA__에서 거래내역 추출 (API 1회로 최대한 뽑기)
-        result = await self._trades_from_nuxt(product_id)
-        if result and (result["volume_7d"] > 0 or result["volume_30d"] > 0 or result["last_trade_date"]):
-            return result
+        # 1차: __NUXT_DATA__에서 거래내역 추출
+        nuxt_result = await self._trades_from_nuxt(product_id)
 
-        # 2차: API 폴백 (NUXT 실패 시만, 1개 엔드포인트만 시도)
-        data = await self._request(
-            "GET", f"/api/p/e/products/{product_id}/sales",
-            params={"cursor": 0, "per_page": 50},
-            max_retries=1,
+        # pinia sales.items는 최근 5건 미리보기 → volume_7d 캡 발생
+        # volume이 pinia 아이템 수와 같으면(캡 의심) API로 정확한 수치 확보
+        pinia_capped = (
+            nuxt_result
+            and nuxt_result.get("_pinia_items_count", 0) > 0
+            and nuxt_result["volume_7d"] >= nuxt_result["_pinia_items_count"]
         )
-        if data:
-            result = self._parse_trade_data(data, product_id)
-            if result["volume_7d"] > 0 or result["volume_30d"] > 0 or result["last_trade_date"]:
-                return result
+
+        if nuxt_result and not pinia_capped:
+            nuxt_result.pop("_pinia_items_count", None)
+            if nuxt_result["volume_7d"] > 0 or nuxt_result["volume_30d"] > 0 or nuxt_result["last_trade_date"]:
+                return nuxt_result
+
+        # 2차: API로 정확한 거래량 수집 (per_page 200으로 30일치 충분히 확보)
+        api_result = await self._trades_from_api(product_id)
+        if api_result and (api_result["volume_7d"] > 0 or api_result["volume_30d"] > 0):
+            return api_result
+
+        # API 실패 시 pinia 결과라도 반환
+        if nuxt_result:
+            nuxt_result.pop("_pinia_items_count", None)
+            if nuxt_result["volume_7d"] > 0 or nuxt_result["volume_30d"] > 0 or nuxt_result["last_trade_date"]:
+                return nuxt_result
 
         return empty
+
+    async def _trades_from_api(self, product_id: str) -> dict | None:
+        """sales API로 정확한 거래량 수집. 커서 페이지네이션으로 30일치 확보."""
+        all_items = []
+        cursor = 0
+        max_pages = 5  # 최대 5페이지 (1,000건) — 30일치 충분
+
+        for _ in range(max_pages):
+            await _random_delay()
+            data = await self._request(
+                "GET", f"/api/p/e/products/{product_id}/sales",
+                params={"cursor": cursor, "per_page": 200},
+                max_retries=1,
+            )
+            if not data:
+                break
+
+            items = self._unwrap_list(data)
+            if items is None or not items:
+                break
+
+            all_items.extend(items)
+
+            # 마지막 항목이 30일 이전이면 더 이상 페이지네이션 불필요
+            last_item = items[-1] if items else None
+            if last_item and isinstance(last_item, dict):
+                date_str = str(
+                    last_item.get("date") or last_item.get("created_at")
+                    or last_item.get("date_created") or ""
+                )
+                last_date = self._parse_date(date_str)
+                if last_date and (datetime.now() - last_date).days > 30:
+                    break
+
+            # 다음 커서
+            if isinstance(data, dict) and "cursor" in data:
+                next_cursor = data["cursor"]
+                if next_cursor and next_cursor != cursor:
+                    cursor = next_cursor
+                else:
+                    break
+            else:
+                break
+
+        if not all_items:
+            return None
+
+        result = self._calculate_trade_stats(all_items, product_id)
+        logger.info(
+            "거래내역 (%s): [API] 7일=%d, 30일=%d (총 %d건 수집)",
+            product_id, result["volume_7d"], result["volume_30d"], len(all_items),
+        )
+        return result
 
     async def _trades_from_nuxt(self, product_id: str) -> dict | None:
         """상품 페이지 __NUXT_DATA__에서 거래 내역 추출."""
@@ -1169,7 +1233,12 @@ class KreamCrawler:
             return None
 
         result = self._calculate_trade_stats(trades_for_stats, product_id)
-        logger.info("거래내역 (%s): [pinia] 7일=%d, 30일=%d", product_id, result["volume_7d"], result["volume_30d"])
+        # pinia 아이템 수 전달 — 캡 감지용 (get_trade_history에서 사용)
+        result["_pinia_items_count"] = len(trades_for_stats)
+        logger.info(
+            "거래내역 (%s): [pinia] 7일=%d, 30일=%d (items=%d)",
+            product_id, result["volume_7d"], result["volume_30d"], len(trades_for_stats),
+        )
         return result
 
     def _parse_trade_data(self, data: dict, product_id: str) -> dict:
