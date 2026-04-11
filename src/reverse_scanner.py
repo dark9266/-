@@ -538,7 +538,7 @@ class ReverseLookupScanner:
                 "척": "chuck", "테일러": "taylor", "뮬": "mule",
                 "슬라이드": "slide", "샥스": "shox", "줌": "zoom",
                 "플라이": "fly", "코르테즈": "cortez", "블레이저": "blazer",
-                "레트로": "retro", "오리지널": "og",
+                "레트로": "retro", "오리지널": "og", "프리미엄": "premium",
                 "로우": "low", "하이": "high", "미드": "mid",
             }
 
@@ -551,7 +551,7 @@ class ReverseLookupScanner:
             item_keywords = set(re.findall(r"[a-z0-9]+", item_name))
 
             # 불용어 제거
-            stopwords = {"the", "a", "an", "and", "or", "x", "sp", "qs", "se"}
+            stopwords = {"the", "a", "an", "and", "or", "x", "sp"}
             kream_en_keywords -= stopwords
             item_keywords -= stopwords
 
@@ -568,6 +568,35 @@ class ReverseLookupScanner:
                             kream_name[:40], item_name[:40],
                         )
                         continue
+
+                # 4. 서브타입 불일치 검증: 소싱에만 있는 중요 키워드 → 다른 상품
+                #    (소싱=PRM QS인데 크림=일반 '07 → 차단)
+                #    크림에만 있는 건 허용 (크림 상품명이 더 상세할 수 있음)
+                subtype_keywords = {
+                    "prm", "premium", "qs", "retro", "se", "craft",
+                    "next", "nature", "lx", "flyknit", "react",
+                    "gore", "tex", "goretex", "acg",
+                }
+                # 동의어 정규화: prm→premium
+                subtype_aliases = {"prm": "premium"}
+                def _normalize_subtypes(kws):
+                    result = set()
+                    for kw in kws:
+                        result.add(subtype_aliases.get(kw, kw))
+                    return result
+
+                kream_subtypes = _normalize_subtypes(kream_en_keywords & subtype_keywords)
+                item_subtypes = _normalize_subtypes(item_keywords & subtype_keywords)
+                # 소싱에만 있는 서브타입 → 다른 상품 (크림=일반, 소싱=특별판)
+                only_item = item_subtypes - kream_subtypes
+                if only_item:
+                    logger.debug(
+                        "서브타입 불일치 차단: 크림='%s' ↔ 소싱='%s' "
+                        "(소싱only=%s)",
+                        kream_name[:40], item_name[:40], only_item,
+                    )
+                    continue
+
                 verified.append(item)
                 logger.debug(
                     "이름 매칭 성공: 크림='%s' ↔ 소싱='%s' (겹침: %s)",
