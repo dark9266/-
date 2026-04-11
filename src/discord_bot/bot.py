@@ -170,7 +170,7 @@ class KreamBot(commands.Bot):
             alert_type="profit",
             signal=opportunity.signal.value,
             best_profit=opportunity.best_profit,
-            cooldown_hours=1,
+            cooldown_hours=6,
         )
         if not should_send:
             return
@@ -212,7 +212,7 @@ class KreamBot(commands.Bot):
                 alert_type="price_change",
                 signal=product_changes[0].new_signal.value if hasattr(product_changes[0].new_signal, 'value') else str(product_changes[0].new_signal),
                 best_profit=max_profit_diff,
-                cooldown_hours=1,
+                cooldown_hours=6,
             )
             if should_send:
                 filtered_changes.extend(product_changes)
@@ -285,7 +285,7 @@ class KreamBot(commands.Bot):
             alert_type="auto_scan",
             signal="확정" if opportunity.best_confirmed_roi >= 5 else "예상",
             best_profit=best_profit,
-            cooldown_hours=1,
+            cooldown_hours=6,
         )
         if not should_send:
             logger.debug("중복 알림 스킵: %s", product_name)
