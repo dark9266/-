@@ -25,7 +25,7 @@ ruff format src/ tests/          # 포맷
 
 | 티어 | 주기 | 역할 | 모듈 |
 |------|------|------|------|
-| **Tier 0** | 5분/50건 | 연속 배치 스캔 — 47k 전체 순환 | `src/continuous_scanner.py` |
+| **Tier 0** | 5분/20건 | 연속 배치 스캔 — 47k 전체 순환 | `src/continuous_scanner.py` |
 | **Tier 1** | 30분 | 긴급 스캔 — hot 50건 역방향 + 카테고리 신상품 | `src/tier1_scanner.py` |
 | **Tier 2** | 60초 | 실시간 폴링 — watchlist 크림 시세 감시 | `src/tier2_monitor.py` |
 
@@ -47,13 +47,13 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ## Key Modules
 
 ### 스캐너
-- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 16곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수) → 수익 분석
+- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 16곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수) → 수익 분석. 웍스아웃 등 모델번호 없는 소싱처는 이름 매칭(한→영 변환+키워드 교차)
 - `src/scanner.py` — 카테고리 스캔, 키워드 스캔 오케스트레이터
 - `src/tier1_scanner.py` — 워치리스트 빌더. 역방향 + 카테고리 gap 스크리닝
 - `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링
 - `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
 
-### 크롤러 (15개 소싱처)
+### 크롤러 (16개 소싱처)
 - `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
 - `src/crawlers/twentynine_cm.py` — 29CM. 검색 API v4/products + HTML 파싱
 - `src/crawlers/nike.py` — 나이키 공식몰. `__NEXT_DATA__` JSON 파싱 (selectedProduct 구조). LAUNCH 상품 자동 스킵
@@ -73,8 +73,8 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ### 크림 데이터
 - `src/crawlers/kream.py` — Nuxt `__NUXT_DATA__` 파싱 (sizes, prices, trade volume)
 - `src/kream_realtime/collector.py` — 신규 상품 자동 수집 (6시간 주기)
-- `src/kream_realtime/price_refresher.py` — 우선순위 시세 갱신 (hot 30분/cold 6시간)
-- `src/kream_realtime/volume_spike_detector.py` — 거래량 급등 감지 (2배 이상 → hot 승격)
+- `src/kream_realtime/price_refresher.py` — hot 전용 시세 갱신 (30분 주기). 3회 연속 실패 → cold 강등 (refresh_fail_count)
+- `src/kream_realtime/volume_spike_detector.py` — 거래량 급등 감지 (2배 이상 → hot 승격). 체크 시 volume_7d+refresh_tier+scan_priority 모두 갱신
 
 ### 매칭/수익
 - `src/matcher.py` — 모델번호 정규화 + exact match. fuzzy 없음
@@ -86,7 +86,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/watchlist.py` — watchlist.json 기반 모니터링 대상
 - `src/models/database.py` — Async SQLite (aiosqlite)
 - `src/config.py` — Pydantic BaseSettings, `.env` 로드
-- `src/discord_bot/bot.py` — 슬래시 명령, embed 알림, 1시간 중복 알림 방지
+- `src/discord_bot/bot.py` — 슬래시 명령, embed 알림, 6시간 중복 알림 방지 (시그널 업그레이드/수익 20%↑ 시 재전송)
 
 ## 크림 API (GET 전용)
 
@@ -194,9 +194,10 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - API 호출 간 최소 1~2초 딜레이
 
 ### 크롤링 안전
-- 크림: Hidden API, 429 → 30초 대기 재시도
+- 크림: Hidden API, 429 → 30초 대기 재시도. 500 에러 시 서버 장애 → 재시도 후 포기
+- 크림 API 호출 최소화: NUXT 우선 → API 1회 fallback, cold tier 시세 조회 스킵
 - 무신사: API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
-- 47k 전체 시세 갱신 절대 금지 — 매칭 성공 상품만 갱신
+- 47k 전체 시세 갱신 절대 금지 — hot tier만 price_refresher, cold는 연속 스캔 시 즉석 조회
 
 ### 데이터 처리
 - 사이즈 파싱: `isinstance(data, dict)` 체크 필수
