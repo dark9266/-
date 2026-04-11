@@ -237,11 +237,11 @@ class ReverseLookupScanner:
 
     # 우선순위별 소싱처 제한 (hot은 전체, warm/cold는 주요 소싱처만)
     WARM_SOURCES = frozenset({
-        "musinsa", "nike", "twentynine_cm", "kasina", "tune",
+        "musinsa", "nike", "29cm", "kasina", "tune",
         "salomon", "arcteryx", "wconcept",
     })
     COLD_SOURCES = frozenset({
-        "musinsa", "nike", "abcmart_grandstage", "abcmart_onthespot",
+        "musinsa", "nike", "grandstage", "onthespot",
     })
 
     async def _search_all_sources(
