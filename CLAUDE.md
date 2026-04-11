@@ -38,8 +38,8 @@ ruff format src/ tests/          # 포맷
 
 | 등급 | 조건 | 재스캔 주기 | 검색 소싱처 | 규모 |
 |------|------|-----------|-----------|------|
-| **hot** | 거래량 ≥ 10 | 2시간 | 16곳 전부 | ~2,000건 |
-| **warm** | 거래량 3~9 | 8시간 | 무신사+나이키+29CM+카시나+튠+살로몬+아크테릭스+W컨셉+웍스아웃 (9곳) | ~8,000건 |
+| **hot** | 거래량 ≥ 5 | 2시간 | 16곳 전부 | ~130건 |
+| **warm** | 거래량 3~4 | 8시간 | 무신사+나이키+29CM+카시나+튠+살로몬+아크테릭스+W컨셉+웍스아웃 (9곳) | ~16건 |
 | **cold** | 거래량 < 3 | 48시간 | 무신사+나이키+그랜드스테이지+온더스팟 (4곳) | ~37,000건 |
 
 DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
@@ -195,7 +195,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 
 ### 크롤링 안전
 - 크림: Hidden API, 429 → 30초 대기 재시도. 500 에러 시 서버 장애 → 재시도 후 포기
-- 크림 API 호출 최소화: NUXT 우선 → API 1회 fallback, cold tier 시세 조회 스킵
+- 크림 API 호출 최소화: NUXT 우선 → API 1회 fallback, cold는 경량 options/display API만 사용
 - 무신사: API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
 - 47k 전체 시세 갱신 절대 금지 — hot tier만 price_refresher, cold는 연속 스캔 시 즉석 조회
 
