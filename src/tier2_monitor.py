@@ -99,7 +99,7 @@ class Tier2Monitor:
                     obj.get(attr, default) if isinstance(obj, dict) else default
                 )
 
-            # 최저 즉시구매가 업데이트
+            # 최저 즉시구매가 업데이트 (시세 추적용)
             buy_prices = [
                 _get(sp, "buy_now_price")
                 for sp in sizes if _get(sp, "buy_now_price") > 0
@@ -108,40 +108,42 @@ class Tier2Monitor:
                 min_price = min(buy_prices)
                 self.watchlist.update_kream_price(item.model_number, min_price)
 
-            # 사이즈별 수익 계산
+            # 사이즈별 수익 계산 — sell_now_price(즉시판매가) 기준
+            # 차익거래: 소싱처 구매 → 크림 판매이므로 sell_now가 실제 수령 금액
             best_profit = 0
             best_roi = 0.0
             profitable_sizes: list[AutoScanSizeProfit] = []
 
             for size_data in sizes:
-                kream_price = _get(size_data, "buy_now_price")
-                if not kream_price or kream_price <= 0:
+                # ★ sell_now_price 사용 (역방향 스캐너와 동일 기준)
+                sell_price = _get(size_data, "sell_now_price")
+                if not sell_price or sell_price <= 0:
                     continue
 
                 size_name = _get(size_data, "size", "?") or "?"
-                fees = calculate_kream_fees(kream_price)
+                fees = calculate_kream_fees(sell_price)
                 retail_price = (
                     item.source_price if item.source_price > 0 else item.musinsa_price
                 )
                 # 이상 시세 필터: 크림가가 소싱가 5배 이상이면 오매칭 의심
-                if retail_price > 0 and kream_price > retail_price * 5:
+                if retail_price > 0 and sell_price > retail_price * 5:
                     continue
-                net_profit = kream_price - fees["total_fees"] - retail_price
+                net_profit = sell_price - fees["total_fees"] - retail_price
                 roi = (net_profit / retail_price * 100) if retail_price > 0 else 0
 
                 if net_profit > best_profit:
                     best_profit = net_profit
                     best_roi = roi
 
-                # ROI 200% 이상은 오매칭 의심 → 알림 제외
-                if roi > 200:
+                # ROI 100% 이상은 오매칭 의심 → 알림 제외
+                if roi > 100:
                     continue
 
                 if net_profit >= settings.alert_min_profit and roi >= settings.alert_min_roi:
                     profitable_sizes.append(AutoScanSizeProfit(
                         size=str(size_name),
                         musinsa_price=retail_price,
-                        kream_bid_price=kream_price,
+                        kream_bid_price=sell_price,
                         confirmed_profit=net_profit,
                         confirmed_roi=round(roi, 1),
                     ))
