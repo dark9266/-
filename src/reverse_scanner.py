@@ -178,9 +178,10 @@ class ReverseLookupScanner:
     async def _process_hot_product(
         self, product: dict, result: ReverseLookupResult,
     ) -> AutoScanOpportunity | None:
-        """hot 상품 하나 처리: 소싱처 5곳 검색 → 수익 분석."""
+        """상품 하나 처리: 소싱처 검색 → 수익 분석. priority별 소싱처 수 차등."""
         model_number = product["model_number"]
         normalized = normalize_model_number(model_number)
+        priority = product.get("scan_priority", "hot")
 
         result.searched += 1
 
@@ -199,8 +200,8 @@ class ReverseLookupScanner:
             )
             return None
 
-        # 소싱처 5곳 병렬 검색
-        source_results = await self._search_all_sources(normalized)
+        # 소싱처 병렬 검색 (priority별 소싱처 수 차등)
+        source_results = await self._search_all_sources(normalized, priority)
 
         if not source_results:
             # 캐시 기록 (소싱처 미발견)
@@ -234,11 +235,29 @@ class ReverseLookupScanner:
 
         return opportunity
 
+    # 우선순위별 소싱처 제한 (hot은 전체, warm/cold는 주요 소싱처만)
+    WARM_SOURCES = frozenset({
+        "musinsa", "nike", "twentynine_cm", "kasina", "tune",
+        "salomon", "arcteryx", "wconcept",
+    })
+    COLD_SOURCES = frozenset({
+        "musinsa", "nike", "abcmart_grandstage", "abcmart_onthespot",
+    })
+
     async def _search_all_sources(
-        self, model_number: str,
+        self, model_number: str, priority: str = "hot",
     ) -> dict[str, list[dict]]:
-        """활성 소싱처 5곳에서 모델번호 검색."""
+        """활성 소싱처에서 모델번호 검색. priority에 따라 소싱처 수 제한."""
         active = get_active()
+        if not active:
+            return {}
+
+        # warm/cold는 소싱처 제한 (API 호출 절약)
+        if priority == "warm":
+            active = {k: v for k, v in active.items() if k in self.WARM_SOURCES}
+        elif priority == "cold":
+            active = {k: v for k, v in active.items() if k in self.COLD_SOURCES}
+
         if not active:
             return {}
 
