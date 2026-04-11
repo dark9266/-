@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from src.config import settings
+from src.crawlers.kream import kream_crawler
 from src.crawlers.registry import get_active, record_failure, record_success
 from src.matcher import model_numbers_match, normalize_model_number
 from src.models.database import Database
@@ -193,11 +194,26 @@ class ReverseLookupScanner:
         kream_product = self._build_kream_product(product)
 
         if not kream_product.size_prices:
+            # 시세 미수집 → 크림 API로 즉석 조회
+            try:
+                full_info = await kream_crawler.get_full_product_info(product["product_id"])
+                if full_info and full_info.size_prices:
+                    for sp in full_info.size_prices:
+                        await self.db.db.execute(
+                            """INSERT INTO kream_price_history
+                            (product_id, size, sell_now_price, buy_now_price, bid_count, last_sale_price)
+                            VALUES (?, ?, ?, ?, ?, ?)""",
+                            (product["product_id"], sp.size, sp.sell_now_price,
+                             sp.buy_now_price, sp.bid_count or 0, sp.last_sale_price),
+                        )
+                    await self.db.db.commit()
+                    kream_product = self._build_kream_from_full(full_info, product)
+                    logger.debug("시세 즉석 조회 성공: %s (%d사이즈)", kream_product.name[:30], len(kream_product.size_prices))
+            except Exception as e:
+                logger.debug("시세 즉석 조회 실패 (%s): %s", product["product_id"], e)
+
+        if not kream_product.size_prices:
             result.no_prices += 1
-            logger.debug(
-                "시세 미수집 탈락: %s [%s] — kream_price_history 없음",
-                kream_product.name[:30], normalized,
-            )
             return None
 
         # 소싱처 병렬 검색 (priority별 소싱처 수 차등)
@@ -210,6 +226,22 @@ class ReverseLookupScanner:
             return None
 
         result.sourced += 1
+
+        # 매칭된 소싱처 상품을 retail_products 테이블에 저장
+        for src_key, items in source_results.items():
+            for item in items:
+                try:
+                    await self.db.upsert_retail_product(
+                        source=src_key,
+                        product_id=str(item.get("product_id", "")),
+                        name=item.get("name", ""),
+                        model_number=item.get("model_number", normalized),
+                        brand=item.get("brand", ""),
+                        url=item.get("url", ""),
+                        image_url=item.get("image_url", ""),
+                    )
+                except Exception as e:
+                    logger.debug("retail_products 저장 실패 (%s): %s", src_key, e)
 
         # 소싱처별 최저 사이즈 가격 맵 구축
         best_sizes, best_source_prices, best_source_urls = self._build_best_size_map(
@@ -347,6 +379,21 @@ class ReverseLookupScanner:
                         "%s 상세 조회 실패: %s — %s",
                         active[key]["label"], pid, e,
                     )
+
+    def _build_kream_from_full(self, full_info: KreamProduct, product: dict) -> KreamProduct:
+        """get_full_product_info 결과를 KreamProduct로 변환."""
+        return KreamProduct(
+            product_id=product["product_id"],
+            name=full_info.name or product["name"],
+            model_number=full_info.model_number or product["model_number"],
+            brand=full_info.brand or product.get("brand", ""),
+            category=product.get("category", "sneakers"),
+            image_url=full_info.image_url or product.get("image_url", ""),
+            url=full_info.url or product.get("url", ""),
+            size_prices=full_info.size_prices,
+            volume_7d=full_info.volume_7d or product.get("volume_7d", 0),
+            volume_30d=full_info.volume_30d or product.get("volume_30d", 0),
+        )
 
     def _build_kream_product(self, product: dict) -> KreamProduct:
         """DB 조회 결과를 KreamProduct로 변환."""
