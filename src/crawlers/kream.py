@@ -525,24 +525,59 @@ class KreamCrawler:
         return results[:20]
 
     async def _search_via_html_links(self, keyword: str) -> list[dict]:
-        """HTML에서 /products/{id} 링크를 직접 추출 (최후의 수단)."""
+        """HTML에서 product_card + img alt로 상품 목록 추출 (최후의 수단)."""
         url = f"{KREAM_BASE}/search?keyword={keyword}&tab=products"
         html = await self._request("GET", url, parse_json=False)
         if not html:
             return []
 
+        # data-sdui-id="product_card/{id}" 블록 → img alt에서 상품명 추출
         results = []
         seen = set()
-        for match in re.finditer(r'/products/(\d+)', html):
+        cards = list(re.finditer(r'data-sdui-id="product_card/(\d+)"', html))
+        for i, match in enumerate(cards):
             pid = match.group(1)
-            if pid not in seen:
-                seen.add(pid)
-                results.append({
-                    "product_id": pid,
-                    "name": "",
-                    "brand": "",
-                    "url": f"{KREAM_BASE}/products/{pid}",
-                })
+            if pid in seen:
+                continue
+            seen.add(pid)
+
+            # 다음 카드까지의 블록 (마지막이면 3000자)
+            end = cards[i + 1].start() if i + 1 < len(cards) else match.end() + 3000
+            block = html[match.end():min(end, len(html))]
+
+            # img alt="상품명(English Name)"
+            name = ""
+            alt_m = re.search(r'alt="([^"]+)"', block)
+            if alt_m:
+                name = alt_m.group(1)
+
+            # 이미지 URL
+            image_url = ""
+            src_m = re.search(r'srcset="([^"?\s]+)', block)
+            if src_m:
+                image_url = src_m.group(1)
+
+            results.append({
+                "product_id": pid,
+                "name": name,
+                "brand": "",
+                "image_url": image_url,
+                "url": f"{KREAM_BASE}/products/{pid}",
+            })
+
+        # product_card 패턴 실패 시 기본 링크 추출 폴백
+        if not results:
+            for match in re.finditer(r'/products/(\d+)', html):
+                pid = match.group(1)
+                if pid not in seen:
+                    seen.add(pid)
+                    results.append({
+                        "product_id": pid,
+                        "name": "",
+                        "brand": "",
+                        "url": f"{KREAM_BASE}/products/{pid}",
+                    })
+
         logger.info("크림 검색 '%s': %d건 (HTML 링크)", keyword, len(results[:20]))
         return results[:20]
 
@@ -607,19 +642,29 @@ class KreamCrawler:
         """상품 상세 정보 수집.
 
         1차: 상품 페이지 __NUXT_DATA__ 파싱
-        2차: 상품 API 호출
-        3차: HTML 메타 태그 (최후의 수단)
+        2차: HTML 메타 태그 (최후의 수단)
+        3차: options/display API로 시세 보충
         """
         await _random_delay()
 
         # 1차: HTML → __NUXT_DATA__
         product = await self._detail_via_nuxt(product_id)
-        if product:
-            return product
+        if not product:
+            # 2차: 메타 태그
+            logger.info("상세 폴백(메타): %s", product_id)
+            product = await self._detail_via_meta(product_id)
 
-        # 2차: 메타 태그
-        logger.info("상세 폴백(메타): %s", product_id)
-        return await self._detail_via_meta(product_id)
+        if not product:
+            return None
+
+        # 3차: 시세 미확보 시 options/display API 보충
+        if not product.size_prices:
+            api_prices = await self._fetch_options_display(product_id)
+            if api_prices:
+                product.size_prices = api_prices
+                logger.info("상세 시세 보충: %d건 (%s)", len(api_prices), product_id)
+
+        return product
 
     async def _detail_via_nuxt(self, product_id: str) -> KreamProduct | None:
         """상품 페이지의 __NUXT_DATA__에서 상세 정보 추출."""
