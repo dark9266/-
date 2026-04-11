@@ -289,12 +289,16 @@ class ReverseLookupScanner:
 
             record_success(key)
 
-            # 모델번호 재검증: 검색 결과 중 정확 매칭만 필터
+            # 모델번호 재검증: 검색 결과 중 정확 매칭 + 품절 아닌 것만 필터
             verified = []
             for item in raw:
                 item_model = item.get("model_number", "")
-                if item_model and model_numbers_match(item_model, model_number):
-                    verified.append(item)
+                if not item_model or not model_numbers_match(item_model, model_number):
+                    continue
+                if item.get("is_sold_out"):
+                    logger.debug("품절 제외: %s (%s)", item_model, key)
+                    continue
+                verified.append(item)
 
             if verified:
                 source_results[key] = verified
@@ -401,8 +405,8 @@ class ReverseLookupScanner:
                         current = best_sizes.get(norm_size)
                         if current is None or s_price < current[0]:
                             best_sizes[norm_size] = (s_price, source_key, item_url)
-                elif item_price > 0:
-                    # 사이즈 정보 없이 단일 가격만 있는 경우
+                elif item_price > 0 and not item.get("is_sold_out"):
+                    # 사이즈 정보 없이 단일 가격만 있는 경우 (품절 아닌 것만)
                     current = best_sizes.get("ONE_SIZE")
                     if current is None or item_price < current[0]:
                         best_sizes["ONE_SIZE"] = (item_price, source_key, item_url)
