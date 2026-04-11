@@ -217,7 +217,9 @@ class ReverseLookupScanner:
             return None
 
         # 소싱처 병렬 검색 (priority별 소싱처 수 차등)
-        source_results = await self._search_all_sources(normalized, priority)
+        source_results = await self._search_all_sources(
+            normalized, priority, product=product,
+        )
 
         if not source_results:
             # 캐시 기록 (소싱처 미발견)
@@ -268,9 +270,12 @@ class ReverseLookupScanner:
         return opportunity
 
     # 우선순위별 소싱처 제한 (hot은 전체, warm/cold는 주요 소싱처만)
+    # 이름 기반 매칭 소싱처 (모델번호 없는 편집숍)
+    NAME_MATCH_SOURCES = frozenset({"worksout"})
+
     WARM_SOURCES = frozenset({
         "musinsa", "nike", "29cm", "kasina", "tune",
-        "salomon", "arcteryx", "wconcept",
+        "salomon", "arcteryx", "wconcept", "worksout",
     })
     COLD_SOURCES = frozenset({
         "musinsa", "nike", "grandstage", "onthespot",
@@ -278,6 +283,7 @@ class ReverseLookupScanner:
 
     async def _search_all_sources(
         self, model_number: str, priority: str = "hot",
+        product: dict | None = None,
     ) -> dict[str, list[dict]]:
         """활성 소싱처에서 모델번호 검색. priority에 따라 소싱처 수 제한."""
         active = get_active()
@@ -293,14 +299,34 @@ class ReverseLookupScanner:
         if not active:
             return {}
 
+        # 이름 매칭 소싱처는 크림 상품명으로 검색 키워드 생성
+        name_keyword = ""
+        kream_brand = ""
+        kream_name = ""
+        if product:
+            kream_name = product.get("name", "")
+            kream_brand = product.get("brand", "")
+            name_keyword = self._extract_search_keyword(kream_name, kream_brand)
+
         search_tasks = {}
         for key, info in active.items():
-            try:
-                search_tasks[key] = info["crawler"].search_products(
-                    model_number, limit=5,
-                )
-            except TypeError:
-                search_tasks[key] = info["crawler"].search_products(model_number)
+            if key in self.NAME_MATCH_SOURCES:
+                # 이름 매칭 소싱처: 크림 상품명에서 추출한 키워드로 검색
+                if not name_keyword:
+                    continue
+                try:
+                    search_tasks[key] = info["crawler"].search_products(
+                        name_keyword, limit=10,
+                    )
+                except TypeError:
+                    search_tasks[key] = info["crawler"].search_products(name_keyword)
+            else:
+                try:
+                    search_tasks[key] = info["crawler"].search_products(
+                        model_number, limit=5,
+                    )
+                except TypeError:
+                    search_tasks[key] = info["crawler"].search_products(model_number)
 
         if not search_tasks:
             return {}
@@ -321,16 +347,20 @@ class ReverseLookupScanner:
 
             record_success(key)
 
-            # 모델번호 재검증: 검색 결과 중 정확 매칭 + 품절 아닌 것만 필터
-            verified = []
-            for item in raw:
-                item_model = item.get("model_number", "")
-                if not item_model or not model_numbers_match(item_model, model_number):
-                    continue
-                if item.get("is_sold_out"):
-                    logger.debug("품절 제외: %s (%s)", item_model, key)
-                    continue
-                verified.append(item)
+            if key in self.NAME_MATCH_SOURCES:
+                # 이름 매칭: 브랜드 + 상품명 키워드 검증
+                verified = self._verify_name_match(raw, kream_name, kream_brand)
+            else:
+                # 모델번호 재검증: 검색 결과 중 정확 매칭 + 품절 아닌 것만 필터
+                verified = []
+                for item in raw:
+                    item_model = item.get("model_number", "")
+                    if not item_model or not model_numbers_match(item_model, model_number):
+                        continue
+                    if item.get("is_sold_out"):
+                        logger.debug("품절 제외: %s (%s)", item_model, key)
+                        continue
+                    verified.append(item)
 
             if verified:
                 source_results[key] = verified
@@ -348,6 +378,144 @@ class ReverseLookupScanner:
                 del source_results[key]
 
         return source_results
+
+    def _extract_search_keyword(self, kream_name: str, brand: str = "") -> str:
+        """크림 상품명에서 소싱처 검색용 키워드 추출.
+
+        예: "나이키 덩크 로우 레트로 블랙 화이트" → "dunk low"
+            "(W) 나이키 에어포스 1 '07 로우 화이트" → "air force 1"
+        """
+        if not kream_name:
+            return ""
+
+        name = kream_name.strip()
+
+        # (W), (GS) 등 성별/사이즈 태그 제거
+        import re
+        name = re.sub(r"\([A-Z]+\)\s*", "", name)
+
+        # 브랜드명 제거 (한국어/영어 모두)
+        brand_removals = [
+            "나이키", "아디다스", "뉴발란스", "아식스", "푸마", "컨버스",
+            "반스", "리복", "조던", "살로몬", "호카", "온러닝",
+            "Nike", "Adidas", "New Balance", "Asics", "Puma", "Converse",
+            "Vans", "Reebok", "Jordan", "Salomon", "Hoka", "On Running",
+        ]
+        if brand:
+            brand_removals.append(brand)
+
+        for b in brand_removals:
+            name = name.replace(b, "").strip()
+
+        # 한국어 → 영문 모델명 매핑 (주요 모델)
+        kr_to_en = {
+            "덩크 로우": "dunk low", "덩크 하이": "dunk high",
+            "에어포스 1": "air force 1", "에어포스1": "air force 1",
+            "에어맥스": "air max", "에어 맥스": "air max",
+            "에어 조던": "air jordan",
+            "젤 카야노": "gel kayano", "젤카야노": "gel kayano",
+            "삼바": "samba", "가젤": "gazelle", "캠퍼스": "campus",
+            "올드스쿨": "old skool",
+            "척 테일러": "chuck taylor", "척테일러": "chuck taylor",
+            "클라우드몬스터": "cloudmonster",
+        }
+
+        for kr, en in kr_to_en.items():
+            if kr in name:
+                return en
+
+        # 영문 부분만 추출
+        en_parts = re.findall(r"[A-Za-z0-9][\w'-]*", name)
+        if en_parts:
+            return " ".join(en_parts[:3])
+
+        # 한국어만 남은 경우 첫 2~3단어
+        words = name.split()[:3]
+        return " ".join(words) if words else ""
+
+    def _verify_name_match(
+        self, items: list[dict], kream_name: str, kream_brand: str,
+    ) -> list[dict]:
+        """이름 기반 매칭 검증: 브랜드 일치 + 모델명 키워드 교차."""
+        if not kream_name:
+            return []
+
+        kream_lower = kream_name.lower()
+        kream_brand_lower = kream_brand.lower() if kream_brand else ""
+
+        # 브랜드명 정규화 매핑
+        brand_aliases = {
+            "나이키": "nike", "아디다스": "adidas", "뉴발란스": "new balance",
+            "아식스": "asics", "푸마": "puma", "컨버스": "converse",
+            "반스": "vans", "리복": "reebok", "조던": "jordan",
+            "살로몬": "salomon", "호카": "hoka", "온러닝": "on",
+        }
+        # 크림 이름에서 브랜드 추출
+        kream_brand_en = kream_brand_lower
+        for kr, en in brand_aliases.items():
+            if kr in kream_lower:
+                kream_brand_en = en
+                break
+
+        verified = []
+        for item in items:
+            if item.get("is_sold_out"):
+                continue
+
+            item_brand = (item.get("brand") or "").lower()
+
+            # 1. 브랜드 검증
+            if kream_brand_en and item_brand:
+                # jordan은 nike 산하
+                brand_ok = (
+                    kream_brand_en in item_brand
+                    or item_brand in kream_brand_en
+                    or (kream_brand_en == "jordan" and item_brand == "nike")
+                    or (kream_brand_en == "nike" and item_brand == "jordan")
+                )
+                if not brand_ok:
+                    continue
+
+            item_name = (item.get("name") or "").lower()
+
+            # 2. 이름 키워드 교차 매칭
+            #    크림 한국어명을 영문으로 변환 후 비교
+            import re
+            kr_to_en_words = {
+                "덩크": "dunk", "에어포스": "force", "에어맥스": "max",
+                "조던": "jordan", "삼바": "samba", "가젤": "gazelle",
+                "카야노": "kayano", "젤": "gel", "올드스쿨": "skool",
+                "클라우드": "cloud", "캠퍼스": "campus", "포럼": "forum",
+                "슈퍼스타": "superstar", "스탠스미스": "smith",
+                "척": "chuck", "테일러": "taylor", "뮬": "mule",
+                "슬라이드": "slide", "샥스": "shox", "줌": "zoom",
+                "플라이": "fly", "코르테즈": "cortez", "블레이저": "blazer",
+                "레트로": "retro", "오리지널": "og",
+                "로우": "low", "하이": "high", "미드": "mid",
+            }
+
+            # 크림 이름에서 영문 키워드 추출 (한국어→영문 변환 포함)
+            kream_en_keywords = set(re.findall(r"[a-z0-9]+", kream_lower))
+            for kr, en in kr_to_en_words.items():
+                if kr in kream_lower:
+                    kream_en_keywords.add(en)
+
+            item_keywords = set(re.findall(r"[a-z0-9]+", item_name))
+
+            # 불용어 제거
+            stopwords = {"the", "a", "an", "and", "or", "x", "sp", "qs", "se"}
+            kream_en_keywords -= stopwords
+            item_keywords -= stopwords
+
+            overlap = kream_en_keywords & item_keywords
+            if len(overlap) >= 2:
+                verified.append(item)
+                logger.debug(
+                    "이름 매칭 성공: 크림='%s' ↔ 소싱='%s' (겹침: %s)",
+                    kream_name[:30], item_name[:30], overlap,
+                )
+
+        return verified
 
     async def _enrich_missing_sizes(
         self,
