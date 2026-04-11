@@ -107,7 +107,7 @@ class Settings(BaseSettings):
 
     # v2 연속 배치 스캔
     continuous_scan_interval_minutes: int = 5      # 배치 주기
-    continuous_scan_batch_size: int = 50           # 1회 배치 크기
+    continuous_scan_batch_size: int = 20           # 1회 배치 크기 (크림 API 부담 최소화)
     continuous_hot_ttl_hours: int = 2              # hot 재스캔 주기
     continuous_warm_ttl_hours: int = 8             # warm 재스캔 주기
     continuous_cold_ttl_hours: int = 48            # cold 재스캔 주기

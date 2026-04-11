@@ -193,8 +193,8 @@ class ReverseLookupScanner:
         # 크림 시세 먼저 확인 (없으면 소싱처 검색 불필요)
         kream_product = self._build_kream_product(product)
 
-        if not kream_product.size_prices:
-            # 시세 미수집 → 크림 API로 즉석 조회
+        if not kream_product.size_prices and priority in ("hot", "warm"):
+            # 시세 미수집 → warm 이상만 크림 API 즉석 조회 (cold는 API 절약)
             try:
                 full_info = await kream_crawler.get_full_product_info(product["product_id"])
                 if full_info and full_info.size_prices:

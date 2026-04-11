@@ -1069,28 +1069,21 @@ class KreamCrawler:
         empty = {"volume_7d": 0, "volume_30d": 0, "last_trade_date": None, "price_trend": ""}
         await _random_delay()
 
-        # 1차: __NUXT_DATA__에서 거래내역 추출
-        nuxt_result = await self._trades_from_nuxt(product_id)
+        # 1차: __NUXT_DATA__에서 거래내역 추출 (API 1회로 최대한 뽑기)
+        result = await self._trades_from_nuxt(product_id)
+        if result and (result["volume_7d"] > 0 or result["volume_30d"] > 0 or result["last_trade_date"]):
+            return result
 
-        # 2차: API 엔드포인트 (NUXT는 최근 5건만 → 인기 상품 volume 부정확)
-        for endpoint in [
-            f"/api/p/e/products/{product_id}/sales",
-            f"/api/p/e/products/{product_id}/trades",
-            f"/api/p/e/products/{product_id}/market/sales",
-        ]:
-            data = await self._request(
-                "GET", endpoint,
-                params={"cursor": 0, "per_page": 200},
-                max_retries=2,
-            )
-            if data:
-                result = self._parse_trade_data(data, product_id)
-                if result["volume_7d"] > 0 or result["volume_30d"] > 0 or result["last_trade_date"]:
-                    return result
-
-        # NUXT 결과 폴백
-        if nuxt_result and (nuxt_result["volume_7d"] > 0 or nuxt_result["volume_30d"] > 0 or nuxt_result["last_trade_date"]):
-            return nuxt_result
+        # 2차: API 폴백 (NUXT 실패 시만, 1개 엔드포인트만 시도)
+        data = await self._request(
+            "GET", f"/api/p/e/products/{product_id}/sales",
+            params={"cursor": 0, "per_page": 50},
+            max_retries=1,
+        )
+        if data:
+            result = self._parse_trade_data(data, product_id)
+            if result["volume_7d"] > 0 or result["volume_30d"] > 0 or result["last_trade_date"]:
+                return result
 
         return empty
 
