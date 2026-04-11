@@ -35,26 +35,19 @@ class KreamPriceRefresher:
         hot_minutes = settings.realtime_hot_refresh_minutes
         cold_hours = settings.realtime_cold_refresh_hours
 
+        # hot tier만 갱신 (cold 47k는 연속 스캔 시세 즉석 조회로 대체)
         cursor = await self.db.execute(
             """SELECT product_id, name, model_number, volume_7d, refresh_tier, last_price_refresh
             FROM kream_products
             WHERE model_number != ''
+            AND refresh_tier = 'hot'
             AND (
-                (refresh_tier = 'hot' AND (
-                    last_price_refresh IS NULL
-                    OR last_price_refresh < datetime('now', ?)
-                ))
-                OR
-                (refresh_tier = 'cold' AND (
-                    last_price_refresh IS NULL
-                    OR last_price_refresh < datetime('now', ?)
-                ))
+                last_price_refresh IS NULL
+                OR last_price_refresh < datetime('now', ?)
             )
-            ORDER BY
-                CASE refresh_tier WHEN 'hot' THEN 0 ELSE 1 END,
-                last_price_refresh ASC NULLS FIRST
+            ORDER BY last_price_refresh ASC NULLS FIRST
             LIMIT ?""",
-            (f"-{hot_minutes} minutes", f"-{cold_hours} hours", batch_size),
+            (f"-{hot_minutes} minutes", batch_size),
         )
         return await cursor.fetchall()
 
