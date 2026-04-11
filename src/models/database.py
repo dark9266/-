@@ -771,6 +771,31 @@ class Database:
         logger.info("배치 스캔 스케줄 backfill 완료: %d건 (첫배치 즉시=%d건)", count, first_batch_size)
         return count
 
+    async def reclassify_scan_priorities(self) -> dict:
+        """현재 volume_7d 기준으로 scan_priority 강제 재분류 (전체 상품 대상)."""
+        await self.db.execute(
+            "UPDATE kream_products SET scan_priority = 'hot' "
+            "WHERE model_number != '' AND volume_7d >= 10"
+        )
+        await self.db.execute(
+            "UPDATE kream_products SET scan_priority = 'warm' "
+            "WHERE model_number != '' AND volume_7d >= 3 AND volume_7d < 10"
+        )
+        await self.db.execute(
+            "UPDATE kream_products SET scan_priority = 'cold' "
+            "WHERE model_number != '' AND volume_7d < 3"
+        )
+        await self.db.commit()
+
+        stats = await self.get_scan_queue_stats()
+        logger.info(
+            "scan_priority 재분류 완료: hot=%d, warm=%d, cold=%d",
+            stats.get("hot", {}).get("total", 0),
+            stats.get("warm", {}).get("total", 0),
+            stats.get("cold", {}).get("total", 0),
+        )
+        return stats
+
     async def get_scan_queue_stats(self) -> dict:
         """스캔 큐 통계 (모니터링용)."""
         cursor = await self.db.execute(

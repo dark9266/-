@@ -108,7 +108,7 @@ class VolumeSpikeDetector:
         if spikes:
             logger.info("%d개 상품 hot tier 승격", len(spikes))
 
-    async def collect_current_volumes(self, batch_size: int = 50) -> list[dict]:
+    async def collect_current_volumes(self, batch_size: int = 200) -> list[dict]:
         """DB에서 거래량 체크가 필요한 상품을 선별하여 크림 API로 현재 거래량 수집."""
         cursor = await self.db.execute(
             """SELECT product_id, model_number FROM kream_products

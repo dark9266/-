@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     realtime_spike_threshold: float = 2.0          # 거래량 급등 판정 배율 (이전 대비)
     realtime_hot_volume_min: int = 5               # hot tier 최소 7일 거래량
     realtime_collect_pages_per_keyword: int = 5    # 수집 시 키워드당 페이지 수
-    realtime_refresh_batch_size: int = 20          # 1회 시세 갱신 배치 크기
+    realtime_refresh_batch_size: int = 50          # 1회 시세 갱신 배치 크기
 
     # v2 연속 배치 스캔
     continuous_scan_interval_minutes: int = 5      # 배치 주기

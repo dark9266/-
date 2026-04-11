@@ -171,6 +171,15 @@ class ContinuousScanner:
         row = await cursor.fetchone()
         null_count = row["cnt"] if row else 0
 
+        # 현재 volume_7d 기준으로 scan_priority 재분류
+        stats = await self.db.reclassify_scan_priorities()
+        logger.info(
+            "scan_priority 재분류: hot=%d, warm=%d, cold=%d",
+            stats.get("hot", {}).get("total", 0),
+            stats.get("warm", {}).get("total", 0),
+            stats.get("cold", {}).get("total", 0),
+        )
+
         if null_count > 0:
             logger.info("연속 스캔 backfill 시작: %d건 스케줄 미배정", null_count)
             await self.db.backfill_scan_schedule(

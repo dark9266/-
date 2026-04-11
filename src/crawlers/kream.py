@@ -1070,11 +1070,9 @@ class KreamCrawler:
         await _random_delay()
 
         # 1차: __NUXT_DATA__에서 거래내역 추출
-        result = await self._trades_from_nuxt(product_id)
-        if result and (result["volume_7d"] > 0 or result["volume_30d"] > 0 or result["last_trade_date"]):
-            return result
+        nuxt_result = await self._trades_from_nuxt(product_id)
 
-        # 2차: API 엔드포인트
+        # 2차: API 엔드포인트 (NUXT는 최근 5건만 → 인기 상품 volume 부정확)
         for endpoint in [
             f"/api/p/e/products/{product_id}/sales",
             f"/api/p/e/products/{product_id}/trades",
@@ -1082,13 +1080,17 @@ class KreamCrawler:
         ]:
             data = await self._request(
                 "GET", endpoint,
-                params={"cursor": 0, "per_page": 50},
+                params={"cursor": 0, "per_page": 200},
                 max_retries=2,
             )
             if data:
                 result = self._parse_trade_data(data, product_id)
                 if result["volume_7d"] > 0 or result["volume_30d"] > 0 or result["last_trade_date"]:
                     return result
+
+        # NUXT 결과 폴백
+        if nuxt_result and (nuxt_result["volume_7d"] > 0 or nuxt_result["volume_30d"] > 0 or nuxt_result["last_trade_date"]):
+            return nuxt_result
 
         return empty
 
@@ -1190,7 +1192,7 @@ class KreamCrawler:
         empty = {"volume_7d": 0, "volume_30d": 0, "last_trade_date": None, "price_trend": ""}
 
         trades = []
-        for item in items[:50]:
+        for item in items[:200]:
             if not isinstance(item, dict):
                 continue
             price = self._to_int(

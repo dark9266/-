@@ -109,6 +109,11 @@ class TestRunBatchEmptyQueue:
         cursor_mock.fetchone = AsyncMock(return_value={"cnt": 0})
         db.db.execute = AsyncMock(return_value=cursor_mock)
 
+        # 재분류 mock
+        db.reclassify_scan_priorities = AsyncMock(
+            return_value={"hot": {"total": 0, "ready": 0}, "cold": {"total": 0, "ready": 0}}
+        )
+
         # 빈 큐
         db.get_continuous_scan_queue = AsyncMock(return_value=[])
 
