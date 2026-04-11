@@ -186,6 +186,7 @@ class Database:
             "ALTER TABLE kream_products ADD COLUMN scan_priority TEXT DEFAULT 'cold'",
             "ALTER TABLE kream_products ADD COLUMN next_scan_at TIMESTAMP",
             "ALTER TABLE kream_products ADD COLUMN last_batch_scan_at TIMESTAMP",
+            "ALTER TABLE kream_products ADD COLUMN refresh_fail_count INTEGER DEFAULT 0",
         ]
         for sql in migrations:
             try:

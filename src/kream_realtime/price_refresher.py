@@ -56,12 +56,28 @@ class KreamPriceRefresher:
         try:
             detail = await kream_crawler.get_full_product_info(product_id)
             if not detail:
-                logger.warning("시세 갱신 실패 (상세 없음): %s", product_id)
-                # 실패해도 last_price_refresh 갱신 → 무한 재시도 방지
+                # 실패 카운터 증가 + 3회 연속 실패 시 cold 강등
                 await self.db.execute(
-                    "UPDATE kream_products SET last_price_refresh = CURRENT_TIMESTAMP WHERE product_id = ?",
+                    """UPDATE kream_products SET
+                        refresh_fail_count = COALESCE(refresh_fail_count, 0) + 1,
+                        last_price_refresh = CURRENT_TIMESTAMP
+                    WHERE product_id = ?""",
                     (product_id,),
                 )
+                cursor = await self.db.execute(
+                    "SELECT refresh_fail_count FROM kream_products WHERE product_id = ?",
+                    (product_id,),
+                )
+                row = await cursor.fetchone()
+                fail_count = row["refresh_fail_count"] if row else 0
+                if fail_count >= 3:
+                    await self.db.execute(
+                        "UPDATE kream_products SET refresh_tier = 'cold' WHERE product_id = ?",
+                        (product_id,),
+                    )
+                    logger.warning("시세 갱신 3회 실패 → cold 강등: %s", product_id)
+                else:
+                    logger.warning("시세 갱신 실패 (%d/3): %s", fail_count, product_id)
                 await self.db.commit()
                 return False
 
@@ -81,6 +97,7 @@ class KreamPriceRefresher:
             await self.db.execute(
                 """UPDATE kream_products SET
                     volume_7d = ?, volume_30d = ?, refresh_tier = ?,
+                    refresh_fail_count = 0,
                     last_price_refresh = CURRENT_TIMESTAMP,
                     last_volume_check = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
@@ -95,7 +112,10 @@ class KreamPriceRefresher:
             logger.error("시세 갱신 에러 (%s): %s", product_id, e)
             try:
                 await self.db.execute(
-                    "UPDATE kream_products SET last_price_refresh = CURRENT_TIMESTAMP WHERE product_id = ?",
+                    """UPDATE kream_products SET
+                        refresh_fail_count = COALESCE(refresh_fail_count, 0) + 1,
+                        last_price_refresh = CURRENT_TIMESTAMP
+                    WHERE product_id = ?""",
                     (product_id,),
                 )
                 await self.db.commit()

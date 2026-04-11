@@ -191,9 +191,10 @@ async def test_refresher_picks_hot_first():
 
     pids = [row["product_id"] for row in queue]
     assert "hot1" in pids
-    assert "cold1" in pids
+    # cold tier는 price_refresher에서 제외 (연속 스캔 시세 즉석 조회로 대체)
+    assert "cold1" not in pids
+    # hot2는 5분 전 갱신이라 30분 미만 → 제외
     assert "hot2" not in pids
-    assert pids.index("hot1") < pids.index("cold1")
     await db.close()
 
 
