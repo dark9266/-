@@ -84,14 +84,14 @@ class Tier2Monitor:
             if not kream_data:
                 return
 
-            sizes = kream_data.get("sizes", [])
+            sizes = kream_data.size_prices or []
             if not sizes:
                 return
 
             # 최저 즉시구매가 업데이트
             buy_prices = [
-                s.get("buy_now_price", 0) or s.get("price", 0)
-                for s in sizes if (s.get("buy_now_price", 0) or s.get("price", 0)) > 0
+                sp.buy_now_price
+                for sp in sizes if sp.buy_now_price and sp.buy_now_price > 0
             ]
             if buy_prices:
                 min_price = min(buy_prices)
@@ -103,11 +103,11 @@ class Tier2Monitor:
             profitable_sizes: list[AutoScanSizeProfit] = []
 
             for size_data in sizes:
-                kream_price = size_data.get("buy_now_price", 0) or size_data.get("price", 0)
+                kream_price = size_data.buy_now_price or 0
                 if not kream_price or kream_price <= 0:
                     continue
 
-                size_name = size_data.get("size", "?")
+                size_name = size_data.size or "?"
                 fees = calculate_kream_fees(kream_price)
                 retail_price = (
                     item.source_price if item.source_price > 0 else item.musinsa_price
@@ -168,4 +168,4 @@ class Tier2Monitor:
 
         except Exception as e:
             result.errors += 1
-            logger.debug("Tier2 체크 실패 (%s): %s", item.model_number, e)
+            logger.warning("Tier2 체크 실패 (%s): %s", item.model_number, e)
