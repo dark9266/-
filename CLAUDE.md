@@ -47,10 +47,10 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ## Key Modules
 
 ### 스캐너
-- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 16곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수) → 수익 분석. 웍스아웃 등 모델번호 없는 소싱처는 이름 매칭(한→영 변환+키워드 교차)
+- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 16곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수, in_stock 기본 False) → 수익 분석. BRAND_SOURCES 브랜드 필터(Nike/Jordan 등). 웍스아웃 등 모델번호 없는 소싱처는 이름 매칭(한→영 변환+키워드 교차+콜라보/서브타입 검증)
 - `src/scanner.py` — 카테고리 스캔, 키워드 스캔 오케스트레이터
 - `src/tier1_scanner.py` — 워치리스트 빌더. 역방향 + 카테고리 gap 스크리닝
-- `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링
+- `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링. sell_now_price(즉시판매가) 기준 수익 계산, ROI 100% 캡
 - `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
 
 ### 크롤러 (16개 소싱처)
@@ -71,13 +71,13 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
 
 ### 크림 데이터
-- `src/crawlers/kream.py` — Nuxt `__NUXT_DATA__` 파싱 (sizes, prices, trade volume)
+- `src/crawlers/kream.py` — curl_cffi Safari 핑거프린트 + Nuxt `__NUXT_DATA__` 파싱 (sizes, prices, trade volume)
 - `src/kream_realtime/collector.py` — 신규 상품 자동 수집 (6시간 주기)
 - `src/kream_realtime/price_refresher.py` — hot 전용 시세 갱신 (30분 주기). 3회 연속 실패 → cold 강등 (refresh_fail_count)
 - `src/kream_realtime/volume_spike_detector.py` — 거래량 급등 감지 (2배 이상 → hot 승격). 체크 시 volume_7d+refresh_tier+scan_priority 모두 갱신
 
 ### 매칭/수익
-- `src/matcher.py` — 모델번호 정규화 + exact match. fuzzy 없음
+- `src/matcher.py` — 모델번호 정규화 + exact match. fuzzy 없음. 콜라보 키워드 감지 + 서브타입(PRM/QS/SE 등) 필터
 - `src/profit_calculator.py` — 크림 수수료 차감 후 수익/ROI/시그널 판정
 - `src/scan_cache.py` — 모델번호 중복 스캔 방지 (일반 24h, 역방향 2h, 수익 6h TTL)
 
@@ -251,3 +251,4 @@ WSL2 + Windows. 무신사 세션 쿠키: `data/musinsa_session.json`.
 
 ### Known Issues
 - MFS(다중재고) 품절 필터 한계 — inventory API 근본 미작동 (MT410CK5 등)
+- 크림 거래량 5건 캡 — pinia/screens 모두 최대 5건 반환, ×3 추정치로 보충

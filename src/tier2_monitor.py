@@ -53,6 +53,7 @@ class Tier2Monitor:
         items = self.watchlist.get_all()
 
         if not items:
+            logger.info("Tier2: 워치리스트 0건 — 스킵")
             result.finished_at = datetime.now()
             return result
 
