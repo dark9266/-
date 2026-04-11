@@ -68,8 +68,10 @@ class Tier2Monitor:
         )
 
         result.finished_at = datetime.now()
-        if result.alerts_sent > 0:
-            logger.info("Tier2: %d건 체크, %d건 알림", result.checked, result.alerts_sent)
+        logger.info(
+            "Tier2: %d건 체크, 알림 %d건, 에러 %d건",
+            result.checked, result.alerts_sent, result.errors,
+        )
         return result
 
     async def _check_one(self, item: WatchlistItem, result: Tier2Result) -> None:

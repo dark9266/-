@@ -293,6 +293,7 @@ class ReverseLookupScanner:
 
     # 브랜드 → 전용 소싱처 매핑 (cold에서도 브랜드 공식몰은 검색)
     BRAND_SOURCES: dict[str, set[str]] = {
+        "Nike": {"nike"},
         "Adidas": {"adidas"},
         "New Balance": {"nbkorea"},
         "Salomon": {"salomon"},
@@ -355,7 +356,12 @@ class ReverseLookupScanner:
                 if key in self.BRAND_ONLY_SOURCES:
                     required_brand = self.BRAND_ONLY_SOURCES[key]
                     product_brand = product.get("brand", "") if product else ""
-                    if product_brand != required_brand:
+                    # Jordan은 Nike 산하 브랜드
+                    brand_match = (
+                        product_brand == required_brand
+                        or (required_brand == "Nike" and product_brand == "Jordan")
+                    )
+                    if not brand_match:
                         continue
                 try:
                     search_tasks[key] = info["crawler"].search_products(
@@ -639,8 +645,8 @@ class ReverseLookupScanner:
                             "%s 상세 사이즈 보강: %s → %d개",
                             active[key]["label"], pid, len(detail.sizes),
                         )
-                    elif not detail:
-                        # 상세 조회 실패 (품절/LAUNCH/비구매가능) → 제외 마킹
+                    elif not detail or not detail.sizes:
+                        # 상세 조회 실패 또는 재고 사이즈 0 → 품절 마킹
                         item["is_sold_out"] = True
                         logger.debug(
                             "%s 상세 없음 → 품절 마킹: %s",
@@ -717,18 +723,14 @@ class ReverseLookupScanner:
                     for s in sizes:
                         size_str = str(s.get("size", ""))
                         s_price = s.get("price", item_price)
-                        in_stock = s.get("in_stock", True)
+                        in_stock = s.get("in_stock", False)
                         if not in_stock or s_price <= 0:
                             continue
                         norm_size = self._normalize_size(size_str)
                         current = best_sizes.get(norm_size)
                         if current is None or s_price < current[0]:
                             best_sizes[norm_size] = (s_price, source_key, item_url)
-                elif item_price > 0 and not item.get("is_sold_out"):
-                    # 사이즈 정보 없이 단일 가격만 있는 경우 (품절 아닌 것만)
-                    current = best_sizes.get("ONE_SIZE")
-                    if current is None or item_price < current[0]:
-                        best_sizes["ONE_SIZE"] = (item_price, source_key, item_url)
+                # sizes 없는 상품은 사이즈별 재고 확인 불가 → 수익 계산 제외
 
                 # 소싱처별 최저가 + URL
                 if item_price > 0:

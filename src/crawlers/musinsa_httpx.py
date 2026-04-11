@@ -161,6 +161,10 @@ class MusinsaHttpxCrawler:
         기존 HTML 파싱은 CSR 전환으로 깨짐. 카테고리 리스팅과 동일한
         /api2/dp/v1/plp/goods 엔드포인트를 caller=SEARCH로 호출한다.
         """
+        keyword = keyword.strip()
+        if len(keyword) < 2 or "/" in keyword:
+            return []
+
         client = await self.connect()
         try:
             params = {
@@ -181,7 +185,7 @@ class MusinsaHttpxCrawler:
                 )
 
             if resp.status_code != 200:
-                logger.warning("무신사 검색 실패: status=%d", resp.status_code)
+                logger.warning("무신사 검색 실패: status=%d, keyword=%r", resp.status_code, keyword)
                 return []
 
             data = resp.json()
