@@ -7,6 +7,7 @@ DISPLAY-API-KEY 헤더 필수.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from datetime import datetime
@@ -21,7 +22,7 @@ from src.utils.rate_limiter import AsyncRateLimiter
 logger = setup_logger("wconcept_crawler")
 
 BASE_URL = "https://www.wconcept.co.kr"
-API_BASE = "https://gw-front.wconcept.co.kr"
+API_BASE = "https://api-display.wconcept.co.kr"
 
 # W컨셉 프론트 게이트웨이 API 키 (공개, 프론트엔드 JS에 하드코딩)
 DISPLAY_API_KEY = "VWmkUPgs6g2fviPZ5JQFQ3pERP4tIXv/J2jppLqSRBk="
@@ -103,9 +104,13 @@ def _parse_search_response(data: dict) -> list[dict]:
     """검색 API JSON 응답 파싱."""
     results: list[dict] = []
 
-    items = data.get("data", {}).get("product", {}).get("items", [])
+    # 신규 응답: data.productList.content
+    product_list = data.get("data", {}).get("productList", {})
+    items = product_list.get("content", []) if isinstance(product_list, dict) else []
     if not items:
-        # 대체 경로
+        # 구버전 호환
+        items = data.get("data", {}).get("product", {}).get("items", [])
+    if not items:
         items = data.get("data", {}).get("items", [])
 
     for item in items:
@@ -117,11 +122,17 @@ def _parse_search_response(data: dict) -> list[dict]:
             continue
 
         name = item.get("itemName", item.get("itemNm", ""))
-        brand = item.get("brandName", item.get("brandNm", ""))
+        brand = (
+            item.get("brandNameKr")
+            or item.get("brandNameEn")
+            or item.get("brandName", item.get("brandNm", ""))
+        )
         sale_price = item.get("salePrice", item.get("lastSalePrice", 0))
-        original_price = item.get("originalPrice", item.get("consumerPrice", 0))
-        image_url = item.get("imageUrl", item.get("mainImageUrl", ""))
-        sold_out = item.get("soldOutYn", "N") == "Y"
+        original_price = item.get("customerPrice", item.get("originalPrice", 0))
+        image_url = item.get("imageUrlMobile", item.get("imageUrl", ""))
+        # statusCd 04 = 품절
+        status_cd = str(item.get("statusCd", "01"))
+        sold_out = status_cd == "04" or item.get("soldOutYn", "N") == "Y"
 
         model_number = _extract_model_number(name)
 
@@ -140,7 +151,7 @@ def _parse_search_response(data: dict) -> list[dict]:
     return results
 
 
-def _parse_detail_html(html: str) -> dict:
+def _parse_detail_html(html_text: str) -> dict:
     """상세 페이지 HTML 파싱 → 가격, 모델번호, 브랜드, 사이즈별 재고."""
     result: dict = {
         "name": "",
@@ -153,33 +164,33 @@ def _parse_detail_html(html: str) -> dict:
     }
 
     # brazeJson에서 이름/브랜드
-    name_m = _BRAZE_ITEM_RE.search(html)
+    name_m = _BRAZE_ITEM_RE.search(html_text)
     if name_m:
         result["name"] = name_m.group(1)
-    brand_m = _BRAZE_BRAND_RE.search(html)
+    brand_m = _BRAZE_BRAND_RE.search(html_text)
     if brand_m:
         result["brand"] = brand_m.group(1)
 
     result["model_number"] = _extract_model_number(result["name"])
 
     # 가격
-    price_m = _SALE_PRICE_RE.search(html)
+    price_m = _SALE_PRICE_RE.search(html_text)
     if price_m:
         result["price"] = int(price_m.group(1))
-    orig_m = _ORIGINAL_PRICE_RE.search(html)
+    orig_m = _ORIGINAL_PRICE_RE.search(html_text)
     if orig_m:
         result["original_price"] = int(orig_m.group(1))
 
     # 판매 상태
-    status_m = _STATUS_RE.search(html)
+    status_m = _STATUS_RE.search(html_text)
     if status_m and status_m.group(1) != "01":
         result["is_sold_out"] = True
 
     # 사이즈 옵션 추출
-    size_options = _SIZE_OPTION_RE.findall(html)
+    size_options = _SIZE_OPTION_RE.findall(html_text)
 
     # skuqty 배열
-    qty_m = _SKUQTY_RE.search(html)
+    qty_m = _SKUQTY_RE.search(html_text)
     quantities: list[int] = []
     if qty_m:
         qty_str = qty_m.group(1).strip()
@@ -189,9 +200,12 @@ def _parse_detail_html(html: str) -> dict:
     # 사이즈-재고 매핑
     sizes: list[dict] = []
     for i, (value, option_value) in enumerate(size_options):
-        size_label = option_value.strip() or value.strip()
-        if not size_label:
+        raw_label = html.unescape(option_value.strip() or value.strip())
+        if not raw_label:
             continue
+        # "화이트_225" → "225", "260" → "260"
+        size_num = re.search(r"(\d{2,4}(?:\.\d)?)", raw_label)
+        size_label = size_num.group(1) if size_num else raw_label
         qty = quantities[i] if i < len(quantities) else 0
         sizes.append({
             "size": size_label,
@@ -240,7 +254,7 @@ class WconceptCrawler:
             "gender": "unisex",
             "pageNo": 1,
             "pageSize": min(limit, 40),
-            "sort": "RECOMMEND",
+            "sort": "NEW",
             "searchType": "KEYWORD",
             "platform": "PC",
         }

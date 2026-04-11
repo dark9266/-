@@ -51,25 +51,27 @@ class TestExtractModelNumber:
 
 SEARCH_RESPONSE_FIXTURE = {
     "data": {
-        "product": {
-            "items": [
+        "productList": {
+            "content": [
                 {
                     "itemCd": "50001234",
                     "itemName": "[CW2288-111] NIKE AIR FORCE 1 07",
-                    "brandName": "NIKE",
+                    "brandNameKr": "나이키",
+                    "brandNameEn": "NIKE",
                     "salePrice": 139000,
-                    "originalPrice": 169000,
-                    "mainImageUrl": "https://img.wconcept.co.kr/test.jpg",
-                    "soldOutYn": "N",
+                    "customerPrice": 169000,
+                    "imageUrlMobile": "https://img.wconcept.co.kr/test.jpg",
+                    "statusCd": "01",
                 },
                 {
                     "itemCd": "50005678",
                     "itemName": "ADIDAS SAMBA OG IE4195",
-                    "brandName": "ADIDAS",
+                    "brandNameKr": "아디다스",
+                    "brandNameEn": "ADIDAS",
                     "salePrice": 119000,
-                    "originalPrice": 139000,
-                    "mainImageUrl": "",
-                    "soldOutYn": "Y",
+                    "customerPrice": 139000,
+                    "imageUrlMobile": "",
+                    "statusCd": "04",
                 },
             ]
         }
@@ -87,7 +89,7 @@ class TestParseSearchResponse:
         first = results[0]
         assert first["product_id"] == "50001234"
         assert first["name"] == "[CW2288-111] NIKE AIR FORCE 1 07"
-        assert first["brand"] == "NIKE"
+        assert first["brand"] == "나이키"
         assert first["model_number"] == "CW2288-111"
         assert first["price"] == 139000
         assert first["is_sold_out"] is False
