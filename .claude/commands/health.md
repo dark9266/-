@@ -1,56 +1,23 @@
-소싱처 4곳 헬스체크 — 응답시간, 서킷브레이커 상태.
+소싱처 16곳 헬스체크 — 응답시간, 서킷브레이커 상태, 기법별 동작 확인.
 
 아래 순서로 소싱처 상태를 점검하고 결과를 요약해주세요:
 
 ## 1. 서킷브레이커 상태 (코드 분석)
 
-`src/crawlers/registry.py`의 `RETAIL_CRAWLERS` 딕셔너리를 분석:
+`src/crawlers/registry.py`의 등록된 크롤러 딕셔너리를 분석:
 - 각 소싱처의 `fail_count`, `disabled_until` 확인
 - 활성/비활성 상태 판별
 
-현재 등록된 소싱처: 무신사, 29CM, 나이키, 아디다스
+등록 소싱처: 무신사, 29CM, 나이키, 아디다스, 카시나, 그랜드스테이지, 온더스팟, 튠, EQL, 뉴발란스, 살로몬, 아크테릭스, 반스, W컨셉, 웍스아웃
 
-## 2. 실시간 응답 테스트 (GET 전용)
+## 2. 실시간 응답 테스트
 
-각 소싱처에 테스트 검색 요청 1건씩 (타임아웃 10초):
-
-```bash
-# 무신사 — 검색 API
-python3 -c "
-import httpx, time
-start = time.time()
-r = httpx.get('https://goods-search.musinsa.com/api/v2/search', params={'keyword': 'nike', 'size': 1}, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-print(f'무신사: {r.status_code} ({time.time()-start:.2f}s)')
-"
-
-# 29CM — 검색 API
-python3 -c "
-import httpx, time
-start = time.time()
-r = httpx.get('https://search-api.29cm.co.kr/api/v4/products', params={'keyword': 'nike', 'limit': 1}, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-print(f'29CM: {r.status_code} ({time.time()-start:.2f}s)')
-"
-
-# 나이키 — 검색 페이지
-python3 -c "
-import httpx, time
-start = time.time()
-r = httpx.get('https://www.nike.com/kr/w?q=air+max', headers={'User-Agent': 'Mozilla/5.0'}, timeout=10, follow_redirects=True)
-print(f'나이키: {r.status_code} ({time.time()-start:.2f}s)')
-"
-
-# 아디다스 — taxonomy API
-python3 -c "
-import httpx, time
-start = time.time()
-r = httpx.get('https://www.adidas.co.kr/api/plp/content-engine/search', params={'query': 'ultraboost'}, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.adidas.co.kr/'}, timeout=10)
-print(f'아디다스: {r.status_code} ({time.time()-start:.2f}s)')
-"
-```
+각 소싱처에 테스트 검색 요청 1건씩 (타임아웃 10초).
+실제 크롤러 모듈의 `search_products`를 호출하여 테스트.
 
 ## 3. Rate Limit 설정 확인
 
-`src/config.py`에서 소싱처별 rate limit 설정값 조회.
+`src/crawlers/registry.py`에서 소싱처별 rate limit 설정값 조회.
 
 ## 출력 형식
 
@@ -58,12 +25,12 @@ print(f'아디다스: {r.status_code} ({time.time()-start:.2f}s)')
 ## 소싱처 헬스체크 리포트
 
 ### 서킷브레이커 상태
-| 소싱처 | 상태 | 실패횟수 | 비활성화 해제 |
-|--------|------|---------|-------------|
+| 소싱처 | 기법 | 상태 | 실패횟수 | 비활성화 해제 |
+|--------|------|------|---------|-------------|
 
 ### 응답 테스트
-| 소싱처 | HTTP 상태 | 응답시간 | 판정 |
-|--------|----------|---------|------|
+| 소싱처 | HTTP 상태 | 응답시간 | 상품 수 | 판정 |
+|--------|----------|---------|--------|------|
 
 ### Rate Limit 설정
 | 소싱처 | max_concurrent | min_interval | 시간당 처리량 |

@@ -139,17 +139,19 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 
 | 에이전트 | 역할 | 권한 |
 |---------|------|------|
+| `source-analyzer` | 소싱처 종합 분석 — 덤프/재고/매칭/기법 판별 | Read + Bash(GET) |
+| `api-prober` | 소싱처 API 탐색 + 최적 기법 판별 (httpx/curl_cffi/Playwright) | Read + Bash(GET) |
+| `crawler-builder` | 소싱처별 최적 기법으로 크롤러 풀사이클 구현 | Edit/Write |
+| `catalog-dumper` | 카탈로그 전체 덤프 + 크림 DB 매칭 엔진 구현 (푸시 방식) | Edit/Write |
 | `verify-agent` | verify.py + pytest, 실패 시 자동 수정 (3회) | Edit/Write |
 | `code-reviewer` | 보안/성능/품질 코드 리뷰 | Read only |
-| `api-prober` | 새 소싱처 API 탐색 (GET 전용) | Read + Bash(GET) |
-| `crawler-builder` | 새 크롤러 풀사이클 구현 | Edit/Write |
+| `live-tester` | 크롤러 실서버 end-to-end 검증 (검색→상세→매칭) | Read + Bash(GET) |
 | `profit-analyzer` | 수익 계산 검증, 임계값 최적화 | Read + Bash(SELECT) |
 | `kream-monitor` | 크림 DB 거래량/시세 모니터링 | Read + Bash(SELECT) |
+| `coverage-analyzer` | 크림 DB 대비 소싱처별 커버율/갭 분석 | Read + Bash(SELECT) |
 | `reverse-scanner` | 역방향 소싱처 가격 조회 + 수익 탐색 | Read + Bash(GET) |
 | `queue-inspector` | 스캔 큐 상태 진단, 적체/소화율 | Read + Bash(SELECT) |
 | `scan-debugger` | 상품별 스캔 파이프라인 추적 | Read + Bash(GET+SELECT) |
-| `live-tester` | 크롤러 실서버 end-to-end 검증 (검색→상세→매칭) | Read + Bash(GET) |
-| `coverage-analyzer` | 크림 DB 대비 소싱처별 커버율/갭 분석 | Read + Bash(SELECT) |
 
 ### 슬래시 명령 (`.claude/commands/`)
 
@@ -160,8 +162,10 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | `/status` | DB 현황 + 워치리스트 + 최근 알림 |
 | `/queue` | 스캔 큐 현황 — priority별 분포, 적체, ETA |
 | `/trace` | 특정 모델번호 스캔 파이프라인 추적 |
-| `/health` | 소싱처 16곳 헬스체크 — 응답시간, 서킷브레이커 |
-| `/add-source` | URL 하나로 소싱처 추가 원스텝 (탐색→구현→테스트→커밋) |
+| `/health` | 소싱처 16곳 헬스체크 — 응답시간, 서킷브레이커, 기법별 상태 |
+| `/add-source` | URL 하나로 소싱처 추가 (분석→구현→테스트→커밋) |
+| `/catalog` | 소싱처별 카탈로그 현황 — 덤프 시각, 상품 수, 매칭율 |
+| `/coverage` | 크림 DB 대비 소싱처 커버율 — 브랜드별 갭, 추가 제안 |
 
 ### PostToolUse 훅
 - Edit/Write 후 자동 pytest 실행 → 실패 시 즉시 수정 루프
@@ -185,8 +189,12 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ## Project Rules
 
 ### 읽기 전용(Read-Only) 원칙
-- Selenium/Chrome/CDP 사용 금지
-- 모든 데이터 수집은 httpx 직접 API 호출
+- **핵심 원칙**: 읽기 전용이면 수단 제한 없음. 상태 변경만 금지
+- **소싱처별 최적 기법 선택**: 분석 후 가장 적합한 방법을 바로 적용
+  - `httpx`: 공개 API, 차단 없는 사이트
+  - `curl_cffi`: TLS fingerprint 차단 사이트 (크림에서 검증 완료)
+  - `Playwright`: JS 렌더링 필수, NetFunnel 큐 등 브라우저 필수 사이트
+  - `모바일 API`: 웹 차단이지만 앱 API 열린 사이트
 - **GET 허용**: 검색, 상세, 재고 등 모든 읽기 요청
 - **POST 허용**: 검색/필터/GraphQL 쿼리 등 읽기 목적 요청만
 - **POST 금지**: 주문/결제/로그인/장바구니/위시리스트 등 상태 변경
