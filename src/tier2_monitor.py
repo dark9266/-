@@ -84,14 +84,25 @@ class Tier2Monitor:
             if not kream_data:
                 return
 
-            sizes = kream_data.size_prices or []
+            # KreamProduct dataclass 또는 dict 모두 대응
+            if hasattr(kream_data, "size_prices"):
+                sizes = kream_data.size_prices or []
+            elif isinstance(kream_data, dict):
+                sizes = kream_data.get("size_prices", [])
+            else:
+                return
             if not sizes:
                 return
 
+            def _get(obj, attr, default=0):
+                return getattr(obj, attr, None) or (
+                    obj.get(attr, default) if isinstance(obj, dict) else default
+                )
+
             # 최저 즉시구매가 업데이트
             buy_prices = [
-                sp.buy_now_price
-                for sp in sizes if sp.buy_now_price and sp.buy_now_price > 0
+                _get(sp, "buy_now_price")
+                for sp in sizes if _get(sp, "buy_now_price") > 0
             ]
             if buy_prices:
                 min_price = min(buy_prices)
@@ -103,11 +114,11 @@ class Tier2Monitor:
             profitable_sizes: list[AutoScanSizeProfit] = []
 
             for size_data in sizes:
-                kream_price = size_data.buy_now_price or 0
+                kream_price = _get(size_data, "buy_now_price")
                 if not kream_price or kream_price <= 0:
                     continue
 
-                size_name = size_data.size or "?"
+                size_name = _get(size_data, "size", "?") or "?"
                 fees = calculate_kream_fees(kream_price)
                 retail_price = (
                     item.source_price if item.source_price > 0 else item.musinsa_price
