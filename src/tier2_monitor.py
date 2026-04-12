@@ -132,14 +132,6 @@ class Tier2Monitor:
                 net_profit = sell_price - fees["total_fees"] - retail_price
                 roi = (net_profit / retail_price * 100) if retail_price > 0 else 0
 
-                if net_profit > best_profit:
-                    best_profit = net_profit
-                    best_roi = roi
-
-                # ROI 100% 이상은 오매칭 의심 → 알림 제외
-                if roi > 100:
-                    continue
-
                 if net_profit >= settings.alert_min_profit and roi >= settings.alert_min_roi:
                     profitable_sizes.append(AutoScanSizeProfit(
                         size=str(size_name),
@@ -148,6 +140,9 @@ class Tier2Monitor:
                         confirmed_profit=net_profit,
                         confirmed_roi=round(roi, 1),
                     ))
+                    if net_profit > best_profit:
+                        best_profit = net_profit
+                        best_roi = roi
 
             # 수익 조건 도달 시 알림 (Tier2는 가격 기반 필터만 적용)
             if profitable_sizes and self.alert_callback:

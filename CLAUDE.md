@@ -50,7 +50,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 16곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수, in_stock 기본 False) → 수익 분석. BRAND_SOURCES 브랜드 필터(Nike/Jordan 등). 웍스아웃 등 모델번호 없는 소싱처는 이름 매칭(한→영 변환+키워드 교차+콜라보/서브타입 검증)
 - `src/scanner.py` — 카테고리 스캔, 키워드 스캔 오케스트레이터
 - `src/tier1_scanner.py` — 워치리스트 빌더. 역방향 + 카테고리 gap 스크리닝
-- `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링. sell_now_price(즉시판매가) 기준 수익 계산, ROI 100% 캡
+- `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링. sell_now_price(즉시판매가) 기준 수익 계산, 5배 안전망(오매칭 방어)
 - `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
 
 ### 크롤러 (16개 소싱처)

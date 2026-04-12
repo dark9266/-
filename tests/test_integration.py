@@ -285,8 +285,8 @@ async def test_profit_triggers_alert():
 
         # 크림 API mock — 높은 가격으로 수익 발생
         mock_kream_data = {
-            "sizes": [
-                {"size": "270", "buy_now_price": 150000, "price": 150000},
+            "size_prices": [
+                {"size": "270", "sell_now_price": 150000, "buy_now_price": 152000},
             ],
         }
 
@@ -340,7 +340,9 @@ async def _run_tier2_with_kream_price(kream_price: int, musinsa_price: int = 800
         monitor = Tier2Monitor(watchlist=wl, alert_callback=alert_cb)
 
         mock_kream_data = {
-            "sizes": [{"size": "270", "buy_now_price": kream_price}],
+            "size_prices": [
+                {"size": "270", "sell_now_price": kream_price, "buy_now_price": kream_price},
+            ],
         }
 
         with patch("src.tier2_monitor.kream_crawler") as mock_kream:
