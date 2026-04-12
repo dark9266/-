@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from src.config import settings
+from src.core.matching_guards import price_sanity_fails
 from src.crawlers.kream import kream_crawler
 from src.models.product import AutoScanOpportunity, AutoScanSizeProfit, KreamProduct, Signal
 from src.profit_calculator import calculate_kream_fees
@@ -126,8 +127,8 @@ class Tier2Monitor:
                 retail_price = (
                     item.source_price if item.source_price > 0 else item.musinsa_price
                 )
-                # 이상 시세 필터: 크림가가 소싱가 5배 이상이면 오매칭 의심
-                if retail_price > 0 and sell_price > retail_price * 5:
+                # 이상 시세 필터 (공통 가드): 크림가가 소싱가 N배 이상이면 오매칭 의심
+                if price_sanity_fails(sell_price, retail_price):
                     continue
                 net_profit = sell_price - fees["total_fees"] - retail_price
                 roi = (net_profit / retail_price * 100) if retail_price > 0 else 0

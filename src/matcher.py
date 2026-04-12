@@ -146,28 +146,15 @@ def _row_to_kream_product(row) -> KreamProduct:
     )
 
 
-# 콜라보 키워드 — 일반 상품과 구분 필요한 브랜드/디자이너
-_COLLAB_KEYWORDS = frozenset({
-    # 영문
-    "travis scott", "supreme", "off-white", "off white", "sacai", "dior",
-    "louis vuitton", "fragment", "union", "ambush", "stussy", "peaceminusone",
-    "clot", "undercover", "comme des garcons", "cdg", "parra", "undefeated",
-    "atmos", "j balvin", "cactus jack", "billie eilish", "tiffany",
-    # 한국어 (크림 상품명에 사용)
-    "트래비스 스캇", "슈프림", "오프화이트", "사카이", "디올",
-    "프라그먼트", "유니온", "앰부쉬", "스투시", "유토피아",
-    "캑터스", "언더커버", "피스마이너스원", "빌리 아일리시",
-    "자크뮈스", "루이비통", "티파니", "파라", "클롯",
-})
+# 콜라보 키워드 및 검증 로직은 src/core/matching_guards.py 로 이관됨 (Phase 2 공통화).
+# 하위 호환 re-export — 기존 import 경로 유지용.
+from src.core.matching_guards import COLLAB_KEYWORDS as _COLLAB_KEYWORDS  # noqa: E402
+from src.core.matching_guards import collab_match_fails, is_collab  # noqa: E402
 
 
 def _warn_collab_mismatch(retail_name: str, kream_name: str) -> bool:
     """리테일=일반 + 크림=콜라보 불일치 경고. 불일치면 True 반환."""
-    retail_lower = retail_name.lower()
-    kream_lower = kream_name.lower()
-    retail_has_collab = any(kw in retail_lower for kw in _COLLAB_KEYWORDS)
-    kream_has_collab = any(kw in kream_lower for kw in _COLLAB_KEYWORDS)
-    if not retail_has_collab and kream_has_collab:
+    if collab_match_fails(kream_name, retail_name):
         logger.warning(
             "콜라보 불일치: retail='%s' vs kream='%s' — 오매칭 가능성",
             retail_name[:40], kream_name[:40],
@@ -187,8 +174,7 @@ def _pick_best_kream_match(rows: list, retail_name: str = ""):
     normal = []
     collab = []
     for row in rows:
-        name_lower = (row["name"] or "").lower()
-        if any(kw in name_lower for kw in _COLLAB_KEYWORDS):
+        if is_collab(row["name"] or ""):
             collab.append(row)
         else:
             normal.append(row)
