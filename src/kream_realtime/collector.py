@@ -133,6 +133,106 @@ class KreamCollector:
         logger.info("수집 완료: 신규 %d건, %.0f초", total_new, elapsed)
         return {"total_new": total_new, "by_category": stats, "elapsed": elapsed}
 
+    # ─── 푸시→수집기 연동: 미등재 신상품 큐 처리 ──────────────────────
+
+    MAX_QUEUE_ATTEMPTS = 3
+
+    async def collect_pending(self, batch_size: int = 20) -> dict:
+        """큐의 pending 모델번호를 크림에서 검색해 발견 시 DB 추가.
+
+        push_dump가 적재한 큐(`kream_collect_queue`)의 status='pending' 항목 중
+        attempts < MAX_QUEUE_ATTEMPTS인 것 batch_size개를 처리한다.
+
+        각 모델번호로 크림 키워드 검색 1페이지를 조회 →
+        - 결과의 model_number 중 정확히 일치하는 항목 발견 → save_products + status='found'
+        - 미발견 → attempts++ (3회 이상 → status='not_found')
+
+        Returns: {"checked": N, "found": M, "not_found": K, "remaining": R}
+        """
+        cursor = await self.db.execute(
+            """SELECT model_number, brand_hint, name_hint, attempts
+               FROM kream_collect_queue
+               WHERE status = 'pending' AND attempts < ?
+               ORDER BY added_at ASC
+               LIMIT ?""",
+            (self.MAX_QUEUE_ATTEMPTS, batch_size),
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return {"checked": 0, "found": 0, "not_found": 0, "remaining": 0}
+
+        from src.matcher import normalize_model_number
+
+        def _key(s: str) -> str:
+            return normalize_model_number(s).replace(" ", "").replace("-", "")
+
+        checked = 0
+        found = 0
+        not_found = 0
+        for row in rows:
+            model_number = row[0] if not isinstance(row, dict) else row["model_number"]
+            checked += 1
+            target_key = _key(model_number)
+            await _random_delay()
+
+            url = (
+                f"{KREAM_BASE}/search?keyword={model_number}"
+                "&tab=products&sort=date&page=1"
+            )
+            html = await kream_crawler._request("GET", url, parse_json=False, max_retries=2)
+            matched_pid = ""
+            if html:
+                data = kream_crawler._extract_page_data(html)
+                if data:
+                    raw = kream_crawler._extract_listing_products(data)
+                    for p in raw:
+                        if _key(str(p.get("model_number", ""))) == target_key:
+                            enriched = self._enrich_listing_products([p], "신발")
+                            if enriched:
+                                await self.save_products(enriched)
+                                matched_pid = enriched[0]["product_id"]
+                                break
+
+            if matched_pid:
+                found += 1
+                await self.db.execute(
+                    """UPDATE kream_collect_queue
+                       SET status = 'found', found_product_id = ?,
+                           last_attempt_at = CURRENT_TIMESTAMP,
+                           attempts = attempts + 1
+                       WHERE model_number = ?""",
+                    (matched_pid, model_number),
+                )
+            else:
+                new_attempts = (row[3] if not isinstance(row, dict) else row["attempts"]) + 1
+                new_status = (
+                    "not_found" if new_attempts >= self.MAX_QUEUE_ATTEMPTS else "pending"
+                )
+                if new_status == "not_found":
+                    not_found += 1
+                await self.db.execute(
+                    """UPDATE kream_collect_queue
+                       SET status = ?, attempts = ?, last_attempt_at = CURRENT_TIMESTAMP
+                       WHERE model_number = ?""",
+                    (new_status, new_attempts, model_number),
+                )
+
+        await self.db.commit()
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) FROM kream_collect_queue WHERE status = 'pending'"
+        )
+        (remaining,) = await cursor.fetchone()
+        logger.info(
+            "collect_pending: 체크 %d, 발견 %d, 미발견 %d, 잔여 %d",
+            checked, found, not_found, remaining,
+        )
+        return {
+            "checked": checked,
+            "found": found,
+            "not_found": not_found,
+            "remaining": remaining,
+        }
+
     @staticmethod
     def _enrich_listing_products(raw_products: list[dict], category: str) -> list[dict]:
         """_extract_listing_products 결과에 category 추가 및 키 정규화."""

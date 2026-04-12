@@ -148,6 +148,23 @@ CREATE TABLE IF NOT EXISTS kream_volume_snapshots (
     FOREIGN KEY (product_id) REFERENCES kream_products(product_id)
 );
 CREATE INDEX IF NOT EXISTS idx_vol_snap_product ON kream_volume_snapshots(product_id, snapshot_at);
+
+-- 크림 미등재 신상품 수집 큐 (푸시 → 수집기 연동)
+-- push_dump가 소싱처에서 발견한 모델번호 중 크림 DB에 없는 항목을 적재.
+-- collector.collect_pending()가 주기적으로 크림에서 검색해 등록되었으면 DB에 추가.
+CREATE TABLE IF NOT EXISTS kream_collect_queue (
+    model_number TEXT PRIMARY KEY,
+    brand_hint TEXT DEFAULT '',
+    name_hint TEXT DEFAULT '',
+    source TEXT DEFAULT '',          -- 'musinsa', 'nike', etc.
+    source_url TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',   -- 'pending' | 'found' | 'not_found'
+    attempts INTEGER DEFAULT 0,
+    found_product_id TEXT DEFAULT '',
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_attempt_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_collect_queue_status ON kream_collect_queue(status, attempts);
 """
 
 
