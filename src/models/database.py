@@ -196,6 +196,21 @@ CREATE TABLE IF NOT EXISTS alert_followup (
 );
 CREATE INDEX IF NOT EXISTS idx_followup_alert ON alert_followup(alert_id);
 CREATE INDEX IF NOT EXISTS idx_followup_fired ON alert_followup(fired_at);
+
+-- 이벤트 체크포인트 (Phase 2.3a — event_bus 재시작 복구)
+-- CheckpointStore가 직접 init 하지만 여기서도 스키마로 선언해 통합 초기화 시 함께 생성.
+CREATE TABLE IF NOT EXISTS event_checkpoint (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    consumed_at REAL,
+    consumer TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_event_ckpt_pending
+    ON event_checkpoint(consumer, consumed_at);
+CREATE INDEX IF NOT EXISTS idx_event_ckpt_created
+    ON event_checkpoint(created_at);
 """
 
 
