@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>크림봇 대시보드 · {% block title %}{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a1f26;
+      --border: #2a3038;
+      --text: #e6e9ef;
+      --muted: #8b93a3;
+      --accent: #4fc3f7;
+      --ok: #4caf50;
+      --warn: #ffb300;
+      --err: #ef5350;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, 'Segoe UI', 'Noto Sans KR', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 14px; }
+    header { background: var(--panel); border-bottom: 1px solid var(--border);
+             padding: 12px 24px; display: flex; align-items: center; gap: 24px; }
+    header h1 { font-size: 16px; font-weight: 600; }
+    nav { display: flex; gap: 4px; flex: 1; }
+    nav a { padding: 8px 14px; color: var(--muted); text-decoration: none;
+            border-radius: 6px; font-weight: 500; }
+    nav a:hover { color: var(--text); background: var(--bg); }
+    nav a.active { color: var(--accent); background: var(--bg); }
+    .clock { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
+    main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+    .grid { display: grid; gap: 16px; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    .card { background: var(--panel); border: 1px solid var(--border);
+            border-radius: 8px; padding: 16px; }
+    .card h2 { font-size: 13px; color: var(--muted); font-weight: 600;
+               text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+    .metric { font-size: 28px; font-weight: 700; }
+    .metric small { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 6px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 10px 8px; color: var(--muted);
+         font-weight: 600; border-bottom: 1px solid var(--border); font-size: 11px;
+         text-transform: uppercase; letter-spacing: 0.3px; }
+    td { padding: 10px 8px; border-bottom: 1px solid var(--border); }
+    tr:hover { background: rgba(79, 195, 247, 0.04); }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px;
+             font-size: 11px; font-weight: 600; }
+    .badge-ok { background: rgba(76, 175, 80, 0.15); color: var(--ok); }
+    .badge-warn { background: rgba(255, 179, 0, 0.15); color: var(--warn); }
+    .badge-err { background: rgba(239, 83, 80, 0.15); color: var(--err); }
+    .badge-signal { background: rgba(79, 195, 247, 0.15); color: var(--accent); }
+    .num { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+    .profit-pos { color: var(--ok); font-weight: 600; }
+    .mono { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+    a { color: var(--accent); }
+    .empty { text-align: center; padding: 40px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🤖 크림봇</h1>
+    <nav>
+      <a href="/" class="{% if active == 'feed' %}active{% endif %}">수익 피드</a>
+      <a href="/sources" class="{% if active == 'sources' %}active{% endif %}">소싱처</a>
+      <a href="/matching" class="{% if active == 'matching' %}active{% endif %}">매칭 품질</a>
+      <a href="/profit" class="{% if active == 'profit' %}active{% endif %}">수익 집계</a>
+    </nav>
+    <div class="clock">{{ now }}</div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

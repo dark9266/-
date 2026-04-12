@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}매칭 품질{% endblock %}
+{% block content %}
+
+<div class="grid grid-3" style="margin-bottom: 16px;">
+  <div class="card">
+    <h2>크림 DB 총 상품</h2>
+    <div class="metric">{{ "{:,}".format(totals.total) }}<small>건</small></div>
+  </div>
+  <div class="card">
+    <h2>모델번호 보유</h2>
+    <div class="metric">{{ "{:,}".format(totals.with_model) }}<small>건</small></div>
+  </div>
+  <div class="card">
+    <h2>소싱처 커버 (유니크)</h2>
+    <div class="metric">{{ coverage | length }}<small>곳 기록됨</small></div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <h2>소싱처별 크림 DB 커버율</h2>
+  {% if coverage %}
+  <table>
+    <thead>
+      <tr>
+        <th>소싱처</th>
+        <th class="num">매칭 모델 수</th>
+        <th class="num">크림 DB 대비</th>
+        <th>커버율</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in coverage %}
+      <tr>
+        <td><strong>{{ c.source }}</strong></td>
+        <td class="num">{{ "{:,}".format(c.matched) }}</td>
+        <td class="num">/ {{ "{:,}".format(c.total_kream) }}</td>
+        <td>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="flex: 1; background: var(--bg); border-radius: 4px; height: 8px; overflow: hidden;">
+              <div style="background: var(--accent); height: 100%; width: {{ c.coverage_pct }}%;"></div>
+            </div>
+            <span class="num" style="min-width: 50px;">{{ c.coverage_pct }}%</span>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">매칭 데이터가 없습니다.</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>크림 DB 브랜드 분포 TOP 20</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 40px;">#</th>
+        <th>브랜드</th>
+        <th class="num">상품 수</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in brands %}
+      <tr>
+        <td class="mono">{{ loop.index }}</td>
+        <td>{{ b.brand }}</td>
+        <td class="num">{{ "{:,}".format(b.cnt) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

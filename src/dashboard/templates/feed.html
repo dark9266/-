@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}실시간 수익 피드{% endblock %}
+{% block content %}
+
+<div class="grid grid-4" style="margin-bottom: 16px;">
+  <div class="card">
+    <h2>24h 알림 건수</h2>
+    <div class="metric">{{ stats.total }}<small>건</small></div>
+  </div>
+  <div class="card">
+    <h2>최고 순수익 (24h)</h2>
+    <div class="metric profit-pos">{{ stats.max_profit | won }}</div>
+  </div>
+  <div class="card">
+    <h2>시그널 분포</h2>
+    <div style="font-size: 13px;">
+      {% for sig, cnt in stats.by_signal.items() %}
+        <div>{{ sig }} · <strong>{{ cnt }}</strong></div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card">
+    <h2>자동 갱신</h2>
+    <div style="font-size: 13px; color: var(--muted);">10초마다</div>
+    <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">최근 24시간 · 최대 100건</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>실시간 알림 피드</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>시각</th>
+        <th>브랜드</th>
+        <th>모델/상품</th>
+        <th>사이즈</th>
+        <th>소싱처</th>
+        <th class="num">소싱가</th>
+        <th class="num">크림 sell_now</th>
+        <th class="num">순수익</th>
+        <th class="num">ROI</th>
+        <th>시그널</th>
+      </tr>
+    </thead>
+    <tbody id="feed-body" hx-get="/feed/rows" hx-trigger="every 10s" hx-swap="innerHTML">
+      {% include "_feed_rows.html" %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

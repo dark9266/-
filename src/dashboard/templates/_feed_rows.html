@@ -1,0 +1,25 @@
+{% if alerts %}
+  {% for a in alerts %}
+  <tr>
+    <td class="mono">{{ a.created_at | time }}</td>
+    <td>{{ a.brand or "-" }}</td>
+    <td>
+      <div>{{ a.name or "-" }}</div>
+      <div class="mono">{{ a.model_number or "-" }}</div>
+    </td>
+    <td>{{ a.size or "-" }}</td>
+    <td>{{ a.source or "-" }}</td>
+    <td class="num">{{ a.retail_price | won }}</td>
+    <td class="num">{{ a.kream_sell_price | won }}</td>
+    <td class="num profit-pos">{{ a.best_profit | won }}</td>
+    <td class="num">{{ a.roi | pct }}</td>
+    <td>
+      {% if a.signal %}
+        <span class="badge badge-signal">{{ a.signal }}</span>
+      {% else %}-{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+{% else %}
+  <tr><td colspan="10" class="empty">최근 24시간 알림이 없습니다.</td></tr>
+{% endif %}

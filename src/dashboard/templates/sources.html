@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}소싱처 헬스{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>소싱처 {{ rows | length }}곳 상태</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>소싱처</th>
+        <th>상태</th>
+        <th class="num">실패 카운트</th>
+        <th>재시도</th>
+        <th class="num">1h 응답 건수</th>
+        <th>마지막 응답</th>
+        <th>로그인</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><strong>{{ r.label }}</strong><br><span class="mono">{{ r.key }}</span></td>
+        <td>
+          {% if r.active %}
+            <span class="badge badge-ok">정상</span>
+          {% else %}
+            <span class="badge badge-err">비활성</span>
+          {% endif %}
+        </td>
+        <td class="num">
+          {% if r.fail_count == 0 %}
+            <span style="color: var(--muted);">0</span>
+          {% elif r.fail_count < 3 %}
+            <span class="badge badge-warn">{{ r.fail_count }}</span>
+          {% else %}
+            <span class="badge badge-err">{{ r.fail_count }}</span>
+          {% endif %}
+        </td>
+        <td class="mono">{{ r.disabled_until or "-" }}</td>
+        <td class="num">{{ r.searches_1h }}</td>
+        <td class="mono">{{ r.last_at | time }}</td>
+        <td>
+          {% if r.key in login_sources %}
+            <span class="badge badge-ok">{{ login_sources[r.key] }}</span>
+          {% else %}
+            <span style="color: var(--muted);">비로그인</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2>참고</h2>
+  <div style="color: var(--muted); font-size: 12px; line-height: 1.6;">
+    · 실패 카운트는 메모리 기반 (봇 재시작 시 초기화)<br>
+    · 서킷브레이커: 연속 3회 실패 → 30분 자동 비활성화<br>
+    · "1h 응답 건수"는 retail_products 테이블 기준 최근 저장 건수
+  </div>
+</div>
+
+{% endblock %}

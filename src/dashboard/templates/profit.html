@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}수익 집계{% endblock %}
+{% block content %}
+
+<div class="grid grid-3" style="margin-bottom: 16px;">
+  <div class="card">
+    <h2>24h 알림</h2>
+    <div class="metric">{{ stats.total }}<small>건</small></div>
+  </div>
+  <div class="card">
+    <h2>24h 최고 수익</h2>
+    <div class="metric profit-pos">{{ stats.max_profit | won }}</div>
+  </div>
+  <div class="card">
+    <h2>30일 총 알림</h2>
+    <div class="metric">{{ daily | sum(attribute='cnt') }}<small>건</small></div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <h2>일별 알림 & 평균 수익 (30일)</h2>
+  {% if daily %}
+  <canvas id="dailyChart" height="80"></canvas>
+  {% else %}
+  <div class="empty">데이터 없음 — 봇이 알림을 생성하기 시작하면 여기 그래프가 채워집니다.</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>시그널 분포 (7일)</h2>
+  {% if signal_dist %}
+  <div style="display: grid; grid-template-columns: 300px 1fr; gap: 24px; align-items: center;">
+    <canvas id="signalChart"></canvas>
+    <table>
+      <thead><tr><th>시그널</th><th class="num">건수</th></tr></thead>
+      <tbody>
+        {% for s in signal_dist %}
+        <tr>
+          <td><span class="badge badge-signal">{{ s.signal }}</span></td>
+          <td class="num">{{ s.cnt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty">데이터 없음</div>
+  {% endif %}
+</div>
+
+<script>
+const textColor = '#8b93a3';
+const gridColor = '#2a3038';
+const accent = '#4fc3f7';
+const ok = '#4caf50';
+
+{% if daily %}
+new Chart(document.getElementById('dailyChart'), {
+  type: 'line',
+  data: {
+    labels: {{ daily_labels | tojson }},
+    datasets: [
+      {
+        label: '알림 건수',
+        data: {{ daily_counts | tojson }},
+        borderColor: accent,
+        backgroundColor: 'rgba(79,195,247,0.1)',
+        tension: 0.3, yAxisID: 'y'
+      },
+      {
+        label: '평균 수익(원)',
+        data: {{ daily_avg | tojson }},
+        borderColor: ok,
+        backgroundColor: 'rgba(76,175,80,0.1)',
+        tension: 0.3, yAxisID: 'y1'
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { labels: { color: textColor } } },
+    scales: {
+      x: { ticks: { color: textColor }, grid: { color: gridColor } },
+      y: { position: 'left', ticks: { color: textColor }, grid: { color: gridColor } },
+      y1: { position: 'right', ticks: { color: textColor }, grid: { drawOnChartArea: false } }
+    }
+  }
+});
+{% endif %}
+
+{% if signal_dist %}
+new Chart(document.getElementById('signalChart'), {
+  type: 'doughnut',
+  data: {
+    labels: {{ signal_labels | tojson }},
+    datasets: [{
+      data: {{ signal_counts | tojson }},
+      backgroundColor: ['#4fc3f7', '#4caf50', '#ffb300', '#ef5350', '#8b93a3']
+    }]
+  },
+  options: { plugins: { legend: { labels: { color: textColor }, position: 'bottom' } } }
+});
+{% endif %}
+</script>
+
+{% endblock %}
