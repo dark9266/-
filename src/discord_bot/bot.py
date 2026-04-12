@@ -190,12 +190,26 @@ class KreamBot(commands.Bot):
         embed = format_profit_alert(opportunity)
         msg = await channel.send(embed=embed)
 
+        # 대시보드 피드용 필드 추출 — 최고 수익 사이즈 기준
+        best_sp = max(
+            opportunity.size_profits, key=lambda s: s.net_profit, default=None,
+        ) if opportunity.size_profits else None
+        best_source = None
+        if opportunity.retail_products:
+            best_source = opportunity.retail_products[0].source
+
         await self.db.save_alert(
             kream_product_id=opportunity.kream_product.product_id,
             alert_type="profit",
             best_profit=opportunity.best_profit,
             signal=opportunity.signal.value,
             message_id=str(msg.id),
+            source=best_source,
+            roi=opportunity.best_roi,
+            direction="reverse",
+            retail_price=best_sp.retail_price if best_sp else None,
+            kream_sell_price=best_sp.kream_sell_price if best_sp else None,
+            size=best_sp.size if best_sp else None,
         )
 
     async def send_price_change_alert(self, changes) -> None:
@@ -246,6 +260,7 @@ class KreamBot(commands.Bot):
                     best_profit=max_diff,
                     signal=product_changes[0].new_signal.value if hasattr(product_changes[0].new_signal, 'value') else str(product_changes[0].new_signal),
                     message_id=str(msg.id),
+                    direction="reverse",
                 )
 
 
@@ -318,12 +333,28 @@ class KreamBot(commands.Bot):
             logger.error("매수알림 전송 실패: %s — %s", product_name, e)
             return False
 
+        # 대시보드 피드용 필드 추출 — 최고 확정 수익 사이즈 기준
+        best_sp = None
+        if opportunity.size_profits:
+            best_sp = max(
+                opportunity.size_profits,
+                key=lambda s: max(s.confirmed_profit, s.estimated_profit),
+            )
+
         await self.db.save_alert(
             kream_product_id=kream_product.product_id,
             alert_type="auto_scan",
             best_profit=best_profit,
             signal="확정" if opportunity.best_confirmed_roi >= 5 else "예상",
             message_id=str(msg.id),
+            source=best_sp.source if best_sp else None,
+            roi=best_roi,
+            direction="reverse",
+            retail_price=best_sp.musinsa_price if best_sp else None,
+            kream_sell_price=(
+                best_sp.kream_bid_price or best_sp.kream_recent_price if best_sp else None
+            ),
+            size=best_sp.size if best_sp else None,
         )
         return True
 

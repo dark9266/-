@@ -82,15 +82,21 @@ CREATE TABLE IF NOT EXISTS retail_price_history (
 );
 CREATE INDEX IF NOT EXISTS idx_retail_price_product ON retail_price_history(source, product_id, size);
 
--- 알림 기록 (중복 알림 방지)
+-- 알림 기록 (중복 알림 방지 + 대시보드 피드용 메타)
 CREATE TABLE IF NOT EXISTS alert_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kream_product_id TEXT NOT NULL,
-    alert_type TEXT NOT NULL,  -- 'profit', 'price_change', 'daily_report'
+    alert_type TEXT NOT NULL,  -- 'profit', 'price_change', 'daily_report', 'auto_scan'
     best_profit INTEGER DEFAULT 0,
     signal TEXT DEFAULT '',
     message_id TEXT DEFAULT '',  -- Discord 메시지 ID
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    source TEXT,
+    roi REAL,
+    direction TEXT,              -- 'reverse' | 'forward' | 'push'
+    retail_price INTEGER,
+    kream_sell_price INTEGER,
+    size TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_alert_product ON alert_history(kream_product_id, alert_type);
 CREATE INDEX IF NOT EXISTS idx_alert_time ON alert_history(created_at);
@@ -423,11 +429,22 @@ class Database:
         best_profit: int = 0,
         signal: str = "",
         message_id: str = "",
+        source: str | None = None,
+        roi: float | None = None,
+        direction: str | None = None,
+        retail_price: int | None = None,
+        kream_sell_price: int | None = None,
+        size: str | None = None,
     ) -> None:
         await self.db.execute(
-            """INSERT INTO alert_history (kream_product_id, alert_type, best_profit, signal, message_id)
-            VALUES (?, ?, ?, ?, ?)""",
-            (kream_product_id, alert_type, best_profit, signal, message_id),
+            """INSERT INTO alert_history
+            (kream_product_id, alert_type, best_profit, signal, message_id,
+             source, roi, direction, retail_price, kream_sell_price, size)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                kream_product_id, alert_type, best_profit, signal, message_id,
+                source, roi, direction, retail_price, kream_sell_price, size,
+            ),
         )
         await self.db.commit()
 
