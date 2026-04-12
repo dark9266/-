@@ -2,6 +2,11 @@
 
 각 크롤러 모듈에서 register()를 호출하여 자동 등록한다.
 서킷브레이커: 연속 3회 실패 시 30분 비활성화.
+
+Phase 0 보안 — POST 차단 레이어:
+- 원칙: 읽기 전용. 상태 변경 POST(주문/결제/로그인/장바구니) 일체 금지
+- 예외: 읽기 목적 POST(검색/필터/GraphQL 쿼리)만 화이트리스트로 명시 허용
+- 사용: POST 호출 전 `assert_post_allowed(url)` 호출. 미등록 URL이면 PermissionError
 """
 
 from datetime import datetime, timedelta
@@ -14,6 +19,25 @@ RETAIL_CRAWLERS: dict[str, dict] = {}
 
 MAX_FAILURES = 3
 DISABLE_MINUTES = 30
+
+# ─── POST 화이트리스트 (읽기 목적 POST만) ─────────────────────
+# URL prefix 매칭. 새 POST 엔드포인트 추가 시 여기에 등록 필수.
+ALLOWED_POST_PREFIXES: tuple[str, ...] = (
+    # W컨셉 검색 API (읽기 전용 상품 검색)
+    "https://api-display.wconcept.co.kr/display/api/v3/search/result/product",
+)
+
+
+def assert_post_allowed(url: str) -> None:
+    """POST 호출 전 화이트리스트 검증. 미등록 URL이면 PermissionError."""
+    for allowed in ALLOWED_POST_PREFIXES:
+        if url.startswith(allowed):
+            return
+    raise PermissionError(
+        f"POST blocked by readonly policy: {url}\n"
+        f"읽기 목적 POST는 ALLOWED_POST_PREFIXES에 등록 후 사용. "
+        f"상태 변경 POST는 프로젝트 정책상 금지."
+    )
 
 
 def register(key: str, crawler, label: str) -> None:

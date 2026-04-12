@@ -165,6 +165,37 @@ CREATE TABLE IF NOT EXISTS kream_collect_queue (
     last_attempt_at TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_collect_queue_status ON kream_collect_queue(status, attempts);
+
+-- 크림 API 호출 계측 (Phase 0 보안 레이어 — 실계정 보호용 일일 캡 가드)
+-- kream.py _request wrapper가 자동 기록. src/core/kream_budget.py에서 카운트.
+CREATE TABLE IF NOT EXISTS kream_api_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    endpoint TEXT NOT NULL,
+    method TEXT NOT NULL,
+    status INTEGER,
+    latency_ms INTEGER,
+    purpose TEXT  -- 'push_dump' | 'tier2_hot' | 'collector' | 'refresher' | 'manual'
+);
+CREATE INDEX IF NOT EXISTS idx_kream_calls_ts ON kream_api_calls(ts);
+
+-- 알림 후속 추적 (Phase 4 피드백 루프 슬롯 — 케찹이 원리적으로 못 하는 해자)
+-- 지금은 빈 껍데기. Phase 4 alert-outcome-tracker가 채움.
+CREATE TABLE IF NOT EXISTS alert_followup (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id INTEGER,
+    fired_at TIMESTAMP,
+    kream_product_id TEXT,
+    size TEXT,
+    retail_price INTEGER,
+    kream_sell_price_at_fire INTEGER,
+    checked_at TIMESTAMP,
+    actual_sold INTEGER DEFAULT 0,
+    actual_price INTEGER,
+    FOREIGN KEY (alert_id) REFERENCES alert_history(id)
+);
+CREATE INDEX IF NOT EXISTS idx_followup_alert ON alert_followup(alert_id);
+CREATE INDEX IF NOT EXISTS idx_followup_fired ON alert_followup(fired_at);
 """
 
 

@@ -13,11 +13,17 @@ import asyncio
 import json
 import random
 import re
+import time
 from datetime import datetime
 
 from curl_cffi.requests import AsyncSession
 
 from src.config import settings
+from src.core.kream_budget import (
+    KreamBudgetExceeded,
+    check_budget,
+    record_call,
+)
 from src.models.product import KreamProduct, KreamSizePrice
 from src.utils.logging import setup_logger
 
@@ -274,7 +280,14 @@ class KreamCrawler:
         params: dict | None = None,
         max_retries: int = 3,
         parse_json: bool = True,
+        purpose: str = "manual",
     ) -> dict | str | None:
+        # Phase 0 가드: 일일 캡 초과 시 즉시 중단
+        try:
+            await check_budget()
+        except KreamBudgetExceeded:
+            raise
+
         session = await self._get_session()
 
         # API 호출은 api.kream.co.kr 도메인으로 라우팅 + 인증 헤더 추가
@@ -285,6 +298,13 @@ class KreamCrawler:
         elif url.startswith("/"):
             url = f"{KREAM_BASE}{url}"
 
+        # 계측용 endpoint 키 (쿼리 제거, 경로만)
+        endpoint = url.split("?", 1)[0]
+        if endpoint.startswith(KREAM_API_BASE):
+            endpoint = endpoint[len(KREAM_API_BASE):]
+        elif endpoint.startswith(KREAM_BASE):
+            endpoint = endpoint[len(KREAM_BASE):]
+
         req_headers = dict(_API_HEADERS if parse_json else _PAGE_HEADERS)
         req_headers["User-Agent"] = random.choice(_SAFARI_USER_AGENTS)
         if is_api_call:
@@ -293,12 +313,15 @@ class KreamCrawler:
             req_headers.update(headers)
 
         for attempt in range(max_retries):
+            t0 = time.perf_counter()
             try:
                 resp = await session.request(
                     method, url, headers=req_headers, params=params,
                     allow_redirects=True,
                 )
                 status = resp.status_code
+                latency_ms = int((time.perf_counter() - t0) * 1000)
+                await record_call(endpoint, method, status, latency_ms, purpose)
 
                 if 200 <= status < 300:
                     if parse_json:
@@ -329,10 +352,14 @@ class KreamCrawler:
                 return None
 
             except asyncio.TimeoutError:
+                latency_ms = int((time.perf_counter() - t0) * 1000)
+                await record_call(endpoint, method, None, latency_ms, purpose)
                 wait = (2 ** attempt) * 2
                 logger.warning("타임아웃 (%s) — %d초 후 재시도", url, wait)
                 await asyncio.sleep(wait)
             except Exception as e:
+                latency_ms = int((time.perf_counter() - t0) * 1000)
+                await record_call(endpoint, method, None, latency_ms, purpose)
                 wait = (2 ** attempt) * 2
                 logger.warning("연결 에러 (%s): %s — %d초 후 재시도", url, e, wait)
                 await asyncio.sleep(wait)

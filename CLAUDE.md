@@ -2,6 +2,11 @@
 
 크림봇 (Kream Monitor Bot) — 크림 차익거래 자동화 Discord 봇. Python 3.12+, async-first.
 
+> ⚠️ **v2→v3 푸시 전환 진행 중 (2026-04-13~)** · 배포 형태: 개인용 초고성능 (A)
+> 아래 "v2 Architecture"·"스캔 방향"·"hot/warm/cold 큐" 섹션은 **과도기 현행 상태** 서술임.
+> 전환 후 목표 구조·우선순위·단계는 `~/.claude/.../memory/project_current_track.md` 가 단일 source of truth.
+> cold/warm 순환 폐기 예정, 푸시(소싱처 카탈로그 덤프→크림 DB 필터→sell_now)가 주력이 됨.
+
 ## Commands
 
 ```bash
@@ -139,19 +144,26 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 
 | 에이전트 | 역할 | 권한 |
 |---------|------|------|
+| `security-guard` | 🛡 시크릿 노출 차단, 크림 호출 캡 가드, POST 차단 레이어, 실계정 이상 탐지 | Read + Bash(SELECT/GET) + Edit(.env/config) |
 | `source-analyzer` | 소싱처 종합 분석 — 덤프/재고/매칭/기법 판별 | Read + Bash(GET) |
 | `api-prober` | 소싱처 API 탐색 + 최적 기법 판별 (httpx/curl_cffi/Playwright) | Read + Bash(GET) |
 | `crawler-builder` | 소싱처별 최적 기법으로 크롤러 풀사이클 구현 | Edit/Write |
 | `catalog-dumper` | 카탈로그 전체 덤프 + 크림 DB 매칭 엔진 구현 (푸시 방식) | Edit/Write |
+| `delta-engine-builder` | 변경 감지 엔진 — 해시 diff + 신상 감시 + 델타 이벤트 발행 | Edit/Write |
+| `pipeline-builder` | 이벤트 드리븐 런타임 코어 — 버스/오케스트레이터/체크포인트 | Edit/Write |
+| `runtime-sentinel` | 24시간 무인 운영 감시·보증 — 체크포인트/복구/P50 레이턴시/일일 리포트 | Edit/Write |
 | `verify-agent` | verify.py + pytest, 실패 시 자동 수정 (3회) | Edit/Write |
 | `code-reviewer` | 보안/성능/품질 코드 리뷰 | Read only |
 | `live-tester` | 크롤러 실서버 end-to-end 검증 (검색→상세→매칭) | Read + Bash(GET) |
-| `profit-analyzer` | 수익 계산 검증, 임계값 최적화 | Read + Bash(SELECT) |
-| `kream-monitor` | 크림 DB 거래량/시세 모니터링 | Read + Bash(SELECT) |
+| `profit-analyzer` | 수익 계산 검증, 수수료/임계값 최적화 | Read + Bash(SELECT) |
+| `kream-monitor` | 크림 DB 거래량/시세 모니터링 + 이상 탐지 | Read + Bash(SELECT) |
 | `coverage-analyzer` | 크림 DB 대비 소싱처별 커버율/갭 분석 | Read + Bash(SELECT) |
-| `reverse-scanner` | 역방향 소싱처 가격 조회 + 수익 탐색 | Read + Bash(GET) |
-| `queue-inspector` | 스캔 큐 상태 진단, 적체/소화율 | Read + Bash(SELECT) |
-| `scan-debugger` | 상품별 스캔 파이프라인 추적 | Read + Bash(GET+SELECT) |
+| `queue-inspector` | 이벤트 버스 큐·파이프라인 대기열 진단, 적체/병목 분석 | Read + Bash(SELECT) |
+| `scan-debugger` | 상품별 스캔 파이프라인 추적 + 역방향 가격 조회 디버그 (reverse-scanner 흡수) | Read + Bash(GET+SELECT) |
+
+**JIT 생성 예정 (Phase 진입 시)**:
+- `signal-scorer` — 축 7 지능 필터 전담 (유동성/변동성/거래속도 스코어링). Phase 4 진입 시 생성
+- `alert-outcome-tracker` — 축 8 피드백 루프 전담 (알림→체결 추적→자동 튜닝). **케찹이 원리적으로 못 하는 해자**. Phase 4 진입 시 생성
 
 ### 슬래시 명령 (`.claude/commands/`)
 
@@ -226,7 +238,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ### 개발 방식
 - Plan 모드: 큰 작업은 설계 먼저, 승인 후 실행
 - 커밋: 작업 완료 시 git commit + 디스코드 웹훅 알림
-- 웹훅 URL: https://discord.com/api/webhooks/1490976364868931704/vhyCn1X42x3OBIz1GvcNCVuiGSOjOdADkF4ttkcCIskIR_fnmzZkRCu9MYptN1dxFWN3
+- 웹훅 URL: `.env`의 `DISCORD_NOTIFY_WEBHOOK` 사용 (docs/security/incident-2026-04-13.md 참조)
 
 ### 버그 수정 원칙
 - 3회 실패 시 방법 지정 금지 — 문제+제약+실패이력만 제공, Claude Code가 탐색

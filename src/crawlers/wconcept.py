@@ -260,9 +260,13 @@ class WconceptCrawler:
         }
 
         async with self._rate_limiter.acquire():
+            search_url = f"{API_BASE}/display/api/v3/search/result/product"
+            # Phase 0 보안: 화이트리스트 검증 (읽기 목적 POST만 허용)
+            from src.crawlers.registry import assert_post_allowed
+            assert_post_allowed(search_url)
             try:
                 resp = await client.post(
-                    f"{API_BASE}/display/api/v3/search/result/product",
+                    search_url,
                     headers=HEADERS,
                     content=json.dumps(payload),
                 )
