@@ -98,8 +98,9 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("worksout", WorksoutAdapter),
     # ("adidas", AdidasAdapter),  # fetch_taxonomy_page 미구현 — AdidasCrawler 랩퍼 배선 후 복구.
     ("hoka", HokaAdapter),
-    ("beaker", BeakerAdapter),
-    ("thehandsome", ThehandsomeAdapter),
+    # ("beaker", BeakerAdapter),      # 46k dumps/0 match — 한국 에디토리얼 패션
+    # ("thehandsome", ThehandsomeAdapter),  # 36k dumps/0 match — 한섬 ERP 코드, 크림 풀 불일치
+    # 브랜드 필터 인프라 도입 후 재활성화. (2026-04-13 실측 근거)
     ("asics", AsicsAdapter),
     ("puma", PumaAdapter),
     ("patagonia", PatagoniaAdapter),
