@@ -84,7 +84,9 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("29cm", TwentynineCmAdapter),
     ("nike", NikeAdapter),
     ("kasina", KasinaAdapter),
-    ("abcmart", AbcmartAdapter),
+    # ("abcmart", AbcmartAdapter),  # 크롤러에 채널 listing API 미구축 —
+    # search_products(keyword) 만 존재. 푸시 덤프용 fetch_channel_listing
+    # 배선 후 복구. (adidas/arcteryx 와 동일 패턴)
     ("tune", TuneAdapter),
     ("eql", EqlAdapter),
     ("nbkorea", NbkoreaAdapter),
