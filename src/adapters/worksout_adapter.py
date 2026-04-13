@@ -413,13 +413,28 @@ class WorksoutAdapter:
 
 
 class _DefaultWorksoutHttp:
-    """기본 덤퍼 — 기존 `worksout_crawler` 의 httpx 클라이언트를 재사용해
-    검색 API 의 신발 카테고리(mainCategoryId=37) 페이지네이션을 수행.
+    """기본 덤퍼 — worksout 검색 API 는 빈 키워드 카탈로그 리스팅을 지원하지
+    않는다(0건 반환). 브랜드 시드 키워드 리스트를 순회해 검색 결과를 누적
+    덤프한다. page 인자는 시드 리스트 인덱스로 해석한다.
 
-    검색 키워드가 비어있으면 API 가 빈 결과를 반환할 수 있어, 대분류
-    카테고리 ID 를 고정하고 page 만 증가시켜 전수 덤프를 시도한다.
     테스트는 이 클래스 대신 `fetch_catalog_page` 를 제공하는 mock 주입.
     """
+
+    # 크림 DB 와 브랜드 교차점이 있는 시드. 순서는 임의.
+    BRAND_SEEDS: tuple[str, ...] = (
+        "nike",
+        "adidas",
+        "new balance",
+        "asics",
+        "puma",
+        "converse",
+        "vans",
+        "jordan",
+        "salomon",
+        "hoka",
+        "on",
+        "reebok",
+    )
 
     def __init__(self, crawler: Any) -> None:
         self._crawler = crawler
@@ -427,35 +442,21 @@ class _DefaultWorksoutHttp:
     async def fetch_catalog_page(
         self, page: int, size: int = 60
     ) -> tuple[list[dict], bool]:
-        from src.crawlers.worksout import SEARCH_URL, _parse_search_product
+        """시드 인덱스 ``page`` 의 브랜드 검색 결과를 반환.
 
-        client = await self._crawler._get_client()
-        params = {
-            "searchKeyword": "",
-            "size": size,
-            "page": page,
-            "mainCategoryId": 37,
-        }
-        async with self._crawler._rate_limiter.acquire():
-            resp = await client.get(SEARCH_URL, params=params)
-        if resp.status_code != 200:
-            logger.warning("[worksout] 카탈로그 HTTP %d page=%d", resp.status_code, page)
+        ``has_next`` 는 다음 시드가 남아있는지 여부. 실제 페이지 단위
+        페이지네이션은 수행하지 않고, 시드당 상위 ``size`` 건만 가져온다.
+        """
+        if page >= len(self.BRAND_SEEDS):
             return [], False
+        keyword = self.BRAND_SEEDS[page]
         try:
-            data = resp.json()
-        except ValueError:
-            return [], False
-        payload = data.get("payload") or {}
-        products_page = payload.get("products") or {}
-        content = products_page.get("content") or []
-        has_next = not bool(products_page.get("last", True))
-
-        results: list[dict] = []
-        for item in content:
-            parsed = _parse_search_product(item)
-            if parsed is not None:
-                results.append(parsed)
-        return results, has_next
+            items = await self._crawler.search_products(keyword, limit=size)
+        except Exception:
+            logger.exception("[worksout] 시드 '%s' 검색 실패", keyword)
+            items = []
+        has_next = page + 1 < len(self.BRAND_SEEDS)
+        return items, has_next
 
 
 __all__ = [

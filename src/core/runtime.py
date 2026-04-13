@@ -127,6 +127,7 @@ class V3Runtime:
         hot_poll_interval_sec: int = 60,
         throttle_rate_per_min: float = 15.0,
         throttle_burst: int = 20,
+        recover_candidate_cap: int = 50,
         alert_log_path: str | None = None,
         kream_snapshot_fn: KreamSnapshotFn | None = None,
         kream_delta_client: Any | None = None,
@@ -174,6 +175,7 @@ class V3Runtime:
         self._hot_poll_interval_sec = hot_poll_interval_sec
         self._throttle_rate_per_min = throttle_rate_per_min
         self._throttle_burst = throttle_burst
+        self._recover_candidate_cap = recover_candidate_cap
         self._alert_log_path = alert_log_path
         self._kream_snapshot_fn = kream_snapshot_fn
         self._kream_delta_client = kream_delta_client
@@ -333,6 +335,7 @@ class V3Runtime:
             bus=self._bus,
             checkpoints=self._checkpoints,
             throttle=self._throttle,
+            recover_candidate_cap=self._recover_candidate_cap,
         )
         self._orchestrator.on_catalog_dumped(self._build_catalog_handler())
         self._orchestrator.on_candidate_matched(self._build_candidate_handler())

@@ -174,6 +174,61 @@ def checkpoint_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     return {"available": True, "by_status": by_status, "by_event_type": by_event}
 
 
+def source_breakdown(conn: sqlite3.Connection, hours: int) -> dict[str, Any]:
+    """소싱처별 카탈로그 덤프·후보 매칭 분포 (시간창).
+
+    payload JSON 에서 source/product_count 추출. 어댑터별 진행률 +
+    매칭률(catalog→candidate) + drop 사유 분포 한 번에 보기 위함."""
+    if not _table_exists(conn, "event_checkpoint"):
+        return {"available": False}
+    cutoff = time.time() - hours * 3600
+    sources: dict[str, dict[str, int]] = {}
+
+    for (payload,) in conn.execute(
+        "SELECT payload FROM event_checkpoint "
+        "WHERE event_type='CatalogDumped' AND created_at >= ?",
+        (cutoff,),
+    ):
+        try:
+            d = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        s = d.get("source", "?")
+        row = sources.setdefault(s, {"dumps": 0, "products": 0, "candidates": 0})
+        row["dumps"] += 1
+        row["products"] += int(d.get("product_count") or 0)
+
+    for (payload,) in conn.execute(
+        "SELECT payload FROM event_checkpoint "
+        "WHERE event_type='CandidateMatched' AND created_at >= ?",
+        (cutoff,),
+    ):
+        try:
+            d = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        s = d.get("source", "?")
+        row = sources.setdefault(s, {"dumps": 0, "products": 0, "candidates": 0})
+        row["candidates"] += 1
+
+    drop_reasons: list[dict[str, Any]] = []
+    for status, reason, count in conn.execute(
+        "SELECT status, COALESCE(last_reason,'(none)'), COUNT(*) "
+        "FROM event_checkpoint WHERE event_type='CandidateMatched' "
+        "AND status IN ('deferred','failed') AND created_at >= ? "
+        "GROUP BY 1,2 ORDER BY 3 DESC",
+        (cutoff,),
+    ):
+        drop_reasons.append({"status": status, "reason": reason, "count": count})
+
+    return {
+        "available": True,
+        "window_hours": hours,
+        "sources": sources,
+        "drop_reasons": drop_reasons,
+    }
+
+
 # ─── 섹션 5: alert_followup (Phase 4) ─────────────────────
 
 
@@ -254,6 +309,30 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(f"\n[체크포인트] status={c['by_status']}")
         lines.append(f"            event_type={c['by_event_type']}")
 
+    sb = report["source_breakdown"]
+    if sb.get("available") and sb["sources"]:
+        lines.append(f"\n[소싱처별 {sb['window_hours']}h]")
+        rows = sorted(
+            sb["sources"].items(),
+            key=lambda kv: kv[1].get("products", 0),
+            reverse=True,
+        )
+        for name, row in rows:
+            dumps = row["dumps"]
+            products = row["products"]
+            cand = row["candidates"]
+            rate = f"{(cand / products * 100):.2f}%" if products else "—"
+            lines.append(
+                f"  {name:<14} dumps={dumps:<3} products={products:<6} "
+                f"candidates={cand:<5} match={rate}"
+            )
+        if sb["drop_reasons"]:
+            lines.append("  drop reasons:")
+            for d in sb["drop_reasons"][:6]:
+                lines.append(
+                    f"    [{d['status']}] {d['reason'][:50]}: {d['count']}"
+                )
+
     f = report["followup"]
     if not f.get("available"):
         lines.append("\n[follow-up] 테이블 없음")
@@ -279,6 +358,7 @@ def build_report(db_path: str, jsonl_path: str, hours: int) -> dict[str, Any]:
             "v3_alerts": v3_alerts_summary(jsonl_path, hours),
             "alert_sent": alert_sent_summary(conn, hours),
             "checkpoints": checkpoint_summary(conn),
+            "source_breakdown": source_breakdown(conn, hours),
             "followup": followup_summary(conn),
         }
     finally:

@@ -52,14 +52,19 @@ _nb_mapping: dict | None = None  # {"ts": float, "map": {display_name -> [(style
 _nb_mapping_lock = asyncio.Lock()
 
 # SSR HTML 파싱 패턴
-# data-style="NBP7GS114F" data-col="85" data-display-name="U20024VT"
+# 실제 마크업 (2026 리뉴얼 이후):
+#   <a data-style="NBRJGS141B" data-color="19"
+#      data-display-name="NB Rover / SD2510BK" ...>
+# 이전 구형(`data-col`) 속성은 사라짐. 대신 `data-color` 로 변경됨.
+# display-name 은 "브랜드 모델명 / 스타일코드" 포맷이라 `/` 뒤 토큰만 떼어
+# 매칭 키로 사용한다.
 _PRODUCT_ATTR_RE = re.compile(
-    r'data-style="([^"]+)"[^>]*?data-col="([^"]+)"[^>]*?data-display-name="([^"]+)"',
+    r'data-style="([^"]+)"[^>]*?data-color="([^"]+)"[^>]*?data-display-name="([^"]+)"',
     re.DOTALL,
 )
-# 역순 속성도 대비 — display-name이 style보다 앞에 올 수 있음
+# 역순 속성도 대비 — display-name 이 style 보다 앞에 올 수 있음
 _PRODUCT_ATTR_RE_ALT = re.compile(
-    r'data-display-name="([^"]+)"[^>]*?data-style="([^"]+)"[^>]*?data-col="([^"]+)"',
+    r'data-display-name="([^"]+)"[^>]*?data-style="([^"]+)"[^>]*?data-color="([^"]+)"',
     re.DOTALL,
 )
 
@@ -73,8 +78,17 @@ _NB_MODEL_RE = re.compile(r'\b[A-Z]{1,4}\d{3,5}[A-Z0-9]{0,4}\b')
 
 
 def _normalize_nb_model(model: str) -> str:
-    """모델번호 정규화 — 대문자 변환, 공백/하이픈 제거."""
-    return model.strip().upper().replace(" ", "").replace("-", "")
+    """모델번호 정규화 — 대문자 변환, 공백/하이픈 제거.
+
+    실제 ``data-display-name`` 은 ``NB Rover / SD2510BK`` 처럼 "표시명 /
+    스타일코드" 포맷(신발). ``/`` 뒤 토큰만 뽑아 정규화한다. 의류/잡화
+    카테고리는 ``/`` 구분자가 없어 한글 한 덩어리만 오므로 결과가 NB
+    모델번호 패턴을 만족하지 않아 상위에서 폐기한다.
+    """
+    if not model:
+        return ""
+    tail = model.rsplit("/", 1)[-1]
+    return tail.strip().upper().replace(" ", "").replace("-", "")
 
 
 def _parse_category_mapping(html: str) -> dict[str, list[tuple[str, str]]]:
@@ -86,25 +100,23 @@ def _parse_category_mapping(html: str) -> dict[str, list[tuple[str, str]]]:
     """
     mapping: dict[str, list[tuple[str, str]]] = {}
 
-    # 패턴 1: data-* 속성
-    for m in _PRODUCT_ATTR_RE.finditer(html):
-        style_code, col_code, display_name = m.group(1), m.group(2), m.group(3)
+    def _add(style_code: str, col_code: str, display_name: str) -> None:
         norm = _normalize_nb_model(display_name)
-        if norm:
-            mapping.setdefault(norm, [])
-            pair = (style_code, col_code)
-            if pair not in mapping[norm]:
-                mapping[norm].append(pair)
+        # NB 모델번호 패턴(영문 1~4 + 숫자 3~5 + 영숫자 꼬리) 만족해야 채택.
+        # 의류/잡화는 display-name 에 "/" 구분자 없어 한글 한 덩어리가
+        # 그대로 정규화돼 매칭 패턴을 만족하지 않음 → 폐기.
+        if not norm or not _NB_MODEL_RE.match(norm):
+            return
+        mapping.setdefault(norm, [])
+        pair = (style_code, col_code)
+        if pair not in mapping[norm]:
+            mapping[norm].append(pair)
 
-    # 패턴 1-alt: 속성 순서 역전
+    for m in _PRODUCT_ATTR_RE.finditer(html):
+        _add(m.group(1), m.group(2), m.group(3))
+
     for m in _PRODUCT_ATTR_RE_ALT.finditer(html):
-        display_name, style_code, col_code = m.group(1), m.group(2), m.group(3)
-        norm = _normalize_nb_model(display_name)
-        if norm:
-            mapping.setdefault(norm, [])
-            pair = (style_code, col_code)
-            if pair not in mapping[norm]:
-                mapping[norm].append(pair)
+        _add(m.group(2), m.group(3), m.group(1))
 
     return mapping
 
@@ -159,17 +171,52 @@ class NbKoreaCrawler:
 
     # ----- low-level API -----
 
-    async def _fetch_category_page(self, cate_code: str) -> str:
-        """카테고리 SSR HTML 조회."""
+    async def _fetch_category_page(
+        self, cate_code: str, c_idx: str | None = None
+    ) -> str:
+        """카테고리 SSR HTML 조회.
+
+        ``cIdx`` 가 필수로 바뀌면서(2026 리뉴얼 후 서브 카테고리 단위
+        라우팅), 호출자가 값을 넘기지 않으면 alert HTML(182자) 만 돌아온다.
+        이 메서드는 값이 없으면 그대로 요청하되 상위에서 동적으로 cIdx 를
+        넘겨주어야 한다.
+        """
         client = await self._get_client()
         url = f"{BASE_URL}/product/productList.action"
-        params = {"cateGrpCode": cate_code}
+        params: dict[str, str] = {"cateGrpCode": cate_code}
+        if c_idx:
+            params["cIdx"] = c_idx
         async with self._rate_limiter.acquire():
             resp = await client.get(url, params=params, headers=HEADERS)
         if resp.status_code != 200:
             logger.warning("NB Korea 카테고리 HTTP %d (%s)", resp.status_code, cate_code)
             return ""
         return resp.text
+
+    async def _discover_category_idx(self) -> list[tuple[str, str]]:
+        """홈(`index.action`)에서 현행 `(cateGrpCode, cIdx)` 페어 목록 추출.
+
+        리뉴얼 후 카테고리 코드가 고정 리스트로 유지되지 않아 자가 치유
+        목적으로 네비게이션을 긁어 동적 발견한다. 중복 제거만 수행하고
+        정렬하지 않아 네비게이션 순서를 유지한다.
+        """
+        client = await self._get_client()
+        async with self._rate_limiter.acquire():
+            resp = await client.get(f"{BASE_URL}/index.action", headers=HEADERS)
+        if resp.status_code != 200:
+            logger.warning("NB Korea index.action HTTP %d", resp.status_code)
+            return []
+        pairs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for m in re.finditer(
+            r"/product/productList\.action\?cateGrpCode=(\d+)&(?:amp;)?cIdx=(\d+)",
+            resp.text,
+        ):
+            pair = (m.group(1), m.group(2))
+            if pair not in seen:
+                seen.add(pair)
+                pairs.append(pair)
+        return pairs
 
     async def _fetch_opt_info(self, style_code: str, col_code: str) -> dict:
         """재고/가격 JSON API 조회."""
@@ -220,10 +267,16 @@ class NbKoreaCrawler:
                 return _nb_mapping["map"]
 
             merged: dict[str, list[tuple[str, str]]] = {}
-            for cate in NB_CATEGORIES:
+            # 네비게이션 기반 자가 치유 — index.action 에서 현행 cIdx 페어 수집.
+            # 첫 40개만 (상위 네비 위주) 순회해 과호출 방지.
+            discovered = await self._discover_category_idx()
+            if not discovered:
+                # 폴백 — 구형 고정 리스트로 한 번 시도
+                discovered = [(cate, "") for cate in NB_CATEGORIES]
+            for cate, c_idx in discovered[:40]:
                 try:
-                    html = await self._fetch_category_page(cate)
-                    if html:
+                    html = await self._fetch_category_page(cate, c_idx=c_idx or None)
+                    if html and len(html) > 1000:
                         partial = _parse_category_mapping(html)
                         for k, v in partial.items():
                             merged.setdefault(k, [])
@@ -231,10 +284,16 @@ class NbKoreaCrawler:
                                 if pair not in merged[k]:
                                     merged[k].append(pair)
                 except Exception as exc:
-                    logger.warning("NB Korea 카테고리 %s 파싱 실패: %s", cate, exc)
+                    logger.warning(
+                        "NB Korea 카테고리 %s/%s 파싱 실패: %s", cate, c_idx, exc
+                    )
 
             _nb_mapping = {"ts": now, "map": merged}
-            logger.info("NB Korea 매핑 캐시 갱신: %d건", len(merged))
+            logger.info(
+                "NB Korea 매핑 캐시 갱신: %d건 (카테고리 %d)",
+                len(merged),
+                len(discovered),
+            )
             return merged
 
     # ----- 인터페이스 -----

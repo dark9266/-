@@ -93,10 +93,10 @@ class TestParseCategoryMapping:
     def test_extract_mapping(self):
         html = '''
         <div class="product_list">
-          <li data-style="NBP7GS114F" data-col="85" data-display-name="U20024VT">
+          <li data-style="NBP7GS114F" data-color="85" data-display-name="NB 2002R / U20024VT">
             <a href="/product/productDetail.action?styleCode=NBP7GS114F&colCode=85">product1</a>
           </li>
-          <li data-style="NBPDGS101F" data-col="19" data-display-name="M2002RXD">
+          <li data-style="NBPDGS101F" data-color="19" data-display-name="NB 2002R / M2002RXD">
             <a href="/product/productDetail.action?styleCode=NBPDGS101F&colCode=19">product2</a>
           </li>
         </div>
@@ -113,8 +113,8 @@ class TestParseCategoryMapping:
     def test_duplicate_dedup(self):
         """같은 display_name, 같은 style/col 쌍은 중복 추가 안 함."""
         html = '''
-        <li data-style="NBP7GS114F" data-col="85" data-display-name="U20024VT">a</li>
-        <li data-style="NBP7GS114F" data-col="85" data-display-name="U20024VT">b</li>
+        <li data-style="NBP7GS114F" data-color="85" data-display-name="NB 2002R / U20024VT">a</li>
+        <li data-style="NBP7GS114F" data-color="85" data-display-name="NB 2002R / U20024VT">b</li>
         '''
         mapping = _parse_category_mapping(html)
         assert len(mapping["U20024VT"]) == 1
@@ -122,15 +122,15 @@ class TestParseCategoryMapping:
     def test_multiple_colors_same_model(self):
         """같은 모델에 다른 컬러 코드."""
         html = '''
-        <li data-style="NBP7GS114F" data-col="85" data-display-name="U20024VT">a</li>
-        <li data-style="NBP7GS114F" data-col="19" data-display-name="U20024VT">b</li>
+        <li data-style="NBP7GS114F" data-color="85" data-display-name="NB 2002R / U20024VT">a</li>
+        <li data-style="NBP7GS114F" data-color="19" data-display-name="NB 2002R / U20024VT">b</li>
         '''
         mapping = _parse_category_mapping(html)
         assert len(mapping["U20024VT"]) == 2
 
     def test_alt_attribute_order(self):
         """data-display-name이 data-style보다 앞에 올 때."""
-        html = '<li data-display-name="ML860XA" data-style="NBPDFF003Z" data-col="22">x</li>'
+        html = '<li data-display-name="NB 860 / ML860XA" data-style="NBPDFF003Z" data-color="22">x</li>'
         mapping = _parse_category_mapping(html)
         assert "ML860XA" in mapping
         assert mapping["ML860XA"] == [("NBPDFF003Z", "22")]

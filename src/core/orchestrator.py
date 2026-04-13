@@ -81,10 +81,17 @@ class Orchestrator:
         bus: EventBus,
         checkpoints: CheckpointStore,
         throttle: CallThrottle,
+        *,
+        recover_candidate_cap: int | None = None,
     ) -> None:
         self._bus = bus
         self._checkpoints = checkpoints
         self._throttle = throttle
+        self._recover_candidate_cap = (
+            recover_candidate_cap
+            if recover_candidate_cap is not None
+            else RECOVER_CANDIDATE_CAP
+        )
 
         self._catalog_handler: CatalogHandler | None = None
         self._candidate_handler: CandidateHandler | None = None
@@ -204,7 +211,7 @@ class Orchestrator:
         candidate_replayed = 0
         candidate_stale = 0
         async for ckpt_id, event in self._checkpoints.replay(_CONSUMER_CANDIDATE):
-            if candidate_replayed >= RECOVER_CANDIDATE_CAP:
+            if candidate_replayed >= self._recover_candidate_cap:
                 await self._checkpoints.mark_failed(ckpt_id, "recover_cap")
                 candidate_stale += 1
                 continue
@@ -223,7 +230,7 @@ class Orchestrator:
                 "candidate recover 캡 초과 — stale drop: count=%d "
                 "(cap=%d, 크림 캡 보호)",
                 candidate_stale,
-                RECOVER_CANDIDATE_CAP,
+                self._recover_candidate_cap,
             )
 
         async for ckpt_id, event in self._checkpoints.replay(_CONSUMER_CATALOG):

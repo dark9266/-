@@ -252,6 +252,88 @@ class VansCrawler:
         logger.info("Vans 검색 '%s': %d건", keyword, len(results))
         return results
 
+    async def fetch_category_models(
+        self, category: str = "SHOES", max_pages: int = 30
+    ) -> list[dict]:
+        """카테고리 HTML 리스팅에서 모델코드 + 이름 discovery.
+
+        `search_products` 는 키워드 5개 seed 로 약 20건만 긁지만, Vans 공식몰
+        ``/category/{cat}`` 페이지는 페이지당 ~25 모델씩 수백 페이지까지
+        열려있다. 가격/사이즈 정보는 없고 모델코드와 대략적 상품명(alt) 만
+        얻지만 kream_collect_queue discovery 용도로는 충분하다.
+
+        Returns
+        -------
+        list[dict]
+            `[{"model_number": "VN000...", "name": "...", "url": "..."}]`.
+            중복 모델코드는 dedup. 품절/비활성 필터는 없음 (카테고리 HTML
+            에서는 판별 불가).
+        """
+        client = await self._get_client()
+        seen: set[str] = set()
+        results: list[dict] = []
+
+        # 상품 카드 컨텍스트에서 가장 가까운 alt 를 짝짓기 위한 근사 파서.
+        # 정확한 블록 매칭보다는 "카드 경계 ≒ product-tile-main 시작점" 휴리스틱.
+        _card_pat = re.compile(
+            r'product-tile-main.*?href="/PRODUCT/([A-Z0-9]{5,20})".*?alt="([^"]{2,80})"',
+            re.DOTALL,
+        )
+
+        for page in range(1, max_pages + 1):
+            try:
+                async with self._rate_limiter.acquire():
+                    resp = await client.get(
+                        f"{BASE_URL}/category/{category}",
+                        params={"page": page},
+                    )
+            except Exception:
+                logger.exception("Vans 카테고리 %s page=%d fetch 실패", category, page)
+                break
+
+            if resp.status_code != 200:
+                logger.warning(
+                    "Vans 카테고리 HTTP %d (%s page=%d)",
+                    resp.status_code,
+                    category,
+                    page,
+                )
+                break
+
+            html = resp.text
+            page_new = 0
+            for m in _card_pat.finditer(html):
+                model = m.group(1).strip()
+                name = m.group(2).strip()
+                # alt 는 Handlebars 템플릿 토큰({{...}}) 인 경우 스킵
+                if name.startswith("{{"):
+                    name = ""
+                if not model or model in seen:
+                    continue
+                seen.add(model)
+                results.append(
+                    {
+                        "model_number": model,
+                        "name": name,
+                        "url": f"{BASE_URL}/PRODUCT/{model}",
+                        "brand": "Vans",
+                        "is_sold_out": False,
+                    }
+                )
+                page_new += 1
+
+            if page_new == 0:
+                # 새 모델이 없으면 종료 (HTML 템플릿 fallback 가능성)
+                break
+
+        logger.info(
+            "Vans 카테고리 %s 덤프: %d 모델 (%d페이지 스캔)",
+            category,
+            len(results),
+            page,
+        )
+        return results
+
     async def get_product_detail(
         self, product_id: str
     ) -> RetailProduct | None:

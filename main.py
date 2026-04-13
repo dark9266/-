@@ -78,6 +78,22 @@ def _register_v3_runtime_hook() -> None:
         except Exception:
             logger.warning("[v3] KreamDeltaClient 배선 실패 — hot_watcher fallback", exc_info=True)
 
+    # dry-run: 크림 호출 0건이므로 throttle/recover cap 불필요 — 파이프라인 수용력 확보
+    if settings.v3_kream_dry_run:
+        _throttle_rate = 600.0
+        _throttle_burst = 1000
+        _recover_cap = 20000
+        logger.info(
+            "[v3] dry-run throttle override: rate=%s/min burst=%s recover_cap=%s",
+            _throttle_rate,
+            _throttle_burst,
+            _recover_cap,
+        )
+    else:
+        _throttle_rate = settings.v3_throttle_rate_per_min
+        _throttle_burst = settings.v3_throttle_burst
+        _recover_cap = 50
+
     _v3_runtime = V3Runtime(
         db_path=settings.db_path,
         enabled=settings.v3_runtime_enabled,
@@ -85,8 +101,9 @@ def _register_v3_runtime_hook() -> None:
         adapter_interval_sec=settings.v3_adapter_interval_sec,
         adapter_stagger_sec=settings.v3_adapter_stagger_sec,
         hot_poll_interval_sec=settings.v3_hot_poll_interval_sec,
-        throttle_rate_per_min=settings.v3_throttle_rate_per_min,
-        throttle_burst=settings.v3_throttle_burst,
+        throttle_rate_per_min=_throttle_rate,
+        throttle_burst=_throttle_burst,
+        recover_candidate_cap=_recover_cap,
         alert_log_path=settings.v3_alert_log_path,
         kream_snapshot_fn=snapshot_fn,
         kream_delta_client=delta_client,

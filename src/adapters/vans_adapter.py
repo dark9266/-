@@ -136,20 +136,26 @@ class VansAdapter:
     # 1) 카탈로그 덤프
     # ------------------------------------------------------------------
     async def dump_catalog(self) -> tuple[CatalogDumped, list[dict]]:
-        """반스 카탈로그 키워드별 덤프.
+        """반스 카탈로그 덤프 — 검색 seed + 카테고리 리스팅 병행.
 
-        Returns
-        -------
-        tuple
-            `(CatalogDumped 이벤트, 상품 dict 리스트)`. 각 아이템은
-            `product_id/name/brand/model_number/price/...` 구조 — 반스
-            크롤러 `search_products` 정규화 결과를 그대로 유지하며
-            `_keyword` 메타가 추가된다.
+        두 경로를 합쳐 discovery 커버리지를 높인다:
+
+        1. ``search_products`` 키워드 seed: 가격·이미지·브랜드 풀정보 포함
+           (매칭 candidate 로 직접 이어짐)
+        2. ``fetch_category_models`` 카테고리 HTML 리스팅: 모델코드 + 이름만
+           (kream_collect_queue discovery 용 — 가격 없음, price=0)
+
+        경로 1 이 먼저 실행되어 가격 있는 아이템을 선점하고, 경로 2 는 이미
+        본 모델을 dedup 으로 건너뛴다. 경로 2 에서 새로 발견된 모델은
+        price=0 으로 리스트에 추가되는데, 크림 DB 매칭 시 collect_queue 에만
+        쌓이고 CandidateMatched 는 발행되지 않는다 (price=0 은 profit 계산
+        불가 → match_to_kream 가 드랍).
         """
         http = await self._get_http()
         products: list[dict] = []
         seen_models: set[str] = set()
 
+        # 경로 1: 브랜드/실루엣 키워드 seed 검색 (풀정보)
         for keyword in self._keywords:
             try:
                 items = await http.search_products(
@@ -167,6 +173,34 @@ class VansAdapter:
                     seen_models.add(model)
                 item["_keyword"] = keyword
                 products.append(item)
+
+        # 경로 2: 카테고리 HTML 리스팅 (discovery 전용)
+        for category in ("SHOES", "MEN", "WOMEN", "KIDS"):
+            try:
+                cat_items = await http.fetch_category_models(
+                    category=category, max_pages=30
+                )
+            except Exception:
+                logger.exception("[vans] 카테고리 덤프 실패: %s", category)
+                continue
+
+            for item in cat_items or []:
+                model = (item.get("model_number") or "").strip()
+                if not model or model in seen_models:
+                    continue
+                seen_models.add(model)
+                # price=0 은 match_to_kream 가 CandidateMatched 대신 queue 로 보냄
+                products.append(
+                    {
+                        "model_number": model,
+                        "name": item.get("name") or "",
+                        "brand": item.get("brand") or "Vans",
+                        "url": item.get("url") or _build_url(model),
+                        "price": 0,
+                        "is_sold_out": False,
+                        "_category": category,
+                    }
+                )
 
         event = CatalogDumped(
             source=self.source_name,
@@ -264,6 +298,12 @@ class VansAdapter:
 
             price = int(item.get("price") or 0)
             url = item.get("url") or _build_url(model_no)
+            # 카테고리 HTML discovery 경로는 price=0 — 매칭 candidate 발행 스킵
+            # (profit 계산 불가). 다음 사이클 search_products 경로에서 가격이
+            # 붙으면 정상 매칭.
+            if price <= 0:
+                stats.skipped_guard += 1
+                continue
             try:
                 kream_product_id = int(kream_row["product_id"])
             except (TypeError, ValueError):
