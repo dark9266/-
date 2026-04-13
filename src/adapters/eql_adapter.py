@@ -41,15 +41,16 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://www.eqlstore.com"
 
 
-# 기본 덤프 브랜드 키워드 — 크림 커버리지 우선순위 기준.
-# EQL 은 브랜드 공식 필터 대신 검색 API 의 키워드를 사용.
+# 기본 덤프 브랜드 키워드 — 실호출 확인 기준 EQL 이 실제 carry 하는 브랜드만.
+# 2026-04-13 실측: NIKE/NEW BALANCE/SALOMON/JORDAN/PUMA/HOKA/CONVERSE/REEBOK/
+# TNF/PATAGONIA/CARHARTT 등 totalRow=0 — EQL(한섬 편집숍) 은 이 브랜드들을
+# 취급하지 않는다. 아래 4개만 유효 (건수 검색 결과):
+#   ADIDAS 1,058 / VANS 1,105 / ASICS 532 / ARC'TERYX 395
 DEFAULT_BRAND_KEYWORDS: dict[str, str] = {
-    "Nike": "NIKE",
     "adidas": "ADIDAS",
-    "New Balance": "NEW BALANCE",
-    "Asics": "ASICS",
-    "Salomon": "SALOMON",
     "Vans": "VANS",
+    "Asics": "ASICS",
+    "Arc'teryx": "ARC'TERYX",
 }
 
 
