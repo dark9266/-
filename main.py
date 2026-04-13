@@ -5,16 +5,19 @@
     PYTHONPATH=. python main.py
 """
 
-import asyncio
 import atexit
 import os
 import sys
 
 from src.config import settings
+from src.core.runtime import V3Runtime, _safe_start_v3
 from src.discord_bot.bot import bot
 from src.utils.logging import setup_logger
 
 logger = setup_logger("main")
+
+# v3 런타임 전역 핸들 — 기본 OFF. 기동 실패해도 v2 는 계속 돌아야 한다.
+_v3_runtime: V3Runtime | None = None
 
 PID_FILE = "data/kreambot.pid"
 
@@ -36,6 +39,43 @@ def _acquire_pid_lock() -> None:
     atexit.register(lambda: os.path.exists(PID_FILE) and os.unlink(PID_FILE))
 
 
+def _register_v3_runtime_hook() -> None:
+    """봇 setup_hook 타이밍에 v3 런타임 기동을 등록 (기본 OFF 면 no-op).
+
+    기존 bot 객체에 event listener 로 on_ready 한 번 발생 시 v3 기동.
+    기동 실패는 WARN 후 흡수 → v2 는 계속 동작한다.
+    기본값 `V3_RUNTIME_ENABLED=false` 이면 `start()` 가 즉시 return.
+    """
+    global _v3_runtime
+
+    if not settings.v3_runtime_enabled:
+        logger.info("[v3] V3_RUNTIME_ENABLED=false — v2 단독 운영")
+        return
+
+    _v3_runtime = V3Runtime(
+        db_path=settings.db_path,
+        enabled=settings.v3_runtime_enabled,
+        musinsa_interval_sec=settings.v3_musinsa_interval_sec,
+        hot_poll_interval_sec=settings.v3_hot_poll_interval_sec,
+        throttle_rate_per_min=settings.v3_throttle_rate_per_min,
+        throttle_burst=settings.v3_throttle_burst,
+        alert_log_path=settings.v3_alert_log_path,
+    )
+
+    _already_started = {"flag": False}
+
+    @bot.listen("on_ready")
+    async def _on_ready_start_v3() -> None:
+        if _already_started["flag"]:
+            return
+        _already_started["flag"] = True
+        ok = await _safe_start_v3(_v3_runtime)  # type: ignore[arg-type]
+        if ok:
+            logger.info("[v3] 런타임 기동 성공 (병행 운영)")
+        else:
+            logger.warning("[v3] 런타임 기동 실패 — v2 단독 운영 지속")
+
+
 def main():
     if not settings.discord_token:
         print("❌ DISCORD_TOKEN이 설정되지 않았습니다.")
@@ -45,6 +85,10 @@ def main():
 
     _acquire_pid_lock()
     logger.info("크림봇 시작")
+    try:
+        _register_v3_runtime_hook()
+    except Exception:
+        logger.warning("[v3] 런타임 hook 등록 실패 — v2 단독 운영 지속", exc_info=True)
     bot.run(settings.discord_token, log_handler=None)
 
 
