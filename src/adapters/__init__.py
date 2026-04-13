@@ -8,7 +8,16 @@
 직접 참조하지 않는다 (의존성 역전).
 """
 
+from src.adapters.kasina_adapter import KasinaAdapter
 from src.adapters.kream_hot_watcher import KreamHotWatcher
 from src.adapters.musinsa_adapter import MusinsaAdapter
+from src.adapters.nike_adapter import NikeAdapter
+from src.adapters.twentynine_cm_adapter import TwentynineCmAdapter
 
-__all__ = ["KreamHotWatcher", "MusinsaAdapter"]
+__all__ = [
+    "KasinaAdapter",
+    "KreamHotWatcher",
+    "MusinsaAdapter",
+    "NikeAdapter",
+    "TwentynineCmAdapter",
+]
