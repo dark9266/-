@@ -135,6 +135,9 @@ class Settings(BaseSettings):
     v3_throttle_rate_per_min: float = 3.0
     v3_throttle_burst: int = 6
     v3_alert_log_path: str = str(LOGS_DIR / "v3_alerts.jsonl")
+    # 드라이런: 크림 호출 0건. snapshot_fn / delta_client 미주입 →
+    # 어댑터 덤프·매칭·이벤트버스만 검증. 캡 회복 전 안전 검증용.
+    v3_kream_dry_run: bool = False
 
 
 settings = Settings()

@@ -56,21 +56,27 @@ def _register_v3_runtime_hook() -> None:
     # (실패해도 v3 기동 자체는 실패 안 하게 try/except — fallback: hot_watcher + candidate drop)
     snapshot_fn = None
     delta_client = None
-    try:
-        from src.crawlers.kream import KreamCrawler
-        from src.crawlers.kream_delta_client import (
-            KreamDeltaClient,
-            build_snapshot_fn,
+    if settings.v3_kream_dry_run:
+        logger.warning(
+            "[v3] V3_KREAM_DRY_RUN=true — 크림 snapshot_fn/delta_client 미배선. "
+            "어댑터 덤프·매칭·이벤트버스만 검증 (크림 호출 0건)"
         )
+    else:
+        try:
+            from src.crawlers.kream import KreamCrawler
+            from src.crawlers.kream_delta_client import (
+                KreamDeltaClient,
+                build_snapshot_fn,
+            )
 
-        _kream_crawler = KreamCrawler()
-        delta_client = KreamDeltaClient(crawler=_kream_crawler)
-        snapshot_fn = build_snapshot_fn(delta_client)
-        logger.info(
-            "[v3] KreamDeltaClient 배선 완료 — candidate snapshot + delta watcher 활성"
-        )
-    except Exception:
-        logger.warning("[v3] KreamDeltaClient 배선 실패 — hot_watcher fallback", exc_info=True)
+            _kream_crawler = KreamCrawler()
+            delta_client = KreamDeltaClient(crawler=_kream_crawler)
+            snapshot_fn = build_snapshot_fn(delta_client)
+            logger.info(
+                "[v3] KreamDeltaClient 배선 완료 — candidate snapshot + delta watcher 활성"
+            )
+        except Exception:
+            logger.warning("[v3] KreamDeltaClient 배선 실패 — hot_watcher fallback", exc_info=True)
 
     _v3_runtime = V3Runtime(
         db_path=settings.db_path,
