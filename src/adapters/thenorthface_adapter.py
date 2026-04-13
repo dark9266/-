@@ -44,7 +44,7 @@ DEFAULT_CATEGORIES: dict[str, str] = {
     "women": "여성",
     "kids": "키즈",
     "equipment": "이큅먼트",
-    "white-label": "화이트라벨",
+    "whitelabel": "화이트라벨",
     "shoes": "신발",
 }
 
