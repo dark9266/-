@@ -26,10 +26,13 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from src.adapters._collect_queue import enqueue_collect
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
+from src.utils.rate_limiter import AsyncRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +40,28 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://api.arcteryx.co.kr"
 WEB_BASE = "https://arcteryx.co.kr"
 
-# 기본 덤프 카테고리 — 아크테릭스 KR 공식몰 루트 카테고리
-# (category code → 한글 표시명)
+# api.arcteryx.co.kr Laravel REST API 용 헤더 (브라우저 모방).
+_HEADERS: dict[str, str] = {
+    "Accept": "application/json",
+    "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Referer": f"{WEB_BASE}/",
+    "Origin": WEB_BASE,
+}
+
+# 기본 덤프 카테고리 — `category_id` 정수 ID 기반 (2026-04-13 실호출 확인).
+# 응답 `paginate.total` 기준 건수: "1"=623(최대), "97"=243, "50"=76, "100"=25.
+# 카테고리 이름은 각 row 의 `category_name` 필드로 동적 확인되므로 값은
+# 로깅용 placeholder. 안정화 후 카테고리 트리 전수 탐색으로 확장 예정.
 DEFAULT_CATEGORIES: dict[str, str] = {
-    "mens-jackets": "남성 자켓",
-    "mens-pants": "남성 팬츠",
-    "womens-jackets": "여성 자켓",
-    "womens-pants": "여성 팬츠",
-    "accessories": "액세서리",
+    "1": "카테고리 1",
+    "97": "카테고리 97",
+    "50": "카테고리 50",
+    "100": "카테고리 100",
 }
 
 
@@ -365,34 +382,111 @@ class ArcteryxAdapter:
 
 
 # ----------------------------------------------------------------------
-# 기본 HTTP 레이어 — 본 Phase 에서는 실호출 경로 미사용 (mock 전용)
+# 기본 HTTP 레이어 — api.arcteryx.co.kr Laravel REST 실호출
 # ----------------------------------------------------------------------
 class _DefaultArcteryxHttp:
-    """Laravel REST 기본 호출 레이어 — 본 Phase 에서는 호출되지 않음.
+    """Laravel REST 실호출 레이어.
 
-    실호출 전환 시 `_list_raw` / `_options_raw` 구현을 채우고
-    `src/crawlers/arcteryx.py` 의 httpx 클라이언트 / rate limiter 를
-    그대로 재사용할 예정. 지금은 NotImplementedError 로 막아 실수로
-    실호출이 새지 않도록 한다.
+    * `_list_raw`: `GET /api/products/search?search_type=category&category_id=&page=`
+      → `{rows, total}` 로 정규화. 서버는 `per_page=40` 고정이므로 인자는 무시.
+    * `_options_raw`: `GET /api/products/{product_id}/options`
+      → 어댑터의 `_extract_model_from_options` 가 level=1 `code` 를 읽는다.
+
+    rate: `AsyncRateLimiter(max_concurrent=2, min_interval=2.0)` — 기존
+    `src/crawlers/arcteryx.py` 와 동일 보수값. 어댑터 인스턴스별로 1개만
+    생성(싱글톤 X) — 런타임 내 어댑터 자체가 단일 인스턴스라 안전.
     """
+
+    def __init__(self) -> None:
+        self._client: httpx.AsyncClient | None = None
+        self._limiter = AsyncRateLimiter(max_concurrent=2, min_interval=2.0)
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                headers=_HEADERS,
+                timeout=15.0,
+                follow_redirects=True,
+                http2=False,
+            )
+        return self._client
 
     async def _list_raw(
         self,
         *,
         category: str,
-        page_size: int = 60,
+        page_size: int = 40,
         page_number: int = 1,
     ) -> dict:
-        raise NotImplementedError(
-            "ArcteryxAdapter 기본 HTTP 레이어는 Phase 3 배치 2 에서 "
-            "mock 전용 — 실호출은 아직 연결되지 않았습니다."
-        )
+        client = await self._get_client()
+        params = {
+            "search_type": "category",
+            "category_id": str(category),
+            "page": str(page_number),
+        }
+        async with self._limiter.acquire():
+            try:
+                resp = await client.get(
+                    f"{API_BASE}/api/products/search", params=params
+                )
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "[arcteryx] list HTTP 오류 category=%s page=%d: %s",
+                    category,
+                    page_number,
+                    exc,
+                )
+                return {}
+        if resp.status_code != 200:
+            logger.warning(
+                "[arcteryx] list HTTP %d category=%s page=%d",
+                resp.status_code,
+                category,
+                page_number,
+            )
+            return {}
+        try:
+            payload = resp.json()
+        except ValueError:
+            logger.warning(
+                "[arcteryx] list JSON 파싱 실패 category=%s page=%d",
+                category,
+                page_number,
+            )
+            return {}
+        data = payload.get("data") or {}
+        return {
+            "rows": data.get("rows") or [],
+            "total": int(data.get("count") or 0),
+        }
 
     async def _options_raw(self, *, product_id: int | str) -> dict:
-        raise NotImplementedError(
-            "ArcteryxAdapter 기본 HTTP 레이어는 Phase 3 배치 2 에서 "
-            "mock 전용 — 실호출은 아직 연결되지 않았습니다."
-        )
+        client = await self._get_client()
+        async with self._limiter.acquire():
+            try:
+                resp = await client.get(
+                    f"{API_BASE}/api/products/{product_id}/options"
+                )
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "[arcteryx] options HTTP 오류 id=%s: %s", product_id, exc
+                )
+                return {}
+        if resp.status_code != 200:
+            logger.warning(
+                "[arcteryx] options HTTP %d id=%s", resp.status_code, product_id
+            )
+            return {}
+        try:
+            payload = resp.json() or {}
+        except ValueError:
+            return {}
+        # 응답이 `{success, data: {...}}` 로 감싸진 경우도 있고 data 직접인 경우도 있음.
+        # level=1 code 를 읽는 `_extract_model_from_options` 가 options 키만 본다.
+        if isinstance(payload, dict) and "options" in payload:
+            return payload
+        inner = payload.get("data") if isinstance(payload, dict) else None
+        return inner if isinstance(inner, dict) else {}
 
 
 __all__ = [
