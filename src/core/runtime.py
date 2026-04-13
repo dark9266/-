@@ -30,6 +30,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from src.adapters.abcmart_adapter import AbcmartAdapter
+from src.adapters.arcteryx_adapter import ArcteryxAdapter
 from src.adapters.asics_adapter import AsicsAdapter
 from src.adapters.beaker_adapter import BeakerAdapter
 from src.adapters.eql_adapter import EqlAdapter
@@ -91,7 +92,7 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("eql", EqlAdapter),
     ("nbkorea", NbkoreaAdapter),
     ("salomon", SalomonAdapter),
-    # ("arcteryx", ArcteryxAdapter),  # Phase 3 stub — HTTP 레이어 미연결. 실호출 배선 후 복구.
+    ("arcteryx", ArcteryxAdapter),
     ("vans", VansAdapter),
     ("wconcept", WconceptAdapter),
     ("worksout", WorksoutAdapter),
