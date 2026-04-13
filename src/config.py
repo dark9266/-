@@ -127,12 +127,13 @@ class Settings(BaseSettings):
     v3_musinsa_interval_sec: int = 1800  # 무신사 어댑터 사이클 간격 (30분)
     v3_adapter_interval_sec: int = 1800  # v3 어댑터 공통 사이클 간격 (30분)
     v3_adapter_stagger_sec: int = 30  # 어댑터 기동 stagger (21개 × 30s = 10.5분)
-    v3_hot_poll_interval_sec: int = 180  # 크림 hot/delta 감시 폴링 간격
-    # 일일 캡(10,000) 대비 안전 범위 재계산:
-    # 15/min × 60 × 24 = 21,600 (2.16x 초과) → 5/min = 7,200 + delta 670/h(180s)
-    # = 약 6,500/일. 여유 3,500 으로 어댑터 사이클 소비 흡수.
-    v3_throttle_rate_per_min: float = 5.0
-    v3_throttle_burst: int = 10
+    v3_hot_poll_interval_sec: int = 300  # 크림 hot/delta 감시 폴링 간격
+    # 일일 캡(10,000) 대비 안전 범위:
+    # candidate: 3/min × 60 × 24 = 4,320
+    # delta_light: 180/h × 24 ≈ 4,320 (300s 폴링, 호출 ~15건/poll)
+    # 합계 ≈ 8,640/일, 여유 1,360 으로 recover/수동 호출 흡수.
+    v3_throttle_rate_per_min: float = 3.0
+    v3_throttle_burst: int = 6
     v3_alert_log_path: str = str(LOGS_DIR / "v3_alerts.jsonl")
 
 
