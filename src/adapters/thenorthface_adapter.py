@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from src.adapters._collect_queue import enqueue_collect
+from src.adapters._collect_queue import enqueue_collect_batch
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -204,15 +204,16 @@ class TheNorthFaceAdapter:
                 index[key] = dict(row)
         return index
 
-    def _enqueue_collect(self, item: dict, model_no: str) -> bool:
-        """미등재 신상 → kream_collect_queue INSERT OR IGNORE."""
-        return enqueue_collect(
-            self._db_path,
-            model_number=normalize_model_number(model_no),
-            brand_hint="The North Face",
-            name_hint=item.get("name") or "",
-            source=self.source_name,
-            source_url=item.get("url") or _build_url(model_no),
+    def _build_collect_row(
+        self, item: dict, model_no: str
+    ) -> tuple[str, str, str, str, str]:
+        """미등재 신상 → batch flush 용 row 튜플."""
+        return (
+            normalize_model_number(model_no),
+            "The North Face",
+            item.get("name") or "",
+            self.source_name,
+            item.get("url") or _build_url(model_no),
         )
 
     async def match_to_kream(
@@ -222,6 +223,7 @@ class TheNorthFaceAdapter:
         stats = TnfMatchStats(dumped=len(products))
         kream_index = self._load_kream_index()
         matched: list[CandidateMatched] = []
+        pending_collect: list[tuple[str, str, str, str, str]] = []
 
         for item in products:
             # 품절 필터
@@ -244,8 +246,7 @@ class TheNorthFaceAdapter:
 
             kream_row = kream_index.get(key)
             if kream_row is None:
-                if self._enqueue_collect(item, model_no):
-                    stats.collected_to_queue += 1
+                pending_collect.append(self._build_collect_row(item, model_no))
                 continue
 
             source_name_text = item.get("name") or ""
@@ -292,6 +293,16 @@ class TheNorthFaceAdapter:
             await self._bus.publish(candidate)
             matched.append(candidate)
             stats.matched += 1
+
+        if pending_collect:
+            try:
+                inserted = enqueue_collect_batch(self._db_path, pending_collect)
+                stats.collected_to_queue += inserted
+            except Exception:
+                logger.warning(
+                    "[thenorthface] collect_queue 배치 flush 실패: n=%d",
+                    len(pending_collect),
+                )
 
         logger.info("[thenorthface] 매칭 완료: %s", stats.as_dict())
         return matched, stats

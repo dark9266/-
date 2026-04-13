@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from src.adapters._collect_queue import enqueue_collect
+from src.adapters._collect_queue import enqueue_collect_batch
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -216,15 +216,16 @@ class SalomonAdapter:
                 index[key] = dict(row)
         return index
 
-    def _enqueue_collect(self, item: dict, model_no: str) -> bool:
-        """미등재 신상 → kream_collect_queue INSERT OR IGNORE."""
-        return enqueue_collect(
-            self._db_path,
-            model_number=normalize_model_number(model_no),
-            brand_hint="Salomon",
-            name_hint=item.get("title") or "",
-            source=self.source_name,
-            source_url=_build_url(item.get("handle") or ""),
+    def _build_collect_row(
+        self, item: dict, model_no: str
+    ) -> tuple[str, str, str, str, str]:
+        """미등재 신상 → batch flush 용 row 튜플."""
+        return (
+            normalize_model_number(model_no),
+            "Salomon",
+            item.get("title") or "",
+            self.source_name,
+            _build_url(item.get("handle") or ""),
         )
 
     async def match_to_kream(
@@ -239,6 +240,7 @@ class SalomonAdapter:
         stats = SalomonMatchStats(dumped=len(variants))
         kream_index = self._load_kream_index()
         matched: list[CandidateMatched] = []
+        pending_collect: list[tuple[str, str, str, str, str]] = []
 
         # SKU 단위 dedup — 같은 SKU variant 여러 개(사이즈별)면 1회만 매칭.
         seen_skus: set[str] = set()
@@ -266,8 +268,7 @@ class SalomonAdapter:
 
             kream_row = kream_index.get(key)
             if kream_row is None:
-                if self._enqueue_collect(item, sku):
-                    stats.collected_to_queue += 1
+                pending_collect.append(self._build_collect_row(item, sku))
                 continue
 
             # 매칭 가드 — 살로몬은 콜라보 거의 없지만 일관성 유지를 위해 호출
@@ -317,6 +318,16 @@ class SalomonAdapter:
             await self._bus.publish(candidate)
             matched.append(candidate)
             stats.matched += 1
+
+        if pending_collect:
+            try:
+                inserted = enqueue_collect_batch(self._db_path, pending_collect)
+                stats.collected_to_queue += inserted
+            except Exception:
+                logger.warning(
+                    "[salomon] collect_queue 배치 flush 실패: n=%d",
+                    len(pending_collect),
+                )
 
         logger.info("[salomon] 매칭 완료: %s", stats.as_dict())
         return matched, stats

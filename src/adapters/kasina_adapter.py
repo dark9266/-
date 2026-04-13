@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from src.adapters._collect_queue import enqueue_collect
+from src.adapters._collect_queue import enqueue_collect_batch
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -217,19 +217,20 @@ class KasinaAdapter:
                 index[key] = dict(row)
         return index
 
-    def _enqueue_collect(self, item: dict, model_no: str) -> bool:
-        """미등재 신상 → kream_collect_queue INSERT OR IGNORE."""
+    def _build_collect_row(
+        self, item: dict, model_no: str
+    ) -> tuple[str, str, str, str, str]:
+        """미등재 신상 → batch flush 용 row 튜플."""
         pno = item.get("productNo")
-        return enqueue_collect(
-            self._db_path,
-            model_number=normalize_model_number(model_no),
-            brand_hint=item.get("brandNameKo")
+        return (
+            normalize_model_number(model_no),
+            item.get("brandNameKo")
             or item.get("brandNameEn")
             or item.get("_brand_name")
             or "",
-            name_hint=item.get("productName") or item.get("productNameEn") or "",
-            source=self.source_name,
-            source_url=_build_url(pno) if pno is not None else "",
+            item.get("productName") or item.get("productNameEn") or "",
+            self.source_name,
+            _build_url(pno) if pno is not None else "",
         )
 
     async def match_to_kream(
@@ -243,6 +244,7 @@ class KasinaAdapter:
         stats = KasinaMatchStats(dumped=len(products))
         kream_index = self._load_kream_index()
         matched: list[CandidateMatched] = []
+        pending_collect: list[tuple[str, str, str, str, str]] = []
 
         for item in products:
             if item.get("isSoldOut"):
@@ -261,9 +263,7 @@ class KasinaAdapter:
 
             kream_row = kream_index.get(key)
             if kream_row is None:
-                # 미등재 신상 → collect_queue 적재 후보
-                if self._enqueue_collect(item, mgmt):
-                    stats.collected_to_queue += 1
+                pending_collect.append(self._build_collect_row(item, mgmt))
                 continue
 
             # 매칭 가드 — 크림 이름 vs 소싱 이름 키워드 비교
@@ -316,6 +316,16 @@ class KasinaAdapter:
             await self._bus.publish(candidate)
             matched.append(candidate)
             stats.matched += 1
+
+        if pending_collect:
+            try:
+                inserted = enqueue_collect_batch(self._db_path, pending_collect)
+                stats.collected_to_queue += inserted
+            except Exception:
+                logger.warning(
+                    "[kasina] collect_queue 배치 flush 실패: n=%d",
+                    len(pending_collect),
+                )
 
         logger.info("[kasina] 매칭 완료: %s", stats.as_dict())
         return matched, stats

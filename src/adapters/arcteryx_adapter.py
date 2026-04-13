@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from src.adapters._collect_queue import enqueue_collect, enqueue_collect_batch
+from src.adapters._collect_queue import enqueue_collect_batch
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -253,17 +253,49 @@ class ArcteryxAdapter:
                 index[key] = dict(row)
         return index
 
-    def _enqueue_collect(self, item: dict, model_no: str) -> bool:
-        """미등재 신상 → kream_collect_queue INSERT OR IGNORE."""
-        pid = item.get("product_id")
-        return enqueue_collect(
-            self._db_path,
-            model_number=normalize_model_number(model_no),
-            brand_hint="Arc'teryx",
-            name_hint=item.get("product_name") or "",
-            source=self.source_name,
-            source_url=_build_url(pid) if pid is not None else "",
-        )
+    def _load_kream_style_index(self) -> dict[str, dict]:
+        """크림 Arc'teryx 엔트리의 슬래시/쉼표 분리 style number 인덱스.
+
+        크림 DB 는 Arc'teryx 상품의 model_number 를 style number 들을
+        슬래시로 잇는 조합(예: ``28412/6057/9829/10358/10403``) 으로 저장한다.
+        각 청크는 아크테릭스 ERP SKU 뒤 5자리와 일치하므로(`ABQSU10358` →
+        `10358`), style 단위 인덱스를 만들어 SKU 기반 역참조에 쓴다.
+        """
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT product_id, name, brand, model_number "
+                "FROM kream_products "
+                "WHERE brand LIKE '%arc%' OR brand LIKE '%아크%'"
+            ).fetchall()
+        finally:
+            conn.close()
+        style_index: dict[str, dict] = {}
+        for row in rows:
+            mn = row["model_number"] or ""
+            for chunk in re.split(r"[/,;]", mn):
+                chunk = chunk.strip()
+                if chunk.isdigit():
+                    style_index.setdefault(chunk, dict(row))
+        return style_index
+
+    @staticmethod
+    def _extract_style_from_sku(sku: str) -> str:
+        """ERP SKU(예: ``ABQSU10358``) → 트레일링 숫자 style(``10358``).
+
+        아크테릭스 공식몰 SKU 는 ``[A-Z]+\\d{4,5}`` 형태. 선행 0 이 있으면
+        제거해 크림 style 인덱스 키와 맞춘다.
+        """
+        if not sku:
+            return ""
+        m = re.match(r"^[A-Z]+(\d{4,6})$", sku.strip().upper())
+        if not m:
+            return ""
+        try:
+            return str(int(m.group(1)))
+        except ValueError:
+            return ""
 
     async def _resolve_model_number(self, http: Any, item: dict) -> str:
         """아이템에 이미 model_number 가 있으면 사용, 없으면 옵션 API 호출.
@@ -303,6 +335,7 @@ class ArcteryxAdapter:
         """덤프된 아이템 → 크림 DB 매칭 → CandidateMatched publish."""
         stats = ArcteryxMatchStats(dumped=len(products))
         kream_index = self._load_kream_index()
+        kream_style_index = self._load_kream_style_index()
         matched: list[CandidateMatched] = []
         http = await self._get_http()
         pending_collect: list[tuple[str, str, str, str, str]] = []
@@ -324,7 +357,14 @@ class ArcteryxAdapter:
                 stats.no_model_number += 1
                 continue
 
+            # 1차: stripped key 직접 매칭 (크림이 ERP SKU 를 그대로 쓰는 극소수
+            # 경우 대비). 2차: 트레일링 style number 역참조 — 크림 Arc'teryx
+            # 엔트리의 슬래시 조합과 exact intersect.
             kream_row = kream_index.get(key)
+            if kream_row is None:
+                style_no = self._extract_style_from_sku(model_no)
+                if style_no:
+                    kream_row = kream_style_index.get(style_no)
             if kream_row is None:
                 # 미등재 신상 → 배치 버퍼에 쌓고 사이클 끝에서 한 번에 flush.
                 # 행 단위 INSERT 가 19개 어댑터 동시 쓰기에서 DB 락을 유발하는
