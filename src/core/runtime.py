@@ -29,6 +29,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from src.adapters.kream_delta_watcher import KreamDeltaWatcher
 from src.adapters.kream_hot_watcher import KreamHotWatcher
 from src.adapters.musinsa_adapter import MusinsaAdapter
 from src.core.call_throttle import CallThrottle
@@ -79,8 +80,10 @@ class V3Runtime:
         throttle_burst: int = 20,
         alert_log_path: str | None = None,
         kream_snapshot_fn: KreamSnapshotFn | None = None,
+        kream_delta_client: Any | None = None,
         musinsa_adapter: MusinsaAdapter | None = None,
         hot_watcher: KreamHotWatcher | None = None,
+        delta_watcher: KreamDeltaWatcher | None = None,
         min_profit: int = _MIN_PROFIT_DEFAULT,
         min_roi: float = _MIN_ROI_DEFAULT,
         min_volume_7d: int = _MIN_VOLUME_7D_DEFAULT,
@@ -97,7 +100,9 @@ class V3Runtime:
         alert_log_path: v3 JSONL 로그 경로. 기본값 None → config.settings 참조.
         kream_snapshot_fn: 후보 단계에서 크림 sell_now 스냅샷 조회. DI.
             (None 이면 실호출 없이 후보는 drop — 테스트/초기 안전용)
-        musinsa_adapter / hot_watcher: 테스트에서 mock 어댑터 주입용.
+        kream_delta_client: 주입 시 hot_watcher 대신 KreamDeltaWatcher 사용
+            (187k→4.3k 캡 해소 경로). None 이면 기존 KreamHotWatcher 유지.
+        musinsa_adapter / hot_watcher / delta_watcher: 테스트 mock 주입용.
         min_profit / min_roi / min_volume_7d: 알림 하드 플로어. 이하면 drop.
         """
         self._db_path = db_path
@@ -108,9 +113,11 @@ class V3Runtime:
         self._throttle_burst = throttle_burst
         self._alert_log_path = alert_log_path
         self._kream_snapshot_fn = kream_snapshot_fn
+        self._kream_delta_client = kream_delta_client
 
         self._musinsa_adapter_override = musinsa_adapter
         self._hot_watcher_override = hot_watcher
+        self._delta_watcher_override = delta_watcher
 
         self._min_profit = min_profit
         self._min_roi = min_roi
@@ -123,6 +130,7 @@ class V3Runtime:
         self._alert_logger: V3AlertLogger | None = None
         self._musinsa: MusinsaAdapter | None = None
         self._hot: KreamHotWatcher | None = None
+        self._delta: KreamDeltaWatcher | None = None
 
         self._adapter_tasks: list[asyncio.Task[None]] = []
         self._started: bool = False
@@ -280,26 +288,50 @@ class V3Runtime:
         else:
             self._musinsa = MusinsaAdapter(self._bus, self._db_path)
 
-        if self._hot_watcher_override is not None:
-            self._hot = self._hot_watcher_override
-        else:
-            self._hot = KreamHotWatcher(
-                bus=self._bus,
-                db_path=self._db_path,
-                poll_interval_sec=self._hot_poll_interval_sec,
+        # 크림 감시 경로 선택: delta_watcher override > kream_delta_client 주입 > hot_watcher
+        use_delta = (
+            self._delta_watcher_override is not None
+            or self._kream_delta_client is not None
+        )
+
+        if use_delta:
+            if self._delta_watcher_override is not None:
+                self._delta = self._delta_watcher_override
+            else:
+                self._delta = KreamDeltaWatcher(
+                    bus=self._bus,
+                    db_path=self._db_path,
+                    kream_client=self._kream_delta_client,
+                    poll_interval_sec=self._hot_poll_interval_sec,
+                )
+            watcher_task = asyncio.create_task(
+                self._delta.run_forever(), name="v3.kream_delta"
             )
+            watcher_label = "delta"
+        else:
+            if self._hot_watcher_override is not None:
+                self._hot = self._hot_watcher_override
+            else:
+                self._hot = KreamHotWatcher(
+                    bus=self._bus,
+                    db_path=self._db_path,
+                    poll_interval_sec=self._hot_poll_interval_sec,
+                )
+            watcher_task = asyncio.create_task(
+                self._hot.run_forever(), name="v3.kream_hot"
+            )
+            watcher_label = "hot"
 
         self._adapter_tasks = [
             asyncio.create_task(
                 self._musinsa_loop(), name="v3.musinsa_loop"
             ),
-            asyncio.create_task(
-                self._hot.run_forever(), name="v3.kream_hot"
-            ),
+            watcher_task,
         ]
         logger.info(
-            "[v3] V3Runtime 기동 완료 — musinsa_interval=%ss hot_interval=%ss",
+            "[v3] V3Runtime 기동 완료 — musinsa_interval=%ss watcher=%s interval=%ss",
             self._musinsa_interval_sec,
+            watcher_label,
             self._hot_poll_interval_sec,
         )
 
@@ -330,6 +362,12 @@ class V3Runtime:
                 await self._hot.stop()
             except Exception:
                 logger.exception("[v3] hot watcher stop 실패")
+
+        if self._delta is not None:
+            try:
+                await self._delta.stop()
+            except Exception:
+                logger.exception("[v3] delta watcher stop 실패")
 
         for task in self._adapter_tasks:
             task.cancel()

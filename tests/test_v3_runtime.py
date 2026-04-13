@@ -96,6 +96,23 @@ class _NoopHotWatcher:
         self._stop.set()
 
 
+class _NoopDeltaWatcher:
+    """KreamDeltaWatcher mock — hot watcher 와 동일 인터페이스."""
+
+    source_name = "kream_delta"
+
+    def __init__(self) -> None:
+        self._stop = asyncio.Event()
+        self.run_called = False
+
+    async def run_forever(self) -> None:
+        self.run_called = True
+        await self._stop.wait()
+
+    async def stop(self) -> None:
+        self._stop.set()
+
+
 # ─── (a) enabled=False 즉시 return ────────────────────────
 
 async def test_disabled_start_noop(tmp_path):
@@ -365,4 +382,35 @@ async def test_safe_start_v3_success(tmp_path):
     )
     ok = await _safe_start_v3(runtime)
     assert ok is True
+    await runtime.stop()
+
+
+# ─── (g) delta_watcher 경로 — kream_delta_client 주입 시 hot 대신 delta ────
+
+async def test_delta_watcher_path_replaces_hot(tmp_path):
+    """delta_watcher override 주입 시 hot watcher 대신 delta 가 기동.
+    (설계: KreamDeltaWatcher 는 hot watcher 대비 187k→4.3k 호출 절감 경로)
+    """
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+
+    musinsa = _NoopMusinsaAdapter()
+    delta = _NoopDeltaWatcher()
+    hot = _NoopHotWatcher()  # 같이 주입해도 delta 우선이어야 함
+
+    runtime = V3Runtime(
+        db_path=db,
+        enabled=True,
+        alert_log_path=str(tmp_path / "v3_alerts.jsonl"),
+        musinsa_adapter=musinsa,  # type: ignore[arg-type]
+        hot_watcher=hot,  # type: ignore[arg-type]
+        delta_watcher=delta,  # type: ignore[arg-type]
+    )
+    await runtime.start()
+    await asyncio.sleep(0.05)
+
+    assert delta.run_called is True
+    assert hot.run_called is False  # delta 우선 → hot 기동 안 됨
+    assert runtime.stats()["adapter_tasks"] == 2
+
     await runtime.stop()
