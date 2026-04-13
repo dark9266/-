@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from src.adapters._collect_queue import enqueue_collect
+from src.adapters._collect_queue import enqueue_collect, enqueue_collect_batch
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -305,6 +305,7 @@ class ArcteryxAdapter:
         kream_index = self._load_kream_index()
         matched: list[CandidateMatched] = []
         http = await self._get_http()
+        pending_collect: list[tuple[str, str, str, str, str]] = []
 
         for item in products:
             # 품절 필터 — Laravel API 는 sale_state != "ON" 이면 품절 취급
@@ -325,15 +326,17 @@ class ArcteryxAdapter:
 
             kream_row = kream_index.get(key)
             if kream_row is None:
-                # 미등재 신상 → collect_queue 적재 후보. DB 경합으로 실패해도
-                # 전체 사이클을 중단하지 않고 다음 아이템으로 이어간다.
-                try:
-                    if self._enqueue_collect(item, model_no):
-                        stats.collected_to_queue += 1
-                except Exception:
-                    logger.warning(
-                        "[arcteryx] collect_queue 적재 실패: model=%s", model_no
-                    )
+                # 미등재 신상 → 배치 버퍼에 쌓고 사이클 끝에서 한 번에 flush.
+                # 행 단위 INSERT 가 19개 어댑터 동시 쓰기에서 DB 락을 유발하는
+                # 문제를 완화.
+                pid = item.get("product_id")
+                pending_collect.append((
+                    normalize_model_number(model_no),
+                    "Arc'teryx",
+                    item.get("product_name") or "",
+                    self.source_name,
+                    _build_url(pid) if pid is not None else "",
+                ))
                 continue
 
             # 매칭 가드 — 크림 이름 vs 소싱 이름 키워드 비교
@@ -384,6 +387,17 @@ class ArcteryxAdapter:
             await self._bus.publish(candidate)
             matched.append(candidate)
             stats.matched += 1
+
+        # 사이클 끝 — 미등재 신상을 한 번에 flush. DB 락 경합 최소화.
+        if pending_collect:
+            try:
+                inserted = enqueue_collect_batch(self._db_path, pending_collect)
+                stats.collected_to_queue += inserted
+            except Exception:
+                logger.warning(
+                    "[arcteryx] collect_queue 배치 flush 실패: n=%d",
+                    len(pending_collect),
+                )
 
         logger.info("[arcteryx] 매칭 완료: %s", stats.as_dict())
         return matched, stats
