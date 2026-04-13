@@ -52,6 +52,23 @@ def _register_v3_runtime_hook() -> None:
         logger.info("[v3] V3_RUNTIME_ENABLED=false — v2 단독 운영")
         return
 
+    # 크림 실클라이언트 → V3Runtime candidate 단계 snapshot_fn 배선
+    # (실패해도 v3 기동 자체는 실패 안 하게 try/except — v3 snapshot_fn=None 이면 candidate drop)
+    snapshot_fn = None
+    try:
+        from src.crawlers.kream import KreamCrawler
+        from src.crawlers.kream_delta_client import (
+            KreamDeltaClient,
+            build_snapshot_fn,
+        )
+
+        _kream_crawler = KreamCrawler()
+        _delta_client = KreamDeltaClient(crawler=_kream_crawler)
+        snapshot_fn = build_snapshot_fn(_delta_client)
+        logger.info("[v3] KreamDeltaClient 배선 완료 — candidate snapshot 활성")
+    except Exception:
+        logger.warning("[v3] KreamDeltaClient 배선 실패 — candidate drop 모드", exc_info=True)
+
     _v3_runtime = V3Runtime(
         db_path=settings.db_path,
         enabled=settings.v3_runtime_enabled,
@@ -60,6 +77,7 @@ def _register_v3_runtime_hook() -> None:
         throttle_rate_per_min=settings.v3_throttle_rate_per_min,
         throttle_burst=settings.v3_throttle_burst,
         alert_log_path=settings.v3_alert_log_path,
+        kream_snapshot_fn=snapshot_fn,
     )
 
     _already_started = {"flag": False}

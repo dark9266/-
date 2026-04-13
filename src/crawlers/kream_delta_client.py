@@ -333,9 +333,47 @@ def _to_int(value: Any) -> int | None:
     return None
 
 
+def build_snapshot_fn(
+    client: KreamDeltaClient,
+) -> Callable[[int, str], Awaitable[dict[str, Any] | None]]:
+    """V3Runtime `kream_snapshot_fn` (pid, size) → {sell_now_price, volume_7d} 어댑터.
+
+    - 사이즈가 size_prices 에 존재하면 해당 sell_now_price 사용 (정확도 우선)
+    - 사이즈가 비거나 "ALL" 이면 대표 sell_now_price (top_size) 반환
+    - 매치 실패 시 None → candidate drop
+    - KreamBudgetExceeded 는 그대로 전파
+    """
+
+    async def _snapshot(
+        kream_product_id: int, size: str
+    ) -> dict[str, Any] | None:
+        snap = await client.get_snapshot(kream_product_id)
+        if not snap:
+            return None
+        volume_7d = int(snap.get("volume_7d") or 0)
+        size_norm = (size or "").strip()
+
+        if not size_norm or size_norm.upper() == "ALL":
+            best = snap.get("sell_now_price")
+            if not best:
+                return None
+            return {"sell_now_price": int(best), "volume_7d": volume_7d}
+
+        for sp in snap.get("size_prices") or []:
+            if str(sp.get("size") or "").strip() == size_norm:
+                price = sp.get("sell_now_price")
+                if not price:
+                    return None
+                return {"sell_now_price": int(price), "volume_7d": volume_7d}
+        return None
+
+    return _snapshot
+
+
 __all__ = [
     "DEFAULT_LIGHT_PURPOSE",
     "DEFAULT_RATE_LIMIT_SEC",
     "DEFAULT_SNAPSHOT_PURPOSE",
     "KreamDeltaClient",
+    "build_snapshot_fn",
 ]

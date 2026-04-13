@@ -14,6 +14,7 @@ from src.crawlers.kream_delta_client import (
     KreamDeltaClient,
     _extract_best_sell_now,
     _pick_best_sell,
+    build_snapshot_fn,
 )
 from src.models.product import KreamProduct, KreamSizePrice
 
@@ -315,6 +316,62 @@ def test_pick_best_sell_ignores_none_and_zero() -> None:
     size, price = _pick_best_sell(product)
     assert size == "270"
     assert price == 500000
+
+
+# ─── build_snapshot_fn (V3Runtime 어댑터) ────────────────
+
+
+async def test_build_snapshot_fn_exact_size_match() -> None:
+    client = KreamDeltaClient(
+        request_fn=_FakeRequestFn([]),
+        snapshot_fn=_FakeSnapshotFn({"111": _sample_product("111")}),
+        sleep_fn=_NoSleep(),
+    )
+    fn = build_snapshot_fn(client)
+    out = await fn(111, "260")
+    assert out == {"sell_now_price": 450000, "volume_7d": 12}
+
+
+async def test_build_snapshot_fn_size_miss_returns_none() -> None:
+    client = KreamDeltaClient(
+        request_fn=_FakeRequestFn([]),
+        snapshot_fn=_FakeSnapshotFn({"111": _sample_product("111")}),
+        sleep_fn=_NoSleep(),
+    )
+    fn = build_snapshot_fn(client)
+    assert await fn(111, "999") is None
+
+
+async def test_build_snapshot_fn_size_none_price_returns_none() -> None:
+    """해당 사이즈 sell_now_price=None 이면 drop (280 사이즈)."""
+    client = KreamDeltaClient(
+        request_fn=_FakeRequestFn([]),
+        snapshot_fn=_FakeSnapshotFn({"111": _sample_product("111")}),
+        sleep_fn=_NoSleep(),
+    )
+    fn = build_snapshot_fn(client)
+    assert await fn(111, "280") is None
+
+
+async def test_build_snapshot_fn_empty_snapshot_returns_none() -> None:
+    client = KreamDeltaClient(
+        request_fn=_FakeRequestFn([]),
+        snapshot_fn=_FakeSnapshotFn({"111": None}),
+        sleep_fn=_NoSleep(),
+    )
+    fn = build_snapshot_fn(client)
+    assert await fn(111, "260") is None
+
+
+async def test_build_snapshot_fn_all_size_uses_best() -> None:
+    client = KreamDeltaClient(
+        request_fn=_FakeRequestFn([]),
+        snapshot_fn=_FakeSnapshotFn({"111": _sample_product("111")}),
+        sleep_fn=_NoSleep(),
+    )
+    fn = build_snapshot_fn(client)
+    out = await fn(111, "ALL")
+    assert out == {"sell_now_price": 500000, "volume_7d": 12}
 
 
 def test_pick_best_sell_all_none() -> None:
