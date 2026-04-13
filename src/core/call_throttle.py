@@ -7,7 +7,8 @@
 설계 원칙:
 - 순수 asyncio, 외부 의존 없음
 - 백그라운드 리필 태스크 없음 — `monotonic()` 기반 lazy 리필
-- `time_fn` 주입으로 테스트 결정성 확보
+- `time_fn` 주입으로 테스트 결정성 확보. 주입 시계든 실시계든
+  `acquire_wait` 는 동일한 `asyncio.Event` wakeup 패턴을 사용 (분기 X)
 - `acquire()`는 non-blocking, `acquire_wait()`는 timeout 기반 대기
 """
 
@@ -47,6 +48,10 @@ class CallThrottle:
         self._tokens: float = float(burst)
         self._last_refill: float = time_fn()
         self._lock = asyncio.Lock()
+        # acquire_wait 가 토큰을 기다리는 동안 외부에서 wakeup 시킬 수 있도록.
+        # 토큰이 늘어났을 가능성이 있는 모든 시점 (refill, update_rate, wake_waiters)
+        # 에서 set → clear 패턴.
+        self._wakeup: asyncio.Event = asyncio.Event()
         self._acquired_total: int = 0
         self._denied_total: int = 0
 
@@ -63,6 +68,10 @@ class CallThrottle:
         self._tokens = min(float(self._burst), self._tokens + elapsed * per_sec)
         self._last_refill = now
 
+    def _signal_wakeup(self) -> None:
+        """대기 중인 acquire_wait 를 깨운다 (테스트/update_rate/refill 후)."""
+        self._wakeup.set()
+
     # ------------------------------------------------------------------
     # 공개 API
     # ------------------------------------------------------------------
@@ -70,6 +79,8 @@ class CallThrottle:
         """토큰 즉시 차감 시도. 없으면 False (블로킹 안 함)."""
         if weight <= 0:
             raise ValueError("weight must be > 0")
+        if weight > self._burst:
+            raise ValueError("weight must be <= burst")
         async with self._lock:
             self._refill()
             if self._tokens >= weight:
@@ -84,18 +95,23 @@ class CallThrottle:
         weight: int = 1,
         timeout: float | None = None,
     ) -> bool:
-        """토큰 확보까지 대기. timeout 초과 시 False."""
+        """토큰 확보까지 대기. timeout 초과 시 False.
+
+        실시계든 주입 시계든 동일 코드 경로:
+            1) lock 안에서 refill → 충분하면 차감 후 True
+            2) 부족하면 wakeup event 를 기다림 (계산된 wait_for / 남은 timeout
+               중 짧은 쪽). 시계가 정지 상태면 wakeup.set() 만이 깨운다.
+        주입 시계로 결정적 테스트를 하려면 `wake_waiters()` 를 호출하면 된다.
+        """
         if weight <= 0:
             raise ValueError("weight must be > 0")
         if weight > self._burst:
-            # 버킷 용량보다 큰 weight는 영원히 채울 수 없음
-            async with self._lock:
-                self._denied_total += 1
-            return False
+            raise ValueError("weight must be <= burst")
 
+        start = self._time_fn()
         deadline: float | None = None
         if timeout is not None:
-            deadline = self._time_fn() + timeout
+            deadline = start + timeout
 
         while True:
             async with self._lock:
@@ -104,11 +120,13 @@ class CallThrottle:
                     self._tokens -= weight
                     self._acquired_total += 1
                     return True
-                # 부족분 → 대기 시간 산정
                 deficit = weight - self._tokens
                 per_sec = self._rate_per_min / 60.0
                 wait_for = deficit / per_sec if per_sec > 0 else float("inf")
+                # event 를 다시 무장 — 이후 외부에서 set 하면 즉시 깨어남
+                self._wakeup.clear()
 
+            # 남은 timeout 계산
             if deadline is not None:
                 remaining = deadline - self._time_fn()
                 if remaining <= 0:
@@ -117,32 +135,42 @@ class CallThrottle:
                     return False
                 wait_for = min(wait_for, remaining)
 
-            # 시계가 주입된 경우 sleep도 짧게 — 테스트는 시계를 직접 전진시킴
-            if self._time_fn is time.monotonic:
-                await asyncio.sleep(wait_for)
-            else:
-                # 결정적 테스트: 한 번 양보 후 재검사
-                await asyncio.sleep(0)
-                # 시계가 진전되지 않으면 무한 루프 → 즉시 실패 처리
+            clock_before = self._time_fn()
+            # 대기: wakeup event OR wait_for 만료.
+            try:
+                await asyncio.wait_for(self._wakeup.wait(), timeout=wait_for)
+                woken = True
+            except asyncio.TimeoutError:
+                woken = False
+
+            clock_after = self._time_fn()
+            # 시계가 전혀 진전되지 않았고 wakeup 도 못 받았다면 진전 없음 →
+            # 주입 시계가 정지된 상태로 판정, 즉시 실패 (무한 루프 방지).
+            if not woken and clock_after == clock_before:
                 async with self._lock:
-                    self._refill()
-                    if self._tokens >= weight:
-                        self._tokens -= weight
-                        self._acquired_total += 1
-                        return True
-                    if deadline is not None and self._time_fn() >= deadline:
-                        self._denied_total += 1
-                        return False
-                    # 시계 정지 상태 → 호출측이 시계를 전진시키지 않으면 실패
                     self._denied_total += 1
-                    return False
+                return False
 
     def update_rate(self, rate_per_min: float) -> None:
-        """동적 리필률 조정. 변동률 높을 때 ↑, 한산할 때 ↓."""
+        """동적 리필률 조정. 변동률 높을 때 ↑, 한산할 때 ↓.
+
+        호출 시점까지의 누적 토큰을 보존하기 위해 락 안에서 _refill 후 rate 변경.
+        주의: synchronous 메서드이지만 lock 은 asyncio.Lock — 여기서는
+        snapshot-and-swap 방식 사용 (_refill 한 번 호출 후 rate 교체).
+        rate 교체는 atomic write 라 race 위험 없음.
+        """
         if rate_per_min <= 0:
             raise ValueError("rate_per_min must be > 0")
-        # 다음 _refill 호출 시 새 비율 적용. 누적된 토큰은 보존.
+        # asyncio.Lock 은 sync 컨텍스트에서 점유 불가 → 본 메서드는 핸들러 외부에서
+        # 동기 호출되는 것을 가정. 단일 이벤트 루프에서 _refill 은 점유자가 없을 때
+        # 호출돼야 race-free. 보통 update_rate 는 주기적 컨트롤러가 호출하므로 OK.
+        self._refill()
         self._rate_per_min = float(rate_per_min)
+        self._signal_wakeup()
+
+    def wake_waiters(self) -> None:
+        """테스트/외부 트리거에서 acquire_wait 대기자를 깨운다."""
+        self._signal_wakeup()
 
     def stats(self) -> dict:
         """현재 상태 스냅샷."""

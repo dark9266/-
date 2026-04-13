@@ -3,20 +3,34 @@
 event_bus 런타임이 강제 종료되거나 크래시될 때 처리 중이던
 이벤트를 잃지 않도록 SQLite에 영속화한다.
 
+상태 모델 (status 컬럼):
+    - pending   : 기록 직후. 아직 처리 안 됨
+    - consumed  : 정상 처리 완료 (mark_consumed)
+    - deferred  : throttle 등으로 일시 거부됨. recover 때 재시도 대상
+    - failed    : attempts 초과 / 알 수 없는 event_type / TTL 초과 등 영구 실패
+
 흐름:
-    1) 컨슈머가 이벤트 수신 직전 `record(event, consumer)` → checkpoint_id 획득
+    1) 컨슈머가 이벤트 수신 직후 `record(event, consumer)` → checkpoint_id
     2) 처리 성공 후 `mark_consumed(checkpoint_id)`
-    3) 재시작 시 `replay(consumer)` 로 미처리 이벤트 재구성해 재처리
+    3) throttle 거부 시 `mark_deferred(checkpoint_id, reason)` (재시도 여지)
+    4) 재시작 시 `replay(consumer)` 로 pending+deferred 재구성 → attempts++
+    5) attempts 3회 초과 시 자동으로 `status='failed'` + ERROR 로깅
+    6) 알 수 없는 event_type 은 해당 row 만 skip → `status='failed'`, 나머지 계속
 
 event_bus 모듈의 frozen dataclass 5종 (`CatalogDumped`, `CandidateMatched`,
 `ProfitFound`, `AlertSent`, `AlertFollowup`) 을 dataclasses.asdict 로
 JSON 직렬화하고, 복원 시 `event_type` 문자열로 클래스를 찾아 `Cls(**payload)`.
+
+주의: 현재 이벤트들은 모두 평탄한 dataclass. 장래 nested dataclass를 도입할 경우
+`asdict` 는 내부 dataclass 도 dict 로 만들어버리므로 `Cls(**payload)` 만으로는
+복원되지 않는다 — nested 복원 로직 추가 필요.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -25,6 +39,15 @@ import aiosqlite
 
 from src.core import event_bus as _event_bus_module
 
+logger = logging.getLogger(__name__)
+
+MAX_REPLAY_ATTEMPTS = 3
+
+STATUS_PENDING = "pending"
+STATUS_CONSUMED = "consumed"
+STATUS_DEFERRED = "deferred"
+STATUS_FAILED = "failed"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_checkpoint (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,13 +55,43 @@ CREATE TABLE IF NOT EXISTS event_checkpoint (
     payload TEXT NOT NULL,
     created_at REAL NOT NULL,
     consumed_at REAL,
-    consumer TEXT
+    consumer TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_event_ckpt_pending
-    ON event_checkpoint(consumer, consumed_at);
+    ON event_checkpoint(consumer, status);
 CREATE INDEX IF NOT EXISTS idx_event_ckpt_created
     ON event_checkpoint(created_at);
 """
+
+
+async def _ensure_columns(db: aiosqlite.Connection) -> None:
+    """기존 DB 호환: 누락된 컬럼을 ALTER TABLE ADD COLUMN 으로 보강."""
+    cur = await db.execute("PRAGMA table_info(event_checkpoint)")
+    cols = {row[1] for row in await cur.fetchall()}
+    await cur.close()
+    if "status" not in cols:
+        await db.execute(
+            "ALTER TABLE event_checkpoint "
+            "ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
+        )
+        # 기존 행 중 consumed_at 있는 건 consumed 로 마이그레이션
+        await db.execute(
+            "UPDATE event_checkpoint SET status='consumed' "
+            "WHERE consumed_at IS NOT NULL"
+        )
+    if "attempts" not in cols:
+        await db.execute(
+            "ALTER TABLE event_checkpoint "
+            "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+        )
+    if "last_reason" not in cols:
+        await db.execute(
+            "ALTER TABLE event_checkpoint ADD COLUMN last_reason TEXT"
+        )
+    await db.commit()
 
 
 def _resolve_event_class(event_type: str) -> type:
@@ -60,13 +113,14 @@ class CheckpointStore:
         self._db: aiosqlite.Connection | None = None
 
     async def init(self) -> None:
-        """DB 연결 및 테이블 생성."""
+        """DB 연결 및 테이블 생성 (기존 DB 호환 ALTER 포함)."""
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
+        await _ensure_columns(self._db)
 
     async def close(self) -> None:
         """DB 연결 종료."""
@@ -80,10 +134,7 @@ class CheckpointStore:
         return self._db
 
     async def record(self, event: object, consumer: str) -> int:
-        """이벤트를 체크포인트 테이블에 저장하고 id 반환.
-
-        `event` 는 frozen dataclass 인스턴스여야 한다.
-        """
+        """이벤트를 체크포인트 테이블에 저장 (status=pending) 후 id 반환."""
         if not dataclasses.is_dataclass(event) or isinstance(event, type):
             raise TypeError(
                 f"record requires a dataclass instance, got {type(event).__name__}"
@@ -94,8 +145,9 @@ class CheckpointStore:
         created_at = time.time()
         cursor = await db.execute(
             "INSERT INTO event_checkpoint "
-            "(event_type, payload, created_at, consumed_at, consumer) "
-            "VALUES (?, ?, ?, NULL, ?)",
+            "(event_type, payload, created_at, consumed_at, consumer, "
+            " status, attempts, last_reason) "
+            "VALUES (?, ?, ?, NULL, ?, 'pending', 0, NULL)",
             (event_type, payload, created_at, consumer),
         )
         await db.commit()
@@ -105,28 +157,75 @@ class CheckpointStore:
         return int(checkpoint_id)
 
     async def mark_consumed(self, checkpoint_id: int) -> None:
-        """해당 체크포인트를 처리 완료로 표시."""
+        """해당 체크포인트를 정상 처리 완료로 표시."""
         db = self._require_db()
         await db.execute(
-            "UPDATE event_checkpoint SET consumed_at = ? WHERE id = ?",
+            "UPDATE event_checkpoint "
+            "SET consumed_at = ?, status = 'consumed' "
+            "WHERE id = ?",
             (time.time(), checkpoint_id),
         )
         await db.commit()
 
+    async def mark_deferred(self, checkpoint_id: int, reason: str) -> None:
+        """일시 거부 — recover 때 재시도 대상으로 남긴다."""
+        db = self._require_db()
+        await db.execute(
+            "UPDATE event_checkpoint "
+            "SET status = 'deferred', last_reason = ? "
+            "WHERE id = ?",
+            (reason, checkpoint_id),
+        )
+        await db.commit()
+
+    async def mark_failed(self, checkpoint_id: int, reason: str) -> None:
+        """영구 실패로 표시."""
+        db = self._require_db()
+        await db.execute(
+            "UPDATE event_checkpoint "
+            "SET status = 'failed', last_reason = ? "
+            "WHERE id = ?",
+            (reason, checkpoint_id),
+        )
+        await db.commit()
+
+    async def increment_attempts(self, checkpoint_id: int) -> int:
+        """attempts += 1 후 새 값 반환."""
+        db = self._require_db()
+        await db.execute(
+            "UPDATE event_checkpoint SET attempts = attempts + 1 WHERE id = ?",
+            (checkpoint_id,),
+        )
+        await db.commit()
+        cur = await db.execute(
+            "SELECT attempts FROM event_checkpoint WHERE id = ?",
+            (checkpoint_id,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        return int(row["attempts"]) if row else 0
+
     async def pending(self, consumer: str | None = None) -> list[dict[str, Any]]:
-        """미처리 이벤트 목록 (payload는 dict로 역직렬화)."""
+        """미처리 이벤트 목록 (pending + deferred 포함).
+
+        payload 는 dict 로 역직렬화. status/attempts 도 포함.
+        """
         db = self._require_db()
         if consumer is None:
             sql = (
-                "SELECT id, event_type, payload, created_at, consumer "
-                "FROM event_checkpoint WHERE consumed_at IS NULL "
+                "SELECT id, event_type, payload, created_at, consumer, "
+                "status, attempts, last_reason "
+                "FROM event_checkpoint "
+                "WHERE status IN ('pending','deferred') "
                 "ORDER BY id ASC"
             )
             params: tuple[Any, ...] = ()
         else:
             sql = (
-                "SELECT id, event_type, payload, created_at, consumer "
-                "FROM event_checkpoint WHERE consumed_at IS NULL AND consumer = ? "
+                "SELECT id, event_type, payload, created_at, consumer, "
+                "status, attempts, last_reason "
+                "FROM event_checkpoint "
+                "WHERE status IN ('pending','deferred') AND consumer = ? "
                 "ORDER BY id ASC"
             )
             params = (consumer,)
@@ -138,6 +237,9 @@ class CheckpointStore:
                 "payload": json.loads(row["payload"]),
                 "created_at": row["created_at"],
                 "consumer": row["consumer"],
+                "status": row["status"],
+                "attempts": row["attempts"],
+                "last_reason": row["last_reason"],
             }
             for row in rows
         ]
@@ -145,26 +247,102 @@ class CheckpointStore:
     async def replay(
         self, consumer: str
     ) -> AsyncIterator[tuple[int, object]]:
-        """미처리 이벤트를 재구성된 dataclass 인스턴스로 yield."""
+        """미처리 이벤트를 재구성된 dataclass 인스턴스로 yield.
+
+        - 알 수 없는 event_type 은 해당 row 만 `status='failed'` 처리 후 skip
+          (나머지는 계속 yield)
+        - attempts 가 이미 MAX_REPLAY_ATTEMPTS 이상인 row 는 failed 처리 후 skip
+        """
         pending = await self.pending(consumer)
         for row in pending:
-            cls = _resolve_event_class(row["event_type"])
-            event = cls(**row["payload"])
-            yield row["id"], event
+            ckpt_id = int(row["id"])
+            if int(row["attempts"]) >= MAX_REPLAY_ATTEMPTS:
+                logger.error(
+                    "checkpoint attempts 초과 — failed 처리: id=%s type=%s attempts=%s",
+                    ckpt_id,
+                    row["event_type"],
+                    row["attempts"],
+                )
+                await self.mark_failed(ckpt_id, "attempts_exceeded")
+                continue
+            try:
+                cls = _resolve_event_class(row["event_type"])
+                event = cls(**row["payload"])
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "checkpoint replay 복원 실패 — failed 처리: id=%s type=%s err=%s",
+                    ckpt_id,
+                    row["event_type"],
+                    exc,
+                )
+                await self.mark_failed(ckpt_id, f"resolve:{exc}")
+                continue
+            yield ckpt_id, event
 
-    async def purge_consumed(self, older_than_sec: float = 86400) -> int:
-        """일정 시간 이상 된 완료 이벤트 정리. 삭제된 행 수 반환."""
+    async def purge_consumed(
+        self,
+        older_than_sec: float = 86400,
+        pending_ttl_sec: float | None = None,
+    ) -> dict[str, int]:
+        """오래된 완료/pending 정리.
+
+        - consumed: `older_than_sec` 지난 row 는 DELETE
+        - pending_ttl_sec 지정 시: 그보다 오래된 pending/deferred 는 `failed` 로
+          전환 + WARN 로깅. 이 건은 삭제하지 않고 보존(감사용).
+
+        Returns
+        -------
+        dict
+            {"deleted": n, "failed_stale": m}
+        """
         db = self._require_db()
-        threshold = time.time() - older_than_sec
+        now = time.time()
+        threshold = now - older_than_sec
         cursor = await db.execute(
             "DELETE FROM event_checkpoint "
-            "WHERE consumed_at IS NOT NULL AND consumed_at < ?",
+            "WHERE status = 'consumed' AND consumed_at IS NOT NULL "
+            "AND consumed_at < ?",
             (threshold,),
         )
-        await db.commit()
         deleted = cursor.rowcount or 0
         await cursor.close()
-        return int(deleted)
+
+        failed_stale = 0
+        if pending_ttl_sec is not None:
+            stale_threshold = now - pending_ttl_sec
+            cur = await db.execute(
+                "SELECT id, event_type, consumer, created_at "
+                "FROM event_checkpoint "
+                "WHERE status IN ('pending','deferred') AND created_at < ?",
+                (stale_threshold,),
+            )
+            stale_rows = await cur.fetchall()
+            await cur.close()
+            for r in stale_rows:
+                logger.warning(
+                    "pending TTL 초과 — failed 처리: id=%s type=%s consumer=%s age=%.1fs",
+                    r["id"],
+                    r["event_type"],
+                    r["consumer"],
+                    now - float(r["created_at"]),
+                )
+                await db.execute(
+                    "UPDATE event_checkpoint "
+                    "SET status = 'failed', last_reason = 'pending_ttl_exceeded' "
+                    "WHERE id = ?",
+                    (r["id"],),
+                )
+                failed_stale += 1
+
+        await db.commit()
+        return {"deleted": int(deleted), "failed_stale": int(failed_stale)}
 
 
-__all__ = ["CheckpointStore"]
+__all__ = [
+    "MAX_REPLAY_ATTEMPTS",
+    "STATUS_CONSUMED",
+    "STATUS_DEFERRED",
+    "STATUS_FAILED",
+    "STATUS_PENDING",
+    "CheckpointStore",
+]

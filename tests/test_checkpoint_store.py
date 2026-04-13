@@ -119,35 +119,95 @@ async def test_purge_consumed_respects_age(store):
     await store.mark_consumed(cid)
 
     # 방금 소비 → 아직 안 지워짐
-    deleted = await store.purge_consumed(older_than_sec=3600)
-    assert deleted == 0
+    res = await store.purge_consumed(older_than_sec=3600)
+    assert res["deleted"] == 0
     assert len(await store.pending()) == 0  # consumed지만 행은 존재
 
     # 미래 기준으로 purge → 삭제됨
-    deleted = await store.purge_consumed(older_than_sec=-1)
-    assert deleted == 1
+    res = await store.purge_consumed(older_than_sec=-1)
+    assert res["deleted"] == 1
 
     # 재삽입 후 기본값에도 안 지워짐
     cid2 = await store.record(e, consumer="followup")
     await store.mark_consumed(cid2)
-    deleted = await store.purge_consumed()  # 기본 86400
-    assert deleted == 0
+    res = await store.purge_consumed()  # 기본 86400
+    assert res["deleted"] == 0
 
 
-async def test_unknown_event_type_raises_on_replay(store):
+async def test_purge_consumed_pending_ttl_marks_failed(store):
+    """pending_ttl_sec 초과 pending/deferred → failed 로 전환."""
+    e = CatalogDumped(source="x", product_count=1, dumped_at=1.0)
+    cid = await store.record(e, consumer="c")
+    # pending_ttl_sec=-1 → 무조건 초과
+    res = await store.purge_consumed(pending_ttl_sec=-1)
+    assert res["failed_stale"] == 1
+    # 이제 pending 에서 제외 (status=failed)
+    assert await store.pending("c") == []
+    # 행은 여전히 존재 (감사용)
+    db = store._require_db()
+    cur = await db.execute(
+        "SELECT status, last_reason FROM event_checkpoint WHERE id = ?",
+        (cid,),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    assert row["status"] == "failed"
+    assert row["last_reason"] == "pending_ttl_exceeded"
+
+
+async def test_mark_deferred_keeps_in_pending(store):
+    e = CatalogDumped(source="x", product_count=1, dumped_at=1.0)
+    cid = await store.record(e, consumer="c")
+    await store.mark_deferred(cid, "throttle_exhausted")
+    pending = await store.pending("c")
+    assert len(pending) == 1
+    assert pending[0]["status"] == "deferred"
+    assert pending[0]["last_reason"] == "throttle_exhausted"
+
+
+async def test_replay_attempts_exceeded_marks_failed(store):
+    e = CatalogDumped(source="x", product_count=1, dumped_at=1.0)
+    cid = await store.record(e, consumer="c")
+    # attempts 를 3으로
+    for _ in range(3):
+        await store.increment_attempts(cid)
+    yielded = [x async for x in store.replay("c")]
+    assert yielded == []  # attempts 초과 → skip
+    assert await store.pending("c") == []  # failed 처리
+    db = store._require_db()
+    cur = await db.execute(
+        "SELECT status FROM event_checkpoint WHERE id = ?", (cid,)
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    assert row["status"] == "failed"
+
+
+async def test_unknown_event_type_skipped_on_replay(store):
+    """알 수 없는 event_type 은 해당 row 만 failed 처리 + skip. 나머지는 계속."""
     # 수동으로 잘못된 event_type 삽입
     db = store._require_db()
     await db.execute(
         "INSERT INTO event_checkpoint "
-        "(event_type, payload, created_at, consumed_at, consumer) "
-        "VALUES (?, ?, ?, NULL, ?)",
+        "(event_type, payload, created_at, consumed_at, consumer, status) "
+        "VALUES (?, ?, ?, NULL, ?, 'pending')",
         ("NotAnEvent", "{}", time.time(), "bad"),
     )
     await db.commit()
 
-    with pytest.raises(ValueError, match="unknown event_type"):
-        async for _ in store.replay("bad"):
-            pass
+    # 정상 row 도 하나 같은 consumer 로
+    ok = CatalogDumped(source="ok", product_count=1, dumped_at=1.0)
+    ok_id = await store.record(ok, consumer="bad")
+
+    yielded = [x async for x in store.replay("bad")]
+    # 알 수 없는 타입은 skip, 정상 건은 통과
+    assert len(yielded) == 1
+    assert yielded[0][0] == ok_id
+
+    # 잘못된 row 는 failed 로 전환됨 → pending() 에서 제외
+    remaining = await store.pending("bad")
+    remaining_types = [r["event_type"] for r in remaining]
+    assert "NotAnEvent" not in remaining_types
 
 
 async def test_record_without_init_raises(tmp_path):

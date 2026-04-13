@@ -232,7 +232,7 @@ async def test_handler_exception_does_not_break_chain(bus, store, caplog):
 async def test_recover_replays_pending_events(bus, store):
     # 사전: 이전 세션이 CandidateMatched 기록만 남기고 crash 했다고 가정
     leftover = _sample_candidate("LEFT-1")
-    await store.record(leftover, consumer="candidate")
+    leftover_ckpt = await store.record(leftover, consumer="candidate")
 
     throttle = _throttle()
     orch = Orchestrator(bus, store, throttle)
@@ -262,24 +262,218 @@ async def test_recover_replays_pending_events(bus, store):
     orch.on_candidate_matched(candidate_handler)
     orch.on_profit_found(profit_handler)
 
-    # start 먼저 해서 구독자 붙인 다음 recover 로 재주입 → 큐로 들어감
+    # start 먼저 → recover 로 직접 처리 (bus 우회, 결정적)
     await orch.start()
     try:
         await orch.recover()
 
-        assert await _wait_until(lambda: len(alerts) == 1)
+        # recover 가 끝나면 체인이 완주한 상태
+        assert len(alerts) == 1
         assert alerts[0].kream_product_id == 1
 
-        # 기존 체크포인트(이전 세션 것)는 replay 중이라 mark 안 되고,
-        # 새로 생긴 profit 체크포인트는 consumed 됨.
-        # 남은 pending 은 leftover candidate 1건이어야 한다
-        # (replay 시 _replaying=True 라 record 를 건너뛰고 mark 도 안 함).
+        # 원본 leftover ckpt 는 consumed 처리되어 pending 에서 빠져야 한다
         pending = await store.pending()
-        pending_candidate = [
-            p for p in pending if p["event_type"] == "CandidateMatched"
-        ]
-        assert len(pending_candidate) == 1
-        assert pending_candidate[0]["payload"]["model_no"] == "LEFT-1"
+        assert not any(p["id"] == leftover_ckpt for p in pending)
+        # 그리고 중복 실행 흔적 없음
+        assert orch.stats()["candidate_processed"] == 1
+        assert orch.stats()["profit_processed"] == 1
+    finally:
+        await orch.stop()
+
+
+async def test_recover_before_start_raises(bus, store):
+    orch = Orchestrator(bus, store, _throttle())
+    with pytest.raises(RuntimeError):
+        await orch.recover()
+
+
+# ----------------------------------------------------------------------
+# 7) throttle 소진 시 CandidateMatched 는 deferred 로 보존 (이벤트 손실 X)
+# ----------------------------------------------------------------------
+async def test_throttle_rejected_candidate_is_deferred(bus, store):
+    throttle = CallThrottle(rate_per_min=0.001, burst=1)
+    orch = Orchestrator(bus, store, throttle)
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return None
+
+    async def profit_handler(event):
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        # 첫 건은 통과 (burst=1), 두 번째는 throttle 거부 → deferred
+        await bus.publish(_sample_candidate("OK"))
+        await bus.publish(_sample_candidate("DEFER"))
+        assert await _wait_until(
+            lambda: orch.stats()["candidate_deferred"] >= 1
+        )
+
+        # deferred 건은 pending() 에 status='deferred' 로 남아있어야 한다
+        pending = await store.pending()
+        deferred = [p for p in pending if p["status"] == "deferred"]
+        assert len(deferred) == 1
+        assert deferred[0]["payload"]["model_no"] == "DEFER"
+        assert deferred[0]["last_reason"] == "throttle_exhausted"
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
+# 8) recover 가 deferred 건을 토큰 복구 후 재시도하여 완주
+# ----------------------------------------------------------------------
+async def test_recover_retries_deferred_after_tokens_refilled(bus, store):
+    # 이전 세션: throttle 거부로 deferred 상태 simulate
+    leftover = _sample_candidate("RETRY-1")
+    cid = await store.record(leftover, consumer="candidate")
+    await store.mark_deferred(cid, "throttle_exhausted")
+
+    throttle = _throttle()  # 넉넉한 토큰
+    orch = Orchestrator(bus, store, throttle)
+
+    alerts: list[AlertSent] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return _sample_profit(event.model_no)
+
+    async def profit_handler(event):
+        sent = AlertSent(
+            alert_id=1,
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=1.0,
+        )
+        alerts.append(sent)
+        return sent
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        await orch.recover()
+        assert len(alerts) == 1
+        # 원본 deferred 건 소비 처리
+        pending = await store.pending()
+        assert not any(p["id"] == cid for p in pending)
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
+# 9) attempts 3회 초과 시 failed 로 전환
+# ----------------------------------------------------------------------
+async def test_recover_attempts_exceeded_marks_failed(bus, store):
+    leftover = _sample_candidate("DOOMED")
+    cid = await store.record(leftover, consumer="candidate")
+    # 이미 3회 시도한 상태
+    for _ in range(3):
+        await store.increment_attempts(cid)
+
+    throttle = _throttle()
+    orch = Orchestrator(bus, store, throttle)
+
+    calls: list[str] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        calls.append(event.model_no)
+        return None
+
+    async def profit_handler(event):
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        await orch.recover()
+        # 재시도 안 됨
+        assert calls == []
+        # failed 상태
+        import aiosqlite  # noqa: F401
+
+        db = store._require_db()
+        cur = await db.execute(
+            "SELECT status FROM event_checkpoint WHERE id = ?", (cid,)
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        assert row["status"] == "failed"
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
+# 10) AlertSent dedup: 같은 ckpt 두 번 처리 시 handler 1회만 호출
+# ----------------------------------------------------------------------
+async def test_alert_dedup_on_duplicate_processing(bus, store):
+    throttle = _throttle()
+    orch = Orchestrator(bus, store, throttle)
+
+    alert_calls: list[str] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return None
+
+    async def profit_handler(event):
+        alert_calls.append(event.model_no)
+        return AlertSent(
+            alert_id=1,
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=1.0,
+        )
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        # 동일 ProfitFound 를 같은 checkpoint_id 로 두 번 처리 시뮬레이션
+        profit = _sample_profit("DUP")
+        ckpt_id = await store.record(profit, consumer="profit")
+        await orch._process_profit(profit, ckpt_id)
+        # 두 번째 시도 — dedup 테이블에 이미 있으므로 handler 호출 X
+        # (새 ckpt 를 흉내내면 dedup 우회되므로, 동일 ckpt 로 재시도)
+        # record 는 한 번만. 두 번째는 pending 아닐 수 있으나 직접 호출.
+        await orch._process_profit(profit, ckpt_id)
+
+        assert len(alert_calls) == 1
+        assert orch.stats()["alert_duplicated"] >= 1
+
+        # alert_sent 에 정확히 1행만
+        db = store._require_db()
+        cur = await db.execute(
+            "SELECT COUNT(*) AS n FROM alert_sent WHERE checkpoint_id = ?",
+            (ckpt_id,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        assert row["n"] == 1
     finally:
         await orch.stop()
 

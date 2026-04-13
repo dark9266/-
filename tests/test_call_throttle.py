@@ -73,8 +73,30 @@ async def test_acquire_wait_timeout_on_stuck_clock():
 async def test_acquire_wait_weight_exceeds_burst():
     clock = FakeClock()
     t = CallThrottle(rate_per_min=60, burst=3, time_fn=clock)
-    ok = await t.acquire_wait(weight=5, timeout=10)
-    assert ok is False
+    with pytest.raises(ValueError):
+        await t.acquire_wait(weight=5, timeout=10)
+
+
+async def test_acquire_weight_exceeds_burst():
+    t = CallThrottle(rate_per_min=60, burst=3)
+    with pytest.raises(ValueError):
+        await t.acquire(weight=5)
+
+
+async def test_acquire_wait_woken_by_wake_waiters():
+    """주입 시계라도 wake_waiters() 호출로 재검사 → 토큰 있으면 통과."""
+    import asyncio as _asyncio
+
+    clock = FakeClock()
+    t = CallThrottle(rate_per_min=60, burst=1, time_fn=clock)
+    await t.acquire()  # 소진
+    # acquire_wait 는 대기 상태 → 시계 전진 + wake
+    task = _asyncio.create_task(t.acquire_wait(timeout=5.0))
+    await _asyncio.sleep(0)  # 태스크 진입
+    clock.advance(2.0)  # 충분한 토큰
+    t.wake_waiters()
+    ok = await task
+    assert ok is True
 
 
 async def test_update_rate_takes_effect():
