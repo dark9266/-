@@ -249,13 +249,29 @@ class HokaCrawler:
         url = f"{BASE_URL}{COVEO_PATH}"
         async with self._rate_limiter.acquire():
             resp = await client.get(url, params={"q": keyword, "qs": "1"})
-        if getattr(resp, "status_code", 0) != 200:
-            logger.warning(
-                "호카 Coveo HTTP %s (keyword=%s)",
-                getattr(resp, "status_code", "?"),
-                keyword,
-            )
+        status = getattr(resp, "status_code", 0)
+        if status != 200:
+            # DataDome 봇 차단이 걸리면 전 키워드가 동일 상태로 쏟아진다.
+            # 반복 경고 대신 첫 실패만 WARN, 이후는 DEBUG 로 낮춰 로그 스팸 방지.
+            # `_blocked_streak` 연속 카운트는 상위 `dump_catalog_keywords` 가
+            # early-exit 판단에 사용.
+            self._blocked_streak = getattr(self, "_blocked_streak", 0) + 1
+            if self._blocked_streak == 1:
+                logger.warning(
+                    "호카 Coveo HTTP %s (keyword=%s) — DataDome 차단 의심, "
+                    "이후 동일 상태 DEBUG 강등",
+                    status,
+                    keyword,
+                )
+            else:
+                logger.debug(
+                    "호카 Coveo HTTP %s (keyword=%s, streak=%d)",
+                    status,
+                    keyword,
+                    self._blocked_streak,
+                )
             return ""
+        self._blocked_streak = 0
         return resp.text or ""
 
     async def search_products(
@@ -318,6 +334,14 @@ class HokaCrawler:
         dedup: dict[str, HokaTile] = {}
         for kw in keywords:
             text = await self._fetch_coveo(kw)
+            # 연속 3회 차단이면 나머지 키워드 전부 낭비 — early exit.
+            if getattr(self, "_blocked_streak", 0) >= 3:
+                logger.warning(
+                    "호카 Coveo 연속 차단 %d회 — 남은 키워드 %d개 스킵",
+                    self._blocked_streak,
+                    len(keywords) - keywords.index(kw) - 1,
+                )
+                break
             if not text:
                 continue
             for tile in _extract_tiles_from_html(text):

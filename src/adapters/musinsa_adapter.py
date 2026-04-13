@@ -49,14 +49,12 @@ PB_BLACKLIST_SLUGS: frozenset[str] = frozenset({
     "musinsaoutdoor",
 })
 
-# 덤프 기본 카테고리 — 크림 커버리지와 겹치는 6 core 카테고리
+# 덤프 기본 카테고리 — 크림 커버리지와 실제 교집합이 있는 카테고리만.
+# 6개 카테고리 덤프 시 의류/가방 상품명엔 모델번호 regex 매칭 불가 상품이
+# 대부분이라 `no_model_number` drop 으로 끝남 → 분모만 부풀리고 matching
+# 비율을 왜곡. 크림 커버리지가 확실한 103(신발) 단독 덤프로 축소.
 DEFAULT_CATEGORIES: dict[str, str] = {
     "103": "신발",
-    "001": "상의",
-    "002": "아우터",
-    "003": "바지",
-    "004": "가방",
-    "017": "스포츠/레저",
 }
 
 

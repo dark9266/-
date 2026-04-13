@@ -165,7 +165,11 @@ def _parse_listing_html(html_text: str) -> list[dict]:
                 original = price
 
         is_sold_out = bool(_SOLDOUT_RE.search(body))
-        model_number = _eql_extract_model(name)
+        # 상품명에서 SKU regex 추출 시도 (나이키/아디다스/NB 콜라보 등 일부 성공).
+        # 실패 시 god_no 를 fallback — 크림 DB 매칭은 거의 미스지만 미등재 신상
+        # 발견 경로(`kream_collect_queue`) 가 살아나고, 향후 god_no 로 크림에
+        # 등재된 경우 pickup 가능. 한섬(`thehandsome.py`) 과 동일한 설계.
+        model_number = _eql_extract_model(name) or god_no
 
         results.append({
             "product_id": god_no,
