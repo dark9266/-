@@ -35,14 +35,16 @@ logger = logging.getLogger(__name__)
 # 기본 덤프 키워드 — 반스 카탈로그를 브랜드 전량으로 훑기 위한 시드.
 # Topick Commerce 검색 API 는 브랜드 전체 리스팅 엔드포인트가 제한적이라
 # 대표 실루엣 키워드로 페이지네이션 대체한다.
+# 영어/공백 키워드는 자체 검색 매칭 실패 — 한글 + compact 만 사용.
+# (직접 probe 결과: "Old Skool" 0건, "OLDSKOOL" 2건, "올드스쿨" 2건)
+# TODO: vans 검색 카탈로그 커버리지 매우 부족 — Phase 4 에서 카테고리/브랜드
+# listing 엔드포인트로 어댑터 재설계 필요.
 DEFAULT_KEYWORDS: tuple[str, ...] = (
-    "Old Skool",
-    "Authentic",
-    "Era",
+    "VANS",
+    "올드스쿨",
+    "스케이트하이",
     "Sk8-Hi",
-    "Slip-On",
-    "Knu Skool",
-    "Knu-Skool",
+    "OLDSKOOL",
 )
 
 
