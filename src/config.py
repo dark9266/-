@@ -125,6 +125,8 @@ class Settings(BaseSettings):
     # 실사용자가 `.env` 에 `V3_RUNTIME_ENABLED=true` 로 수동 ON 해야 기동된다.
     v3_runtime_enabled: bool = False
     v3_musinsa_interval_sec: int = 1800  # 무신사 어댑터 사이클 간격 (30분)
+    v3_adapter_interval_sec: int = 1800  # v3 어댑터 공통 사이클 간격 (30분)
+    v3_adapter_stagger_sec: int = 30  # 어댑터 기동 stagger (21개 × 30s = 10.5분)
     v3_hot_poll_interval_sec: int = 60  # 크림 hot 감시 폴링 간격
     # 보수적 시작값: Phase 2.3b call_throttle 스펙에 맞춰 분당 15회, 버스트 20.
     # kream_budget 일 10k 하드 캡과 이중 방어 — 하드 캡은 kream.py wrapper 배선.

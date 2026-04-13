@@ -29,9 +29,27 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from src.adapters.abcmart_adapter import AbcmartAdapter
+from src.adapters.asics_adapter import AsicsAdapter
+from src.adapters.beaker_adapter import BeakerAdapter
+from src.adapters.eql_adapter import EqlAdapter
+from src.adapters.hoka_adapter import HokaAdapter
+from src.adapters.kasina_adapter import KasinaAdapter
 from src.adapters.kream_delta_watcher import KreamDeltaWatcher
 from src.adapters.kream_hot_watcher import KreamHotWatcher
 from src.adapters.musinsa_adapter import MusinsaAdapter
+from src.adapters.nbkorea_adapter import NbkoreaAdapter
+from src.adapters.nike_adapter import NikeAdapter
+from src.adapters.patagonia_adapter import PatagoniaAdapter
+from src.adapters.puma_adapter import PumaAdapter
+from src.adapters.salomon_adapter import SalomonAdapter
+from src.adapters.thehandsome_adapter import ThehandsomeAdapter
+from src.adapters.thenorthface_adapter import TheNorthFaceAdapter
+from src.adapters.tune_adapter import TuneAdapter
+from src.adapters.twentynine_cm_adapter import TwentynineCmAdapter
+from src.adapters.vans_adapter import VansAdapter
+from src.adapters.wconcept_adapter import WconceptAdapter
+from src.adapters.worksout_adapter import WorksoutAdapter
 from src.core.call_throttle import CallThrottle
 from src.core.checkpoint_store import CheckpointStore
 from src.core.event_bus import (
@@ -59,6 +77,33 @@ _MIN_ROI_DEFAULT = 5.0
 _MIN_VOLUME_7D_DEFAULT = 1
 
 
+# v3 어댑터 레지스트리 — (source_name, adapter_class).
+# 순서는 stagger 기동 순서 (idx * stagger_sec 지연). 안정 소싱처 먼저.
+_ADAPTER_REGISTRY: list[tuple[str, type]] = [
+    ("musinsa", MusinsaAdapter),
+    ("29cm", TwentynineCmAdapter),
+    ("nike", NikeAdapter),
+    ("kasina", KasinaAdapter),
+    ("abcmart", AbcmartAdapter),
+    ("tune", TuneAdapter),
+    ("eql", EqlAdapter),
+    ("nbkorea", NbkoreaAdapter),
+    ("salomon", SalomonAdapter),
+    # ("arcteryx", ArcteryxAdapter),  # Phase 3 stub — HTTP 레이어 미연결. 실호출 배선 후 복구.
+    ("vans", VansAdapter),
+    ("wconcept", WconceptAdapter),
+    ("worksout", WorksoutAdapter),
+    # ("adidas", AdidasAdapter),  # fetch_taxonomy_page 미구현 — AdidasCrawler 랩퍼 배선 후 복구.
+    ("hoka", HokaAdapter),
+    ("beaker", BeakerAdapter),
+    ("thehandsome", ThehandsomeAdapter),
+    ("asics", AsicsAdapter),
+    ("puma", PumaAdapter),
+    ("patagonia", PatagoniaAdapter),
+    ("thenorthface", TheNorthFaceAdapter),
+]
+
+
 class V3Runtime:
     """v3 런타임 단일 진입점.
 
@@ -75,6 +120,8 @@ class V3Runtime:
         *,
         enabled: bool,
         musinsa_interval_sec: int = 1800,
+        adapter_interval_sec: int | None = None,
+        adapter_stagger_sec: int = 30,
         hot_poll_interval_sec: int = 60,
         throttle_rate_per_min: float = 15.0,
         throttle_burst: int = 20,
@@ -82,6 +129,7 @@ class V3Runtime:
         kream_snapshot_fn: KreamSnapshotFn | None = None,
         kream_delta_client: Any | None = None,
         musinsa_adapter: MusinsaAdapter | None = None,
+        adapter_overrides: dict[str, Any] | None = None,
         hot_watcher: KreamHotWatcher | None = None,
         delta_watcher: KreamDeltaWatcher | None = None,
         min_profit: int = _MIN_PROFIT_DEFAULT,
@@ -94,6 +142,11 @@ class V3Runtime:
         db_path: 크림 로컬 SQLite 경로.
         enabled: False 면 `start()` 가 즉시 return. 기본값 False 가 안전.
         musinsa_interval_sec: 무신사 어댑터 run_once 주기.
+            (`adapter_interval_sec` 미지정 시 전체 어댑터 통일 간격으로 재사용)
+        adapter_interval_sec: 전체 v3 어댑터 공통 run_once 주기. None 이면
+            `musinsa_interval_sec` 값을 사용.
+        adapter_stagger_sec: 어댑터 기동 시 인덱스별 초기 지연(초). 전체 동시
+            기동으로 크림/소싱처 호출이 집중되는 것을 방지. 테스트에서는 0.
         hot_poll_interval_sec: 크림 hot 감시 폴링 주기.
         throttle_rate_per_min: CallThrottle 분당 허용 호출 수.
         throttle_burst: CallThrottle 버킷 최대치.
@@ -102,12 +155,20 @@ class V3Runtime:
             (None 이면 실호출 없이 후보는 drop — 테스트/초기 안전용)
         kream_delta_client: 주입 시 hot_watcher 대신 KreamDeltaWatcher 사용
             (187k→4.3k 캡 해소 경로). None 이면 기존 KreamHotWatcher 유지.
-        musinsa_adapter / hot_watcher / delta_watcher: 테스트 mock 주입용.
+        musinsa_adapter: 하위 호환 테스트 경로. 주입 시 legacy 모드 진입 —
+            musinsa 어댑터만 로드 (나머지 20개는 비활성). 신규 코드는
+            `adapter_overrides` 사용.
+        adapter_overrides: 어댑터 mock 주입 dict `{source_name: instance}`.
+            legacy 모드가 아닐 때, 레지스트리의 어댑터를 이 dict 의 인스턴스로
+            교체한다. 나머지 어댑터는 실 클래스로 생성.
+        hot_watcher / delta_watcher: 테스트 mock 주입용.
         min_profit / min_roi / min_volume_7d: 알림 하드 플로어. 이하면 drop.
         """
         self._db_path = db_path
         self._enabled = enabled
         self._musinsa_interval_sec = musinsa_interval_sec
+        self._adapter_interval_sec = adapter_interval_sec or musinsa_interval_sec
+        self._adapter_stagger_sec = adapter_stagger_sec
         self._hot_poll_interval_sec = hot_poll_interval_sec
         self._throttle_rate_per_min = throttle_rate_per_min
         self._throttle_burst = throttle_burst
@@ -115,7 +176,11 @@ class V3Runtime:
         self._kream_snapshot_fn = kream_snapshot_fn
         self._kream_delta_client = kream_delta_client
 
-        self._musinsa_adapter_override = musinsa_adapter
+        self._legacy_musinsa_only = musinsa_adapter is not None
+        self._adapter_overrides: dict[str, Any] = dict(adapter_overrides or {})
+        if musinsa_adapter is not None:
+            self._adapter_overrides["musinsa"] = musinsa_adapter
+
         self._hot_watcher_override = hot_watcher
         self._delta_watcher_override = delta_watcher
 
@@ -128,7 +193,7 @@ class V3Runtime:
         self._throttle: CallThrottle | None = None
         self._orchestrator: Orchestrator | None = None
         self._alert_logger: V3AlertLogger | None = None
-        self._musinsa: MusinsaAdapter | None = None
+        self._adapters: dict[str, Any] = {}
         self._hot: KreamHotWatcher | None = None
         self._delta: KreamDeltaWatcher | None = None
 
@@ -282,11 +347,8 @@ class V3Runtime:
         await self._orchestrator.start()
         await self._orchestrator.recover()
 
-        # 어댑터 — 테스트 override 없으면 기본 생성
-        if self._musinsa_adapter_override is not None:
-            self._musinsa = self._musinsa_adapter_override
-        else:
-            self._musinsa = MusinsaAdapter(self._bus, self._db_path)
+        # 어댑터 빌드 — legacy 모드면 musinsa 1개, 아니면 레지스트리 전체
+        self._adapters = self._build_adapters()
 
         # 크림 감시 경로 선택: delta_watcher override > kream_delta_client 주입 > hot_watcher
         use_delta = (
@@ -322,31 +384,75 @@ class V3Runtime:
             )
             watcher_label = "hot"
 
-        self._adapter_tasks = [
-            asyncio.create_task(
-                self._musinsa_loop(), name="v3.musinsa_loop"
-            ),
-            watcher_task,
-        ]
+        self._adapter_tasks = []
+        for idx, (name, adapter) in enumerate(self._adapters.items()):
+            initial_delay = idx * self._adapter_stagger_sec
+            self._adapter_tasks.append(
+                asyncio.create_task(
+                    self._adapter_loop(
+                        name, adapter, self._adapter_interval_sec, initial_delay
+                    ),
+                    name=f"v3.{name}_loop",
+                )
+            )
+        self._adapter_tasks.append(watcher_task)
+
         logger.info(
-            "[v3] V3Runtime 기동 완료 — musinsa_interval=%ss watcher=%s interval=%ss",
-            self._musinsa_interval_sec,
+            "[v3] V3Runtime 기동 완료 — adapters=%d interval=%ss stagger=%ss "
+            "watcher=%s interval=%ss",
+            len(self._adapters),
+            self._adapter_interval_sec,
+            self._adapter_stagger_sec,
             watcher_label,
             self._hot_poll_interval_sec,
         )
 
-    async def _musinsa_loop(self) -> None:
-        """무신사 어댑터 주기 실행 루프 — 예외는 루프 지속."""
-        assert self._musinsa is not None
+    def _build_adapters(self) -> dict[str, Any]:
+        """레지스트리 기반으로 어댑터 인스턴스 dict 구성.
+
+        - legacy 모드 (`musinsa_adapter` 주입 시): musinsa 1개만 로드.
+        - 일반 모드: 레지스트리 전체. override dict 의 키는 해당 인스턴스로 교체,
+          나머지는 실 클래스로 `(bus, db_path)` 호출하여 생성.
+        """
+        assert self._bus is not None
+        registry = dict(_ADAPTER_REGISTRY)
+
+        if self._legacy_musinsa_only:
+            names = ["musinsa"]
+        else:
+            names = [n for n, _ in _ADAPTER_REGISTRY]
+
+        built: dict[str, Any] = {}
+        for name in names:
+            if name in self._adapter_overrides:
+                built[name] = self._adapter_overrides[name]
+                continue
+            cls = registry[name]
+            built[name] = cls(self._bus, self._db_path)
+        return built
+
+    async def _adapter_loop(
+        self,
+        name: str,
+        adapter: Any,
+        interval_sec: int,
+        initial_delay_sec: int,
+    ) -> None:
+        """어댑터 주기 실행 공통 루프 — 예외는 격리하여 루프 지속."""
+        if initial_delay_sec > 0:
+            try:
+                await asyncio.sleep(initial_delay_sec)
+            except asyncio.CancelledError:
+                raise
         while True:
             try:
-                await self._musinsa.run_once()
+                await adapter.run_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("[v3] musinsa run_once 예외 — 루프 지속")
+                logger.exception("[v3][%s] run_once 예외 — 루프 지속", name)
             try:
-                await asyncio.sleep(self._musinsa_interval_sec)
+                await asyncio.sleep(interval_sec)
             except asyncio.CancelledError:
                 raise
 
@@ -373,6 +479,7 @@ class V3Runtime:
             task.cancel()
         await asyncio.gather(*self._adapter_tasks, return_exceptions=True)
         self._adapter_tasks = []
+        self._adapters = {}
 
         if self._orchestrator is not None:
             try:
@@ -396,6 +503,7 @@ class V3Runtime:
                 self._orchestrator.stats() if self._orchestrator else None
             ),
             "adapter_tasks": len(self._adapter_tasks),
+            "adapters": sorted(self._adapters.keys()),
         }
 
 
@@ -415,4 +523,4 @@ async def _safe_start_v3(runtime: V3Runtime) -> bool:
         return False
 
 
-__all__ = ["V3Runtime", "_safe_start_v3"]
+__all__ = ["V3Runtime", "_safe_start_v3", "_ADAPTER_REGISTRY"]

@@ -266,7 +266,7 @@ class WorksoutAdapter:
         이름 매칭은 해시 조회가 불가능하므로 선형 스캔. 브랜드 버킷으로
         분할해 후보 집합을 축소한다. 블로킹 sqlite3 — 단발 실행이라 허용.
         """
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(

@@ -51,10 +51,16 @@ class Scheduler:
             self.daily_report.start()
         if not self.collect_loop.is_running():
             self.collect_loop.start()
-        if not self.refresh_loop.is_running():
-            self.refresh_loop.start()
-        if not self.spike_loop.is_running():
-            self.spike_loop.start()
+        if settings.v2_reverse_disabled:
+            logger.warning(
+                "[v2] price_refresher/spike_detector 비활성 "
+                "(V2_REVERSE_DISABLED=true) — DB 쓰기 경합 방지"
+            )
+        else:
+            if not self.refresh_loop.is_running():
+                self.refresh_loop.start()
+            if not self.spike_loop.is_running():
+                self.spike_loop.start()
 
         # 스캔 캐시 정리
         if hasattr(self.bot, 'scanner') and hasattr(self.bot.scanner, 'scan_cache'):

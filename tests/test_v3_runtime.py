@@ -24,7 +24,7 @@ from src.core.event_bus import (
     CandidateMatched,
     ProfitFound,
 )
-from src.core.runtime import V3Runtime, _safe_start_v3
+from src.core.runtime import _ADAPTER_REGISTRY, V3Runtime, _safe_start_v3
 from src.core.v3_alert_logger import V3AlertLogger
 
 # ─── DB 헬퍼 ─────────────────────────────────────────────
@@ -386,6 +386,132 @@ async def test_safe_start_v3_success(tmp_path):
 
 
 # ─── (g) delta_watcher 경로 — kream_delta_client 주입 시 hot 대신 delta ────
+
+# ─── (h) 21 어댑터 자동 등록 경로 ─────────────────────────
+
+class _CountingAdapter:
+    """run_once 호출 횟수만 카운트하는 범용 mock 어댑터."""
+
+    def __init__(self, name: str) -> None:
+        self.source_name = name
+        self.calls = 0
+
+    async def run_once(self) -> dict:
+        self.calls += 1
+        await asyncio.sleep(0)
+        return {"dumped": 0}
+
+
+class _RaisingAdapter:
+    """run_once 가 항상 예외 — 예외 격리 검증용."""
+
+    def __init__(self, name: str) -> None:
+        self.source_name = name
+        self.calls = 0
+
+    async def run_once(self) -> dict:
+        self.calls += 1
+        raise RuntimeError(f"{self.source_name} boom")
+
+
+async def test_all_registered_adapters_started(tmp_path):
+    """기본 경로 — 레지스트리의 모든 어댑터 기동, stagger=0 으로 즉시 run_once."""
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+
+    overrides = {name: _CountingAdapter(name) for name, _ in _ADAPTER_REGISTRY}
+    hot = _NoopHotWatcher()
+
+    runtime = V3Runtime(
+        db_path=db,
+        enabled=True,
+        adapter_interval_sec=3600,
+        adapter_stagger_sec=0,
+        alert_log_path=str(tmp_path / "v3_alerts.jsonl"),
+        adapter_overrides=overrides,
+        hot_watcher=hot,
+    )
+    await runtime.start()
+    await asyncio.sleep(0.05)
+
+    stats = runtime.stats()
+    assert stats["started"] is True
+    expected = len(_ADAPTER_REGISTRY)
+    # 레지스트리 수 + 1 hot watcher
+    assert stats["adapter_tasks"] == expected + 1
+    assert len(stats["adapters"]) == expected
+    assert "musinsa" in stats["adapters"]
+    assert "29cm" in stats["adapters"]
+    assert "worksout" in stats["adapters"]
+    assert "thenorthface" in stats["adapters"]
+
+    # stagger=0 이므로 모든 어댑터가 최소 1회는 run_once 실행
+    for name, a in overrides.items():
+        assert a.calls >= 1, f"{name} run_once 미호출"
+
+    await runtime.stop()
+
+
+async def test_adapter_exception_isolated(tmp_path):
+    """한 어댑터의 run_once 예외가 다른 어댑터 실행을 막지 않아야 한다."""
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+
+    # nike는 예외, 나머지는 정상
+    overrides: dict[str, object] = {}
+    for name, _ in _ADAPTER_REGISTRY:
+        if name == "nike":
+            overrides[name] = _RaisingAdapter(name)
+        else:
+            overrides[name] = _CountingAdapter(name)
+
+    runtime = V3Runtime(
+        db_path=db,
+        enabled=True,
+        adapter_interval_sec=3600,
+        adapter_stagger_sec=0,
+        alert_log_path=str(tmp_path / "v3_alerts.jsonl"),
+        adapter_overrides=overrides,
+        hot_watcher=_NoopHotWatcher(),
+    )
+    await runtime.start()
+    await asyncio.sleep(0.05)
+
+    # nike 도 한 번 호출되었고 (예외 발생), 다른 어댑터들도 정상 호출
+    assert overrides["nike"].calls >= 1
+    assert overrides["musinsa"].calls >= 1
+    assert overrides["kasina"].calls >= 1
+
+    await runtime.stop()
+
+
+async def test_adapter_stagger_delays_startup(tmp_path):
+    """stagger_sec > 0 이면 초기 지연으로 첫 run_once 가 늦춰져야 한다."""
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+
+    overrides = {name: _CountingAdapter(name) for name, _ in _ADAPTER_REGISTRY}
+
+    runtime = V3Runtime(
+        db_path=db,
+        enabled=True,
+        adapter_interval_sec=3600,
+        adapter_stagger_sec=5,  # idx 0 즉시, idx 1 은 5초 후
+        alert_log_path=str(tmp_path / "v3_alerts.jsonl"),
+        adapter_overrides=overrides,
+        hot_watcher=_NoopHotWatcher(),
+    )
+    await runtime.start()
+    await asyncio.sleep(0.05)
+
+    # 첫 번째 (idx 0) 는 delay 0 → run_once 1회
+    assert overrides["musinsa"].calls >= 1
+    # 두 번째 이후 (idx ≥ 1) 는 delay ≥ 5s → 아직 run_once 안 된 상태
+    assert overrides["29cm"].calls == 0
+    assert overrides["nike"].calls == 0
+
+    await runtime.stop()
+
 
 async def test_delta_watcher_path_replaces_hot(tmp_path):
     """delta_watcher override 주입 시 hot watcher 대신 delta 가 기동.

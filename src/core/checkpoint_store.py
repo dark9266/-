@@ -116,8 +116,9 @@ class CheckpointStore:
         """DB 연결 및 테이블 생성 (기존 DB 호환 ALTER 포함)."""
         if self._db is not None:
             return
-        self._db = await aiosqlite.connect(self.db_path)
+        self._db = await aiosqlite.connect(self.db_path, timeout=30.0)
         self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA busy_timeout=30000")
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
         await _ensure_columns(self._db)

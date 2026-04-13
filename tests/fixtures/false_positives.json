@@ -55,6 +55,36 @@
       "bug_date": "2026-04-08",
       "refix_date": "2026-04-09",
       "status": "fixed"
+    },
+    {
+      "id": "worksout_name_overlap_false_positive",
+      "description": "웍스아웃 이름 매칭에서 브랜드/색상/메타 단어가 키워드 교차로 집계되어 HF0074-001 등 오매칭 발생",
+      "type": "name_match",
+      "input": {
+        "kream_name": "Nike Air Force 1 Low White",
+        "source_name": "Nike Dunk Low Retro White Black",
+        "model_number": "HF0074-001"
+      },
+      "expected": "no_match",
+      "root_cause": "_verify_name_match 의 stopwords 가 'the/a/and/or/x/sp' 뿐 — 'nike/white/low' 등이 교차 키워드로 집계되어 2개 이상 통과",
+      "fix": "src/reverse_scanner.py _verify_name_match stopwords 확장 (브랜드명·컷·색상·성별·메타)",
+      "bug_date": "2026-04-13",
+      "status": "fixed"
+    },
+    {
+      "id": "nike_launch_reverse_cached_no_prices",
+      "description": "reverse 경로에서 크림 상세 캐시(full_info) 가 비어 있을 때 LAUNCH 상품을 드롭하지 못해 HM4740-005 등 허위 알림 발생",
+      "type": "stock_filter",
+      "input": {
+        "model_number": "HM4740-005",
+        "path": "reverse",
+        "full_info_cached": null
+      },
+      "expected": "skip",
+      "root_cause": "hot/warm 경로에서 cache hit 시 refetch 생략 → LAUNCH 필터(None 반환) 미적용",
+      "fix": "src/reverse_scanner.py hot/warm 단계 강제 refetch + full_info is None → no_prices 드롭",
+      "bug_date": "2026-04-13",
+      "status": "fixed"
     }
   ]
 }

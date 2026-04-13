@@ -76,6 +76,8 @@ def _register_v3_runtime_hook() -> None:
         db_path=settings.db_path,
         enabled=settings.v3_runtime_enabled,
         musinsa_interval_sec=settings.v3_musinsa_interval_sec,
+        adapter_interval_sec=settings.v3_adapter_interval_sec,
+        adapter_stagger_sec=settings.v3_adapter_stagger_sec,
         hot_poll_interval_sec=settings.v3_hot_poll_interval_sec,
         throttle_rate_per_min=settings.v3_throttle_rate_per_min,
         throttle_burst=settings.v3_throttle_burst,

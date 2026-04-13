@@ -83,6 +83,41 @@ async def _random_delay() -> None:
     await asyncio.sleep(delay)
 
 
+# ─── 500 에러 스킵리스트 (in-memory, 봇 재시작 시 초기화) ─
+# 2026-04-13: 동일 엔드포인트(주로 삭제/비공개 상품)가 반복 500 반환하며
+# max_retries*3 만큼 cap 을 낭비하는 현상 방지.
+# threshold 회 이상 500 관측되면 TTL 동안 즉시 None 반환 (재시도 X).
+_500_FAILURE_THRESHOLD: int = 3
+_500_BLACKLIST_TTL_SEC: int = 600  # 10 분
+_500_failures: dict[str, list[float]] = {}  # endpoint → [ts, ts, ...]
+
+
+def _is_500_blacklisted(endpoint: str, now: float | None = None) -> bool:
+    """최근 TTL 창 내 500 관측이 threshold 회 이상인지."""
+    if now is None:
+        now = time.monotonic()
+    hits = _500_failures.get(endpoint)
+    if not hits:
+        return False
+    cutoff = now - _500_BLACKLIST_TTL_SEC
+    fresh = [t for t in hits if t > cutoff]
+    if len(fresh) != len(hits):
+        _500_failures[endpoint] = fresh
+    return len(fresh) >= _500_FAILURE_THRESHOLD
+
+
+def _record_500_failure(endpoint: str, now: float | None = None) -> None:
+    """500 관측 기록."""
+    if now is None:
+        now = time.monotonic()
+    _500_failures.setdefault(endpoint, []).append(now)
+
+
+def _clear_500_blacklist() -> None:
+    """테스트 전용 — blacklist 초기화."""
+    _500_failures.clear()
+
+
 # ─── devalue unflatten (Nuxt 3 __NUXT_DATA__ 역직렬화) ───
 
 def _unflatten_nuxt(parsed: list):
@@ -312,6 +347,13 @@ class KreamCrawler:
         if headers:
             req_headers.update(headers)
 
+        # 500 스킵리스트: 이미 최근 N회 500 관측된 엔드포인트는 즉시 drop.
+        # cap 낭비 + 지수백오프로 인한 전체 throughput 저하 방지.
+        if _is_500_blacklisted(endpoint):
+            await record_call(endpoint, method, 599, 0, f"{purpose}:blacklist_500")
+            logger.debug("500 스킵리스트 드롭: %s", endpoint)
+            return None
+
         for attempt in range(max_retries):
             t0 = time.perf_counter()
             try:
@@ -335,6 +377,14 @@ class KreamCrawler:
                     continue
 
                 if status >= 500:
+                    _record_500_failure(endpoint)
+                    # 재시도 도중 threshold 도달 시 즉시 drop
+                    if _is_500_blacklisted(endpoint):
+                        logger.warning(
+                            "서버 에러 %d — 500 threshold 도달, 스킵리스트 등록: %s",
+                            status, endpoint,
+                        )
+                        return None
                     wait = (2 ** attempt) * 3
                     logger.warning("서버 에러 %d — %d초 후 재시도 (%d/%d)", status, wait, attempt + 1, max_retries)
                     await asyncio.sleep(wait)

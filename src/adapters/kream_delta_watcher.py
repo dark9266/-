@@ -142,7 +142,7 @@ class KreamDeltaWatcher:
         )
 
     def _load_watch_targets_sync(self) -> list[int]:
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
@@ -167,7 +167,7 @@ class KreamDeltaWatcher:
         )
 
     def _load_kream_row_sync(self, pid: int) -> dict[str, Any] | None:
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
             row = conn.execute(

@@ -223,9 +223,9 @@ class Database:
 
     async def connect(self) -> None:
         """DB 연결 및 스키마 초기화."""
-        self._db = await aiosqlite.connect(self.db_path)
+        self._db = await aiosqlite.connect(self.db_path, timeout=30.0)
         self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA busy_timeout = 5000")
+        await self._db.execute("PRAGMA busy_timeout = 30000")
         await self._db.execute("PRAGMA journal_mode = WAL")
         await self._db.executescript(SCHEMA_SQL)
         await self._db.commit()

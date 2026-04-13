@@ -30,6 +30,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from src.adapters._collect_queue import enqueue_collect
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -143,7 +144,7 @@ class PatagoniaAdapter:
         """
         from src.crawlers.patagonia import split_kream_model_numbers
 
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
@@ -165,24 +166,14 @@ class PatagoniaAdapter:
 
     def _enqueue_collect(self, item: dict, style_code: str) -> bool:
         """미등재 신상 → kream_collect_queue INSERT OR IGNORE."""
-        conn = sqlite3.connect(self._db_path)
-        try:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO kream_collect_queue "
-                "(model_number, brand_hint, name_hint, source, source_url) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    normalize_model_number(style_code),
-                    "Patagonia",
-                    item.get("name") or item.get("name_kr") or "",
-                    self.source_name,
-                    item.get("url") or "",
-                ),
-            )
-            conn.commit()
-            return (cur.rowcount or 0) > 0
-        finally:
-            conn.close()
+        return enqueue_collect(
+            self._db_path,
+            model_number=normalize_model_number(style_code),
+            brand_hint="Patagonia",
+            name_hint=item.get("name") or item.get("name_kr") or "",
+            source=self.source_name,
+            source_url=item.get("url") or "",
+        )
 
     async def match_to_kream(
         self, catalog: list[dict]

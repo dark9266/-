@@ -329,7 +329,7 @@ class TestSchedulerStartStop:
         scheduler.continuous_loop.start.assert_called_once()
 
     def test_scheduler_start_skips_v2_loops_when_disabled(self, monkeypatch):
-        """v2_reverse_disabled=True → tier1/tier2/continuous 미가동, 나머지 4개는 가동."""
+        """v2_reverse_disabled=True → tier1/tier2/continuous/refresh/spike 미가동, daily+collect 만 가동."""
         from src import scheduler as scheduler_mod
 
         monkeypatch.setattr(scheduler_mod.settings, "v2_reverse_disabled", True)
@@ -346,10 +346,10 @@ class TestSchedulerStartStop:
         scheduler.tier1_loop.start.assert_not_called()
         scheduler.tier2_loop.start.assert_not_called()
         scheduler.continuous_loop.start.assert_not_called()
+        scheduler.refresh_loop.start.assert_not_called()
+        scheduler.spike_loop.start.assert_not_called()
         scheduler.daily_report.start.assert_called_once()
         scheduler.collect_loop.start.assert_called_once()
-        scheduler.refresh_loop.start.assert_called_once()
-        scheduler.spike_loop.start.assert_called_once()
 
     def test_scheduler_stop_cancels_loops(self):
         """stop() → 7개 루프 .cancel() 호출."""

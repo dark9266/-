@@ -162,7 +162,7 @@ class KreamHotWatcher:
         )
 
     def _load_hot_products_sync(self) -> list[dict[str, Any]]:
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(

@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from src.adapters._collect_queue import enqueue_collect
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -192,7 +193,7 @@ class BeakerAdapter:
     # 2) 크림 DB 매칭
     # ------------------------------------------------------------------
     def _load_kream_index(self) -> dict[str, dict]:
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
@@ -209,25 +210,15 @@ class BeakerAdapter:
         return index
 
     def _enqueue_collect(self, item: dict, model_no: str) -> bool:
-        conn = sqlite3.connect(self._db_path)
-        try:
-            pid = str(item.get("product_id") or "")
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO kream_collect_queue "
-                "(model_number, brand_hint, name_hint, source, source_url) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    normalize_model_number(model_no),
-                    item.get("brand") or item.get("_brand_label") or "",
-                    item.get("name") or "",
-                    self.source_name,
-                    _build_url(pid),
-                ),
-            )
-            conn.commit()
-            return (cur.rowcount or 0) > 0
-        finally:
-            conn.close()
+        pid = str(item.get("product_id") or "")
+        return enqueue_collect(
+            self._db_path,
+            model_number=normalize_model_number(model_no),
+            brand_hint=item.get("brand") or item.get("_brand_label") or "",
+            name_hint=item.get("name") or "",
+            source=self.source_name,
+            source_url=_build_url(pid),
+        )
 
     async def match_to_kream(
         self, products: list[dict]

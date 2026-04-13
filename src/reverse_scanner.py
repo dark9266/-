@@ -194,11 +194,23 @@ class ReverseLookupScanner:
         # 크림 시세 먼저 확인 (없으면 소싱처 검색 불필요)
         kream_product = self._build_kream_product(product)
 
-        if not kream_product.size_prices and priority in ("hot", "warm"):
-            # 시세 미수집 → warm 이상은 크림 전체 정보 즉석 조회
+        # hot/warm priority: 항상 fresh 시세로 refetch.
+        # LAUNCH / 404 상품은 stale cache 로 알림 발송되는 것을 막기 위함
+        # (2026-04-13 HM4740-005 사고 이후). cold 는 호출량 과다로 그대로 유지.
+        if priority in ("hot", "warm"):
             try:
                 full_info = await kream_crawler.get_full_product_info(product["product_id"])
-                if full_info and full_info.size_prices:
+                if full_info is None:
+                    # LAUNCH / 404 / 삭제 추정 — stale cache 무시하고 스킵
+                    logger.info(
+                        "reverse: kream fetch 실패 (추정 LAUNCH/delisted) — %s (%s) 스킵",
+                        product["product_id"], model_number,
+                    )
+                    result.no_prices += 1
+                    if self.scan_cache:
+                        self.scan_cache.record(normalized, profitable=False, source="reverse")
+                    return None
+                if full_info.size_prices:
                     for sp in full_info.size_prices:
                         await self.db.db.execute(
                             """INSERT INTO kream_price_history
@@ -557,8 +569,24 @@ class ReverseLookupScanner:
 
             item_keywords = set(re.findall(r"[a-z0-9]+", item_name))
 
-            # 불용어 제거
-            stopwords = {"the", "a", "an", "and", "or", "x", "sp"}
+            # 불용어 제거 (2026-04-13 worksout 오매칭 사고 이후 strict 모드).
+            # 브랜드명·공용 키워드(low/high/mid/og/men/women 등)를 overlap 계산에서
+            # 제외하여 **모델명 고유 키워드** 만으로 매칭되도록 강화.
+            stopwords = {
+                "the", "a", "an", "and", "or", "x", "sp",
+                # 브랜드 (브랜드 일치는 위에서 이미 별도 검증)
+                "nike", "adidas", "newbalance", "new", "balance",
+                "asics", "puma", "converse", "vans", "reebok", "jordan",
+                "hoka", "salomon", "arcteryx",
+                # 사이즈/컷 일반어
+                "low", "high", "mid",
+                # 상품 메타
+                "og", "retro", "men", "mens", "women", "womens",
+                "shoes", "sneaker", "sneakers", "unisex",
+                # 색상 (흔해서 overlap 부풀림)
+                "white", "black", "grey", "gray", "navy", "red", "blue",
+                "green", "pink", "brown", "beige", "yellow",
+            }
             kream_en_keywords -= stopwords
             item_keywords -= stopwords
 

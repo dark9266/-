@@ -66,7 +66,7 @@ async def record_alert(
         새로 생성된 followup row id.
     """
     fired = fired_at if fired_at is not None else time.time()
-    async with aiosqlite.connect(db_path) as conn:
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         cur = await conn.execute(
             """INSERT INTO alert_followup (
                 alert_id, fired_at, kream_product_id, size,
@@ -100,7 +100,7 @@ async def pending_followups(
     limit: 1회 최대 행수
     """
     cutoff = time.time() - older_than_sec
-    async with aiosqlite.connect(db_path) as conn:
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             """SELECT * FROM alert_followup
@@ -115,7 +115,7 @@ async def pending_followups(
 
 
 async def get_followup(db_path: str, followup_id: int) -> FollowupRecord | None:
-    async with aiosqlite.connect(db_path) as conn:
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             "SELECT * FROM alert_followup WHERE id = ?", (followup_id,)
@@ -152,7 +152,7 @@ async def mark_checked(
 ) -> None:
     """sweep 결과 기록 — 체결 여부 + 체결가 (있으면)."""
     ts = checked_at if checked_at is not None else time.time()
-    async with aiosqlite.connect(db_path) as conn:
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         await conn.execute(
             """UPDATE alert_followup SET
                   checked_at = ?,
@@ -185,7 +185,7 @@ async def hit_rate_summary(
     }
     """
     cutoff = time.time() - hours * 3600
-    async with aiosqlite.connect(db_path) as conn:
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         conn.row_factory = aiosqlite.Row
         total = (
             await (

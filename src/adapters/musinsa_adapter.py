@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from src.adapters._collect_queue import enqueue_collect
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import extract_model_from_name, normalize_model_number
@@ -198,7 +199,7 @@ class MusinsaAdapter:
         블로킹 sqlite3 — 어댑터 수준에서 단발 실행이라 허용.
         테스트에서는 tmp db 로 고립.
         """
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
@@ -216,24 +217,14 @@ class MusinsaAdapter:
 
     def _enqueue_collect(self, item: dict, model_no: str) -> bool:
         """미등재 신상 → kream_collect_queue INSERT OR IGNORE."""
-        conn = sqlite3.connect(self._db_path)
-        try:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO kream_collect_queue "
-                "(model_number, brand_hint, name_hint, source, source_url) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    normalize_model_number(model_no),
-                    item.get("brandName") or item.get("brand") or "",
-                    item.get("goodsName") or "",
-                    self.source_name,
-                    f"https://www.musinsa.com/products/{item.get('goodsNo') or ''}",
-                ),
-            )
-            conn.commit()
-            return (cur.rowcount or 0) > 0
-        finally:
-            conn.close()
+        return enqueue_collect(
+            self._db_path,
+            model_number=normalize_model_number(model_no),
+            brand_hint=item.get("brandName") or item.get("brand") or "",
+            name_hint=item.get("goodsName") or "",
+            source=self.source_name,
+            source_url=f"https://www.musinsa.com/products/{item.get('goodsNo') or ''}",
+        )
 
     async def match_to_kream(
         self, products: list[dict]
