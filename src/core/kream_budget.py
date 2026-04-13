@@ -57,7 +57,7 @@ async def check_budget() -> None:
     if used >= int(BUDGET * WARN_RATIO):
         today = datetime.now().strftime("%Y-%m-%d")
         if _warned_today != today:
-            logger.warning("⚠️ KREAM 일일 캡 90% 도달: %d/%d", used, BUDGET)
+            logger.warning("KREAM 일일 캡 90%% 도달: %d/%d", used, BUDGET)
             _warned_today = today
 
 

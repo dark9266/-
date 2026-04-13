@@ -57,6 +57,10 @@ _CONSUMER_CATALOG = "catalog"
 _CONSUMER_CANDIDATE = "candidate"
 _CONSUMER_PROFIT = "profit"
 
+# recover() 시 candidate 단계 replay 하드 캡 — 크림 실계정 일일 캡 보호.
+# 초과분은 stale 처리되고 다음 어댑터 사이클에서 자연 재생성된다.
+RECOVER_CANDIDATE_CAP = 50
+
 _ALERT_SENT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS alert_sent (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,7 +199,15 @@ class Orchestrator:
             assert isinstance(event, ProfitFound)
             await self._process_profit(event, ckpt_id)
 
+        # candidate recover 는 하드 캡 적용 — 크림 스냅샷 조회 폭주 차단.
+        # 초과분은 stale 처리하여 다음 어댑터 사이클에서 자연 재생성한다.
+        candidate_replayed = 0
+        candidate_stale = 0
         async for ckpt_id, event in self._checkpoints.replay(_CONSUMER_CANDIDATE):
+            if candidate_replayed >= RECOVER_CANDIDATE_CAP:
+                await self._checkpoints.mark_failed(ckpt_id, "recover_cap")
+                candidate_stale += 1
+                continue
             attempts = await self._checkpoints.increment_attempts(ckpt_id)
             if attempts > MAX_REPLAY_ATTEMPTS:
                 await self._checkpoints.mark_failed(ckpt_id, "replay_attempts")
@@ -205,6 +217,14 @@ class Orchestrator:
                 continue
             assert isinstance(event, CandidateMatched)
             await self._process_candidate(event, ckpt_id)
+            candidate_replayed += 1
+        if candidate_stale:
+            logger.warning(
+                "candidate recover 캡 초과 — stale drop: count=%d "
+                "(cap=%d, 크림 캡 보호)",
+                candidate_stale,
+                RECOVER_CANDIDATE_CAP,
+            )
 
         async for ckpt_id, event in self._checkpoints.replay(_CONSUMER_CATALOG):
             attempts = await self._checkpoints.increment_attempts(ckpt_id)

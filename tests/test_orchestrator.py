@@ -423,6 +423,56 @@ async def test_recover_attempts_exceeded_marks_failed(bus, store):
 
 
 # ----------------------------------------------------------------------
+# 9b) RECOVER_CANDIDATE_CAP — 초과분은 stale drop, 캡 이내만 replay
+# ----------------------------------------------------------------------
+async def test_recover_candidate_cap_drops_excess(bus, store, monkeypatch):
+    """candidate recover 가 크림 캡 보호로 N개만 재처리하는지 검증."""
+    from src.core import orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod, "RECOVER_CANDIDATE_CAP", 3)
+
+    for i in range(10):
+        await store.record(_sample_candidate(f"CAP-{i}"), consumer="candidate")
+
+    throttle = _throttle()
+    orch = Orchestrator(bus, store, throttle)
+
+    processed: list[str] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        processed.append(event.model_no)
+        return None
+
+    async def profit_handler(event):
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        await orch.recover()
+        assert len(processed) == 3
+        # 나머지 7건은 failed 상태로 drop
+        db = store._require_db()
+        cur = await db.execute(
+            "SELECT COUNT(*) AS c FROM event_checkpoint "
+            "WHERE consumer = 'candidate' AND status = 'failed' "
+            "AND last_reason = 'recover_cap'"
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        assert row["c"] == 7
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
 # 10) AlertSent dedup: 같은 ckpt 두 번 처리 시 handler 1회만 호출
 # ----------------------------------------------------------------------
 async def test_alert_dedup_on_duplicate_processing(bus, store):
