@@ -161,6 +161,10 @@ class ArcteryxAdapter:
         self._categories = categories or DEFAULT_CATEGORIES
         self._max_pages = max_pages
         self._page_size = page_size
+        # product_id → model_no 인메모리 캐시. 리스팅 응답에 모델번호가 없어
+        # 상품당 options API 1회 호출이 강제되는데(~2s/req), 2회차 사이클부터는
+        # 동일 상품이 대부분이라 캐시만 있으면 HTTP 0건으로 끝난다.
+        self._model_cache: dict[Any, str] = {}
 
     # ------------------------------------------------------------------
     # HTTP 레이어 — 지연 import / 생성
@@ -277,14 +281,21 @@ class ArcteryxAdapter:
         pid = item.get("product_id")
         if pid is None:
             return ""
+        cached = self._model_cache.get(pid)
+        if cached is not None:
+            return cached
         try:
             data = await http._options_raw(product_id=pid)
         except Exception:
             logger.exception("[arcteryx] 옵션 조회 실패: id=%s", pid)
+            self._model_cache[pid] = ""
             return ""
         if not isinstance(data, dict):
+            self._model_cache[pid] = ""
             return ""
-        return _extract_model_from_options(data)
+        model = _extract_model_from_options(data)
+        self._model_cache[pid] = model
+        return model
 
     async def match_to_kream(
         self, products: list[dict]
@@ -314,9 +325,15 @@ class ArcteryxAdapter:
 
             kream_row = kream_index.get(key)
             if kream_row is None:
-                # 미등재 신상 → collect_queue 적재 후보
-                if self._enqueue_collect(item, model_no):
-                    stats.collected_to_queue += 1
+                # 미등재 신상 → collect_queue 적재 후보. DB 경합으로 실패해도
+                # 전체 사이클을 중단하지 않고 다음 아이템으로 이어간다.
+                try:
+                    if self._enqueue_collect(item, model_no):
+                        stats.collected_to_queue += 1
+                except Exception:
+                    logger.warning(
+                        "[arcteryx] collect_queue 적재 실패: model=%s", model_no
+                    )
                 continue
 
             # 매칭 가드 — 크림 이름 vs 소싱 이름 키워드 비교
