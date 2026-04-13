@@ -11,6 +11,7 @@
 from src.adapters.abcmart_adapter import AbcmartAdapter
 from src.adapters.adidas_adapter import AdidasAdapter
 from src.adapters.arcteryx_adapter import ArcteryxAdapter
+from src.adapters.asics_adapter import AsicsAdapter
 from src.adapters.beaker_adapter import BeakerAdapter
 from src.adapters.eql_adapter import EqlAdapter
 from src.adapters.hoka_adapter import HokaAdapter
@@ -20,8 +21,11 @@ from src.adapters.kream_hot_watcher import KreamHotWatcher
 from src.adapters.musinsa_adapter import MusinsaAdapter
 from src.adapters.nbkorea_adapter import NbkoreaAdapter
 from src.adapters.nike_adapter import NikeAdapter
+from src.adapters.patagonia_adapter import PatagoniaAdapter
+from src.adapters.puma_adapter import PumaAdapter
 from src.adapters.salomon_adapter import SalomonAdapter
 from src.adapters.thehandsome_adapter import ThehandsomeAdapter
+from src.adapters.thenorthface_adapter import TheNorthFaceAdapter
 from src.adapters.tune_adapter import TuneAdapter
 from src.adapters.twentynine_cm_adapter import TwentynineCmAdapter
 from src.adapters.vans_adapter import VansAdapter
@@ -32,6 +36,7 @@ __all__ = [
     "AbcmartAdapter",
     "AdidasAdapter",
     "ArcteryxAdapter",
+    "AsicsAdapter",
     "BeakerAdapter",
     "EqlAdapter",
     "HokaAdapter",
@@ -41,8 +46,11 @@ __all__ = [
     "MusinsaAdapter",
     "NbkoreaAdapter",
     "NikeAdapter",
+    "PatagoniaAdapter",
+    "PumaAdapter",
     "SalomonAdapter",
     "ThehandsomeAdapter",
+    "TheNorthFaceAdapter",
     "TuneAdapter",
     "TwentynineCmAdapter",
     "VansAdapter",
