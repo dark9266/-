@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     alert_min_roi: float = 5.0  # 최소 ROI (%)
     alert_min_volume_7d: int = 1  # 최소 7일 거래량
 
+    # v2 reverse_scanner 비활성 (정확도 사고 격리 — 2026-04-13)
+    # Nike MFS 미작동 / LAUNCH 필터 reverse 누락 / 웍스아웃 이름 오매칭 수정 전까지 OFF.
+    v2_reverse_disabled: bool = False
+
     # v3 런타임 (Phase 2.6) — 기본 OFF. 기존 v2 루프는 그대로 유지.
     # 실사용자가 `.env` 에 `V3_RUNTIME_ENABLED=true` 로 수동 ON 해야 기동된다.
     v3_runtime_enabled: bool = False

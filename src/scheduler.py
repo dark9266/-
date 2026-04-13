@@ -35,10 +35,18 @@ class Scheduler:
 
     def start(self) -> None:
         """모든 스케줄 태스크 시작."""
-        if not self.tier1_loop.is_running():
-            self.tier1_loop.start()
-        if not self.tier2_loop.is_running():
-            self.tier2_loop.start()
+        if settings.v2_reverse_disabled:
+            logger.warning(
+                "[v2] reverse_scanner 경로 비활성 (V2_REVERSE_DISABLED=true) — "
+                "Tier1/Tier2/continuous 루프 미가동"
+            )
+        else:
+            if not self.tier1_loop.is_running():
+                self.tier1_loop.start()
+            if not self.tier2_loop.is_running():
+                self.tier2_loop.start()
+            if not self.continuous_loop.is_running():
+                self.continuous_loop.start()
         if not self.daily_report.is_running():
             self.daily_report.start()
         if not self.collect_loop.is_running():
@@ -47,8 +55,6 @@ class Scheduler:
             self.refresh_loop.start()
         if not self.spike_loop.is_running():
             self.spike_loop.start()
-        if not self.continuous_loop.is_running():
-            self.continuous_loop.start()
 
         # 스캔 캐시 정리
         if hasattr(self.bot, 'scanner') and hasattr(self.bot.scanner, 'scan_cache'):
@@ -70,6 +76,9 @@ class Scheduler:
 
     def start_auto_scan(self) -> None:
         """자동스캔 시작 (Tier1 + Tier2)."""
+        if settings.v2_reverse_disabled:
+            logger.warning("[v2] reverse_scanner 비활성 상태 — 자동스캔 무시")
+            return
         if not self.tier1_loop.is_running():
             self.tier1_loop.start()
         if not self.tier2_loop.is_running():

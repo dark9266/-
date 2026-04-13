@@ -305,8 +305,11 @@ class TestWatchlistTracking:
 class TestSchedulerStartStop:
     """스케줄러 시작/중지 테스트 (동등 복원)."""
 
-    def test_scheduler_start_starts_loops(self):
-        """start() → 7개 루프 .start() 호출."""
+    def test_scheduler_start_starts_loops(self, monkeypatch):
+        """start() → 7개 루프 .start() 호출 (v2_reverse 활성 상태)."""
+        from src import scheduler as scheduler_mod
+
+        monkeypatch.setattr(scheduler_mod.settings, "v2_reverse_disabled", False)
         bot = _make_mock_bot()
         scheduler = Scheduler(bot)
         scheduler.tier1_loop = MagicMock(is_running=MagicMock(return_value=False))
@@ -324,6 +327,29 @@ class TestSchedulerStartStop:
         scheduler.refresh_loop.start.assert_called_once()
         scheduler.spike_loop.start.assert_called_once()
         scheduler.continuous_loop.start.assert_called_once()
+
+    def test_scheduler_start_skips_v2_loops_when_disabled(self, monkeypatch):
+        """v2_reverse_disabled=True → tier1/tier2/continuous 미가동, 나머지 4개는 가동."""
+        from src import scheduler as scheduler_mod
+
+        monkeypatch.setattr(scheduler_mod.settings, "v2_reverse_disabled", True)
+        bot = _make_mock_bot()
+        scheduler = Scheduler(bot)
+        scheduler.tier1_loop = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.tier2_loop = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.daily_report = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.collect_loop = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.refresh_loop = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.spike_loop = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.continuous_loop = MagicMock(is_running=MagicMock(return_value=False))
+        scheduler.start()
+        scheduler.tier1_loop.start.assert_not_called()
+        scheduler.tier2_loop.start.assert_not_called()
+        scheduler.continuous_loop.start.assert_not_called()
+        scheduler.daily_report.start.assert_called_once()
+        scheduler.collect_loop.start.assert_called_once()
+        scheduler.refresh_loop.start.assert_called_once()
+        scheduler.spike_loop.start.assert_called_once()
 
     def test_scheduler_stop_cancels_loops(self):
         """stop() → 7개 루프 .cancel() 호출."""
