@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}헬스핀{% endblock %}
+{% block content %}
+
+{# ---------- 1) 크림 호출 예산 게이지 + 파이프라인 카운터 요약 ---------- #}
+<div class="grid grid-4" style="margin-bottom: 16px;">
+  <div class="card">
+    <h2>크림 호출 (24h)</h2>
+    <div class="metric">
+      {{ budget.used }}
+      <small>/ {{ budget.cap }}</small>
+    </div>
+    <div style="margin-top: 10px; height: 10px; background: var(--bg); border-radius: 5px; overflow: hidden;">
+      {% set pct = budget.pct if budget.pct <= 100 else 100 %}
+      {% if budget.ratio >= 1.0 %}
+        {% set bar_color = "var(--err)" %}
+      {% elif budget.ratio >= 0.9 %}
+        {% set bar_color = "var(--err)" %}
+      {% elif budget.ratio >= 0.5 %}
+        {% set bar_color = "var(--warn)" %}
+      {% else %}
+        {% set bar_color = "var(--ok)" %}
+      {% endif %}
+      <div style="width: {{ pct }}%; height: 100%; background: {{ bar_color }};"></div>
+    </div>
+    <div class="mono" style="margin-top: 6px; font-size: 11px;">
+      {{ budget.pct }}% 소진 · 잔여 {{ budget.remaining }}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>파이프라인 1h</h2>
+    <div class="metric">{{ pipeline.total }}<small>이벤트</small></div>
+    <div class="mono" style="margin-top: 10px; font-size: 11px; line-height: 1.6;">
+      <span class="badge badge-ok">완료 {{ pipeline.by_status.consumed }}</span>
+      <span class="badge badge-warn">대기 {{ pipeline.by_status.pending }}</span>
+      <span class="badge badge-warn">보류 {{ pipeline.by_status.deferred }}</span>
+      <span class="badge badge-err">실패 {{ pipeline.by_status.failed }}</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>어댑터 활성</h2>
+    <div class="metric">{{ adapters | length }}<small>소싱처 (24h)</small></div>
+    <div class="mono" style="margin-top: 10px; font-size: 11px;">
+      덤프 이벤트 기준 최근 24h
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>v3 알림 (최근)</h2>
+    <div class="metric">{{ v3_alerts | length }}<small>건 표시</small></div>
+    <div class="mono" style="margin-top: 10px; font-size: 11px;">
+      alert_sent 테이블 · fired_at 내림차순
+    </div>
+  </div>
+</div>
+
+{# ---------- 2) 어댑터(소싱처) 헬스핀 ---------- #}
+<div class="card" style="margin-bottom: 16px;">
+  <h2>소싱처 헬스핀 · 24h</h2>
+  {% if adapters %}
+  <table>
+    <thead>
+      <tr>
+        <th>소싱처</th>
+        <th class="num">이벤트</th>
+        <th class="num">성공률</th>
+        <th class="num">덤프</th>
+        <th class="num">매칭</th>
+        <th class="num">실패</th>
+        <th class="num">보류</th>
+        <th>최근 덤프</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in adapters %}
+      <tr>
+        <td><strong>{{ a.source }}</strong></td>
+        <td class="num">{{ a.total }}</td>
+        <td class="num">
+          {% if a.success_rate >= 95 %}
+            <span class="badge badge-ok">{{ a.success_rate }}%</span>
+          {% elif a.success_rate >= 80 %}
+            <span class="badge badge-warn">{{ a.success_rate }}%</span>
+          {% else %}
+            <span class="badge badge-err">{{ a.success_rate }}%</span>
+          {% endif %}
+        </td>
+        <td class="num">{{ a.dumped_24h }}</td>
+        <td class="num">{{ a.matched_24h }}</td>
+        <td class="num">
+          {% if a.failed %}
+            <span class="badge badge-err">{{ a.failed }}</span>
+          {% else %}
+            <span style="color: var(--muted);">0</span>
+          {% endif %}
+        </td>
+        <td class="num">
+          {% if a.deferred %}
+            <span class="badge badge-warn">{{ a.deferred }}</span>
+          {% else %}
+            <span style="color: var(--muted);">0</span>
+          {% endif %}
+        </td>
+        <td class="mono">{{ a.last_at_iso | time }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">24h 내 CatalogDumped 이벤트가 없습니다.</div>
+  {% endif %}
+</div>
+
+{# ---------- 3) 파이프라인 event_type 별 분포 ---------- #}
+<div class="card" style="margin-bottom: 16px;">
+  <h2>이벤트 타입 × 상태 · 1h</h2>
+  {% if pipeline.by_type %}
+  <table>
+    <thead>
+      <tr>
+        <th>이벤트 타입</th>
+        <th>상태</th>
+        <th class="num">건수</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in pipeline.by_type %}
+      <tr>
+        <td class="mono">{{ row.event_type }}</td>
+        <td>
+          {% if row.status == 'consumed' %}
+            <span class="badge badge-ok">완료</span>
+          {% elif row.status == 'pending' %}
+            <span class="badge badge-warn">대기</span>
+          {% elif row.status == 'deferred' %}
+            <span class="badge badge-warn">보류</span>
+          {% elif row.status == 'failed' %}
+            <span class="badge badge-err">실패</span>
+          {% else %}
+            <span class="badge">{{ row.status }}</span>
+          {% endif %}
+        </td>
+        <td class="num">{{ row.cnt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">1h 내 이벤트 체크포인트 없음.</div>
+  {% endif %}
+</div>
+
+{# ---------- 4) v3 알림 피드 ---------- #}
+<div class="card">
+  <h2>v3 알림 피드 · 최근 {{ v3_alerts | length }}건</h2>
+  {% if v3_alerts %}
+  <table>
+    <thead>
+      <tr>
+        <th>발송 시각</th>
+        <th>브랜드 / 상품</th>
+        <th>모델번호</th>
+        <th>시그널</th>
+        <th class="num">checkpoint</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in v3_alerts %}
+      <tr>
+        <td class="mono">{{ a.fired_at_iso | time }}</td>
+        <td>
+          <strong>{{ a.brand or "-" }}</strong>
+          <br><span class="mono">{{ a.name or "-" }}</span>
+        </td>
+        <td class="mono">{{ a.model_number or "-" }}</td>
+        <td><span class="badge badge-signal">{{ a.signal }}</span></td>
+        <td class="num mono">#{{ a.checkpoint_id }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">alert_sent 테이블 비어 있음.</div>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2>참고</h2>
+  <div style="color: var(--muted); font-size: 12px; line-height: 1.6;">
+    · 어댑터 헬스핀: <code>event_checkpoint</code> WHERE event_type='CatalogDumped' 기준 (24h)<br>
+    · 크림 호출 예산: <code>kream_api_calls</code> 24h 누적 vs 일일 캡 10,000<br>
+    · 파이프라인 카운터: <code>event_checkpoint</code> 최근 1h, status × event_type<br>
+    · v3 알림 피드: <code>alert_sent</code> 최근 10건 (Orchestrator 예약 기준)<br>
+    · 모든 쿼리는 <code>?mode=ro</code> SQLite 읽기 전용 연결
+  </div>
+</div>
+
+{% endblock %}

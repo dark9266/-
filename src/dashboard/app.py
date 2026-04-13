@@ -3,11 +3,12 @@
 실행:
     PYTHONPATH=. uvicorn src.dashboard.app:app --host 127.0.0.1 --port 8000
 
-4개 판:
+5개 판:
     /          — 실시간 수익 알림 피드
     /sources   — 소싱처 16곳 헬스
     /matching  — 크림 DB 매칭 품질
     /profit    — 수익 집계 + 그래프
+    /health    — Phase 3 runtime-sentinel 헬스핀 (어댑터·크림캡·파이프라인·v3 알림)
 """
 
 from __future__ import annotations
@@ -19,9 +20,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from src.crawlers import registry
-from src.dashboard import queries
-
 # 크롤러 모듈 import 시점에 registry.register() 자동 호출 — 소싱처 판 표시를 위해 프리로드
 from src.crawlers import (  # noqa: F401, E402
     abcmart,
@@ -32,6 +30,7 @@ from src.crawlers import (  # noqa: F401, E402
     musinsa_httpx,
     nbkorea,
     nike,
+    registry,
     salomon,
     tune,
     twentynine_cm,
@@ -39,6 +38,7 @@ from src.crawlers import (  # noqa: F401, E402
     wconcept,
     worksout,
 )
+from src.dashboard import queries
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -142,6 +142,30 @@ async def matching(request: Request):
     ctx = _nav_ctx(request, "matching")
     ctx.update({"coverage": coverage, "brands": brands, "totals": totals})
     return templates.TemplateResponse(request, "matching.html", ctx)
+
+
+@app.get("/health", response_class=HTMLResponse)
+async def health(request: Request):
+    """Phase 3 runtime-sentinel 헬스핀.
+
+    4개 위젯:
+      1) 어댑터(소싱처)별 24h 덤프/매칭/실패율
+      2) 크림 API 일일 캡 게이지
+      3) 이벤트 파이프라인 카운터 (status × event_type)
+      4) v3 알림 피드 최근 10건
+    """
+    adapters = queries.adapter_health_24h()
+    budget = queries.kream_budget_usage()
+    pipeline = queries.pipeline_counters_1h()
+    v3_alerts = queries.recent_v3_alerts(limit=10)
+    ctx = _nav_ctx(request, "health")
+    ctx.update({
+        "adapters": adapters,
+        "budget": budget,
+        "pipeline": pipeline,
+        "v3_alerts": v3_alerts,
+    })
+    return templates.TemplateResponse(request, "health.html", ctx)
 
 
 @app.get("/profit", response_class=HTMLResponse)
