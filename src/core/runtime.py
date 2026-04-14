@@ -34,6 +34,7 @@ from src.adapters.adidas_adapter import AdidasAdapter
 from src.adapters.arcteryx_adapter import ArcteryxAdapter
 from src.adapters.asics_adapter import AsicsAdapter
 from src.adapters.beaker_adapter import BeakerAdapter
+from src.adapters.converse_adapter import ConverseAdapter
 from src.adapters.eql_adapter import EqlAdapter
 from src.adapters.hoka_adapter import HokaAdapter
 from src.adapters.kasina_adapter import KasinaAdapter
@@ -107,6 +108,7 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("patagonia", PatagoniaAdapter),
     ("thenorthface", TheNorthFaceAdapter),
     ("stussy", StussyAdapter),
+    ("converse", ConverseAdapter),
 ]
 
 
@@ -260,9 +262,7 @@ class V3Runtime:
             try:
                 snapshot = await snapshot_fn(event.kream_product_id, event.size)
             except Exception:
-                logger.exception(
-                    "[v3] 크림 스냅샷 조회 실패: pid=%s", event.kream_product_id
-                )
+                logger.exception("[v3] 크림 스냅샷 조회 실패: pid=%s", event.kream_product_id)
                 return None
 
             if not snapshot:
@@ -359,9 +359,7 @@ class V3Runtime:
         webhook = getattr(_settings_for_webhook, "discord_notify_webhook", None)
         self._discord_publisher = V3DiscordPublisher(webhook)
         inner_handler = build_profit_handler(self._alert_logger)
-        self._orchestrator.on_profit_found(
-            wrap_handler(inner_handler, self._discord_publisher)
-        )
+        self._orchestrator.on_profit_found(wrap_handler(inner_handler, self._discord_publisher))
 
         await self._orchestrator.start()
         await self._orchestrator.recover()
@@ -370,10 +368,7 @@ class V3Runtime:
         self._adapters = self._build_adapters()
 
         # 크림 감시 경로 선택: delta_watcher override > kream_delta_client 주입 > hot_watcher
-        use_delta = (
-            self._delta_watcher_override is not None
-            or self._kream_delta_client is not None
-        )
+        use_delta = self._delta_watcher_override is not None or self._kream_delta_client is not None
 
         if use_delta:
             if self._delta_watcher_override is not None:
@@ -385,9 +380,7 @@ class V3Runtime:
                     kream_client=self._kream_delta_client,
                     poll_interval_sec=self._hot_poll_interval_sec,
                 )
-            watcher_task = asyncio.create_task(
-                self._delta.run_forever(), name="v3.kream_delta"
-            )
+            watcher_task = asyncio.create_task(self._delta.run_forever(), name="v3.kream_delta")
             watcher_label = "delta"
         else:
             if self._hot_watcher_override is not None:
@@ -398,9 +391,7 @@ class V3Runtime:
                     db_path=self._db_path,
                     poll_interval_sec=self._hot_poll_interval_sec,
                 )
-            watcher_task = asyncio.create_task(
-                self._hot.run_forever(), name="v3.kream_hot"
-            )
+            watcher_task = asyncio.create_task(self._hot.run_forever(), name="v3.kream_hot")
             watcher_label = "hot"
 
         self._adapter_tasks = []
@@ -408,9 +399,7 @@ class V3Runtime:
             initial_delay = idx * self._adapter_stagger_sec
             self._adapter_tasks.append(
                 asyncio.create_task(
-                    self._adapter_loop(
-                        name, adapter, self._adapter_interval_sec, initial_delay
-                    ),
+                    self._adapter_loop(name, adapter, self._adapter_interval_sec, initial_delay),
                     name=f"v3.{name}_loop",
                 )
             )
@@ -518,9 +507,7 @@ class V3Runtime:
             "enabled": self._enabled,
             "started": self._started,
             "ts": time.time(),
-            "orchestrator": (
-                self._orchestrator.stats() if self._orchestrator else None
-            ),
+            "orchestrator": (self._orchestrator.stats() if self._orchestrator else None),
             "adapter_tasks": len(self._adapter_tasks),
             "adapters": sorted(self._adapters.keys()),
         }
