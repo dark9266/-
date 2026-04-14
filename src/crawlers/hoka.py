@@ -45,6 +45,12 @@ logger = setup_logger("hoka_crawler")
 BASE_URL = "https://www.hoka.com"
 COVEO_PATH = "/on/demandware.store/Sites-HOKA-US-Site/en_US/Coveo-Show"
 
+
+def _redact_proxy(url: str) -> str:
+    """프록시 URL 로깅용 마스킹 — scheme://host:port 만 노출, 계정정보 숨김."""
+    m = re.match(r"^(\w+)://(?:[^@]+@)?([^/]+)", url)
+    return f"{m.group(1)}://***@{m.group(2)}" if m else "***"
+
 # 호카 주요 모델명 — Coveo 검색 키워드로 순회해 카탈로그 커버.
 # 편집 가능. 신모델 등장 시 추가.
 HOKA_SEARCH_KEYWORDS: tuple[str, ...] = (
@@ -290,11 +296,20 @@ class HokaCrawler:
             # 지연 import — 테스트에서 의존 없이 모듈 로드 가능
             from curl_cffi.requests import AsyncSession
 
-            self._client = AsyncSession(
-                impersonate="safari17_0",
-                headers=HEADERS,
-                timeout=20,
-            )
+            # DataDome 우회용 프록시 (`HOKA_PROXY_URL` env). 미설정 시 직결.
+            # 설정 시 curl_cffi 의 Safari impersonation 유지한 채 프록시 터널링.
+            from src.config import settings
+
+            proxy = (settings.hoka_proxy_url or "").strip() or None
+            kwargs = {
+                "impersonate": "safari17_0",
+                "headers": HEADERS,
+                "timeout": 20,
+            }
+            if proxy:
+                kwargs["proxies"] = {"http": proxy, "https": proxy}
+                logger.info("호카 크롤러 프록시 주입: %s", _redact_proxy(proxy))
+            self._client = AsyncSession(**kwargs)
         return self._client
 
     async def _fetch_coveo(self, keyword: str) -> str:

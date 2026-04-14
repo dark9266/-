@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     request_delay_max: float = 2.0  # 최대 딜레이 (초)
     httpx_concurrency: int = 10  # httpx 동시 요청 수
     musinsa_min_interval: float = 0.5  # 무신사 요청 간 최소 간격 (초)
+    hoka_proxy_url: str = ""  # 호카 DataDome 우회용 프록시 (예: http://user:pass@host:port)
     scan_interval_minutes: int = 30  # 기본 스캔 주기
     fast_scan_interval_minutes: int = 10  # 수익 상품 집중 추적 주기
 
