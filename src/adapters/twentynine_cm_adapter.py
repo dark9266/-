@@ -47,6 +47,7 @@ DEFAULT_BRAND_KEYWORDS: tuple[str, ...] = (
     "Vans",
     "Asics",
     "Hoka",
+    "The North Face",
 )
 
 
