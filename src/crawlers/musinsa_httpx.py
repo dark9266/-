@@ -231,12 +231,30 @@ class MusinsaHttpxCrawler:
         self,
         category: str,
         max_pages: int = 1,
+        *,
+        brand: str | None = None,
+        sort_code: str = "NEW",
     ) -> list[dict]:
         """무신사 카테고리 리스팅 — api.musinsa.com API 호출.
 
         1페이지(60건) 단위로 조회.
         신규 API: api.musinsa.com/api2/dp/v1/plp/goods
-        파라미터: category(코드), caller=CATEGORY, page, size, sortCode
+        파라미터: category(코드), caller=CATEGORY, page, size, sortCode, (brand)
+
+        Parameters
+        ----------
+        category:
+            카테고리 코드 (예: ``"103"`` 신발).
+        max_pages:
+            최대 페이지 수. 페이지당 60건. 빈 페이지 또는 중복만 나오면 조기 종료.
+        brand:
+            선택 — 브랜드 필터 (예: ``"nike"``, ``"adidas"``). ``None`` 이면
+            카테고리 전량. 실측 2026-04-14 서버가 unknown brand 에 대해
+            빈 리스트를 반환하므로 알려지지 않은 값에 대해 안전.
+        sort_code:
+            ``NEW`` (기본, 신규 업로드 순) / ``POPULAR`` / ``RECOMMEND`` /
+            ``DISCOUNT_RATE`` / ``PRICE_ASC`` 등. 매칭률 관점에서는
+            ``POPULAR`` 가 크림 등재 상품 비율이 높다.
         """
         client = await self.connect()
         all_items: list[dict] = []
@@ -244,23 +262,26 @@ class MusinsaHttpxCrawler:
 
         for page_num in range(1, max_pages + 1):
             try:
+                params: dict[str, str | int] = {
+                    "category": category,
+                    "caller": "CATEGORY",
+                    "page": page_num,
+                    "size": 60,
+                    "sortCode": sort_code,
+                }
+                if brand:
+                    params["brand"] = brand
                 async with self._rate_limiter.acquire():
                     resp = await client.get(
                         f"{MUSINSA_API_BASE}/goods",
-                        params={
-                            "category": category,
-                            "caller": "CATEGORY",
-                            "page": page_num,
-                            "size": 60,
-                            "sortCode": "NEW",
-                        },
+                        params=params,
                         headers=_API_HEADERS,
                     )
 
                 if resp.status_code != 200:
                     logger.warning(
-                        "카테고리 리스팅 실패: cat=%s page=%d status=%d",
-                        category, page_num, resp.status_code,
+                        "카테고리 리스팅 실패: cat=%s brand=%s sort=%s page=%d status=%d",
+                        category, brand or "-", sort_code, page_num, resp.status_code,
                     )
                     break
 
@@ -291,8 +312,8 @@ class MusinsaHttpxCrawler:
                 break
 
         logger.info(
-            "카테고리 리스팅 완료: category=%s, %d건",
-            category, len(all_items),
+            "카테고리 리스팅 완료: category=%s brand=%s sort=%s, %d건",
+            category, brand or "-", sort_code, len(all_items),
         )
         return all_items
 

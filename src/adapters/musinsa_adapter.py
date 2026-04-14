@@ -57,6 +57,28 @@ DEFAULT_CATEGORIES: dict[str, str] = {
     "103": "신발",
 }
 
+# 덤프 대상 브랜드 — 크림 DB 에 커버리지가 있고 goodsName 에 모델번호가
+# 노출되는 브랜드만. 카테고리 전체 덤프(sortCode=NEW)는 모델번호 없는
+# 브랜드(fitflop/gap/tommyjeans 등) 가 분모를 부풀리고 신상 중심이라 크림
+# 미등재 비율이 높다. 브랜드별 `brand=X&sortCode=POPULAR` 쿼리가 크림 등재
+# 상품과 교집합이 훨씬 크다(실측 2026-04-14).
+DEFAULT_BRANDS: tuple[str, ...] = (
+    "nike",
+    "jordan",
+    "adidas",
+    "newbalance",
+    "puma",
+    "converse",
+    "reebok",
+    "vans",
+    "asics",
+    "hoka",
+    "salomon",
+    "arcteryx",
+    "thenorthface",
+    "adidasgolf",
+)
+
 
 def _slug(s: str) -> str:
     return re.sub(r"[\s\-_]+", "", (s or "").lower())
@@ -117,6 +139,7 @@ class MusinsaAdapter:
         http_client: Any = None,
         *,
         categories: dict[str, str] | None = None,
+        brands: tuple[str, ...] | None = None,
         max_pages: int = 10,
     ) -> None:
         """
@@ -139,6 +162,7 @@ class MusinsaAdapter:
         self._db_path = db_path
         self._http = http_client
         self._categories = categories or DEFAULT_CATEGORIES
+        self._brands = brands if brands is not None else DEFAULT_BRANDS
         self._max_pages = max_pages
 
     # ------------------------------------------------------------------
@@ -166,18 +190,47 @@ class MusinsaAdapter:
         """
         http = await self._get_http()
         products: list[dict] = []
-        for code, name in self._categories.items():
-            try:
-                items = await http.fetch_category_listing(
-                    code, max_pages=self._max_pages
-                )
-            except Exception:
-                logger.exception("[musinsa] 카테고리 덤프 실패: %s %s", code, name)
-                continue
-            for item in items:
-                item["_category_code"] = code
-                item["_category_name"] = name
-            products.extend(items)
+        seen_goods: set[str] = set()
+
+        # 브랜드 시드가 비어있으면 카테고리 전체 덤프 (구 동작 유지)
+        if not self._brands:
+            for code, name in self._categories.items():
+                try:
+                    items = await http.fetch_category_listing(
+                        code, max_pages=self._max_pages
+                    )
+                except Exception:
+                    logger.exception("[musinsa] 카테고리 덤프 실패: %s %s", code, name)
+                    continue
+                for item in items:
+                    item["_category_code"] = code
+                    item["_category_name"] = name
+                products.extend(items)
+        else:
+            # 브랜드별 POPULAR 쿼리 — 카테고리 전체 NEW 보다 크림 등재 교집합이 큼
+            for code, name in self._categories.items():
+                for brand in self._brands:
+                    try:
+                        items = await http.fetch_category_listing(
+                            code,
+                            max_pages=self._max_pages,
+                            brand=brand,
+                            sort_code="POPULAR",
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[musinsa] 브랜드 덤프 실패: code=%s brand=%s", code, brand
+                        )
+                        continue
+                    for item in items:
+                        goods_no = str(item.get("goodsNo") or "")
+                        if not goods_no or goods_no in seen_goods:
+                            continue
+                        seen_goods.add(goods_no)
+                        item["_category_code"] = code
+                        item["_category_name"] = name
+                        item["_brand_filter"] = brand
+                        products.append(item)
 
         event = CatalogDumped(
             source=self.source_name,

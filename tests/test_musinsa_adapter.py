@@ -81,7 +81,12 @@ class _FakeMusinsaHttp:
         self.calls: list[tuple[str, int]] = []
 
     async def fetch_category_listing(
-        self, category: str, max_pages: int = 1
+        self,
+        category: str,
+        max_pages: int = 1,
+        *,
+        brand: str | None = None,
+        sort_code: str = "NEW",
     ) -> list[dict]:
         self.calls.append((category, max_pages))
         return list(self._listings.get(category, []))
@@ -149,6 +154,7 @@ async def test_dump_catalog_publishes_event(bus, kream_db):
         db_path=kream_db,
         http_client=fake_http,
         categories={"103": "신발"},
+        brands=(),
         max_pages=1,
     )
 
@@ -179,6 +185,7 @@ async def test_match_to_kream_classifies_items(bus, kream_db):
         db_path=kream_db,
         http_client=fake_http,
         categories={"103": "신발"},
+        brands=(),
     )
 
     products = [
@@ -289,6 +296,7 @@ async def test_run_once_stats(bus, kream_db):
         db_path=kream_db,
         http_client=fake_http,
         categories={"103": "신발"},
+        brands=(),
     )
     stats = await adapter.run_once()
     assert stats["dumped"] == 2
@@ -319,6 +327,7 @@ async def test_end_to_end_through_orchestrator(bus, kream_db, tmp_path):
         db_path=kream_db,
         http_client=fake_http,
         categories={"103": "신발"},
+        brands=(),
     )
 
     ckpt_path = tmp_path / "ckpt.db"
