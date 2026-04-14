@@ -517,3 +517,96 @@ async def test_end_to_end_through_orchestrator(bus, kream_db, tmp_path):
     finally:
         await orch.stop()
         await store.close()
+
+
+# ─── (c) NetFunnel 쿠키 배선 경로 ──────────────────────────
+
+
+class _FakeCrawler:
+    """싱글톤 asics_crawler 대역 — attach/set_skeleton_callback 기록."""
+
+    def __init__(self) -> None:
+        self.attached: list[str] = []
+        self.skeleton_cb = None
+        self.category_calls: list[str] = []
+
+    def attach_netfunnel_cookie(self, value: str) -> None:
+        self.attached.append(value)
+
+    def set_skeleton_callback(self, cb) -> None:
+        self.skeleton_cb = cb
+
+    async def fetch_category_products(self, code: str) -> list[dict]:
+        self.category_calls.append(code)
+        return []
+
+    async def fetch_product_detail(self, pid: str) -> dict:
+        return {}
+
+
+class _FakeCookieCache:
+    def __init__(self, values):
+        self._values = list(values)
+        self.get_calls = 0
+        self.invalidate_calls = 0
+
+    async def get(self):
+        self.get_calls += 1
+        if self._values:
+            return self._values.pop(0)
+        return None
+
+    def invalidate(self) -> None:
+        self.invalidate_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_wire_netfunnel_injects_initial_cookie(bus, kream_db, monkeypatch):
+    """adapter._get_http() 싱글톤 경로에서 초기 쿠키가 주입되는지 확인."""
+    fake = _FakeCrawler()
+
+    # 싱글톤 import 대체
+    import src.crawlers.asics as asics_mod
+
+    monkeypatch.setattr(asics_mod, "asics_crawler", fake)
+    monkeypatch.setattr(asics_mod, "ASICS_CATEGORY_CODES", ("0001",))
+
+    cache = _FakeCookieCache(["FIRST-COOKIE"])
+    adapter = AsicsAdapter(
+        bus=bus,
+        db_path=kream_db,
+        http_client=None,
+        netfunnel_cache=cache,
+    )
+
+    http = await adapter._get_http()
+    assert http is not None
+    assert fake.attached == ["FIRST-COOKIE"]
+    assert fake.skeleton_cb is not None
+    assert cache.get_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_skeleton_callback_triggers_reacquire(bus, kream_db, monkeypatch):
+    """스켈레톤 콜백이 invalidate + 재획득 + 재주입을 수행하는지 확인."""
+    fake = _FakeCrawler()
+    import src.crawlers.asics as asics_mod
+
+    monkeypatch.setattr(asics_mod, "asics_crawler", fake)
+    monkeypatch.setattr(asics_mod, "ASICS_CATEGORY_CODES", ("0001",))
+
+    cache = _FakeCookieCache(["FIRST", "SECOND"])
+    adapter = AsicsAdapter(
+        bus=bus,
+        db_path=kream_db,
+        http_client=None,
+        netfunnel_cache=cache,
+    )
+    await adapter._get_http()
+    assert fake.attached == ["FIRST"]
+
+    # 스켈레톤 시뮬레이션 — 크롤러가 콜백 호출했다고 가정
+    await fake.skeleton_cb()
+
+    assert cache.invalidate_calls == 1
+    assert fake.attached == ["FIRST", "SECOND"]

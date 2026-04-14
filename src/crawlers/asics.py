@@ -260,6 +260,7 @@ class AsicsCrawler:
         self._client = None  # lazy: curl_cffi AsyncSession
         self._rate_limiter = AsyncRateLimiter(max_concurrent=2, min_interval=2.0)
         self._netfunnel_cookie: str | None = None
+        self._skeleton_callback = None  # () -> Awaitable[None] | None
 
     async def _get_client(self):
         if self._client is None:
@@ -278,6 +279,15 @@ class AsicsCrawler:
                 except Exception:  # pragma: no cover
                     pass
         return self._client
+
+    def set_skeleton_callback(self, cb) -> None:
+        """스켈레톤(NetFunnel 미통과) 응답 감지 시 호출할 비동기 콜백 등록.
+
+        어댑터는 이 콜백으로 ``NetFunnelCookieCache.invalidate()`` + 재획득을
+        트리거한다. None 이면 콜백 비활성화 — 크롤러는 스켈레톤을 그대로
+        빈 문자열로 반환한다.
+        """
+        self._skeleton_callback = cb
 
     def attach_netfunnel_cookie(self, value: str) -> None:
         """Playwright 헬퍼가 획득한 NetFunnel 토큰 주입.
@@ -307,6 +317,11 @@ class AsicsCrawler:
         # NetFunnel 스켈레톤 감지: 전형적으로 3~5KB + ``NetFunnel_Action`` 문자열.
         if len(text) < 6000 and "NetFunnel_Action" in text:
             logger.info("asics netfunnel 미통과 스켈레톤: path=%s len=%d", path, len(text))
+            if self._skeleton_callback is not None:
+                try:
+                    await self._skeleton_callback()
+                except Exception:  # pragma: no cover
+                    logger.exception("asics skeleton callback 실패")
             return ""
         return text
 

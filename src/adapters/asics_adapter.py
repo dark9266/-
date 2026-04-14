@@ -101,6 +101,7 @@ class AsicsAdapter:
         *,
         categories: tuple[str, ...] | None = None,
         max_categories: int = 50,
+        netfunnel_cache: Any = None,
     ) -> None:
         """
         Parameters
@@ -125,6 +126,8 @@ class AsicsAdapter:
         self._http = http_client
         self._categories = categories
         self._max_categories = max_categories
+        self._netfunnel_cache = netfunnel_cache
+        self._netfunnel_wired = False
 
     # ------------------------------------------------------------------
     # HTTP 레이어 — 지연 import (테스트 시 실모듈 로드 회피 가능)
@@ -136,8 +139,42 @@ class AsicsAdapter:
 
         if self._categories is None:
             self._categories = ASICS_CATEGORY_CODES
+        await self._wire_netfunnel(asics_crawler)
         self._http = _DefaultAsicsHttp(asics_crawler)
         return self._http
+
+    async def _wire_netfunnel(self, crawler: Any) -> None:
+        """NetFunnel 쿠키 캐시를 싱글톤 크롤러에 배선 + 초기 쿠키 주입.
+
+        캐시 미주입 시 기본 ``NetFunnelCookieCache`` 생성. 스켈레톤 콜백은
+        캐시 무효화 + 즉시 재획득 시도하도록 설정한다 (1회).
+        """
+        if self._netfunnel_wired:
+            return
+        if self._netfunnel_cache is None:
+            from src.crawlers._netfunnel_helper import NetFunnelCookieCache
+
+            self._netfunnel_cache = NetFunnelCookieCache()
+
+        cache = self._netfunnel_cache
+
+        async def _on_skeleton() -> None:
+            cache.invalidate()
+            new_val = await cache.get()
+            if new_val and hasattr(crawler, "attach_netfunnel_cookie"):
+                crawler.attach_netfunnel_cookie(new_val)
+
+        if hasattr(crawler, "set_skeleton_callback"):
+            crawler.set_skeleton_callback(_on_skeleton)
+
+        initial = await cache.get()
+        if initial and hasattr(crawler, "attach_netfunnel_cookie"):
+            crawler.attach_netfunnel_cookie(initial)
+            logger.info("[asics] netfunnel 쿠키 초기 주입 OK")
+        else:
+            logger.warning("[asics] netfunnel 쿠키 획득 실패 — 덤프가 스켈레톤만 수신할 수 있음")
+
+        self._netfunnel_wired = True
 
     # ------------------------------------------------------------------
     # 1) 카탈로그 덤프 — 카테고리 순회 + 상세 보강
