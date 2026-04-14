@@ -136,6 +136,15 @@ def extract_model_from_name(name: str) -> str | None:
     if m:
         return normalize_model_number(m.group(1))
 
+    # New Era / MLB cap: 순수 8자리 숫자 (15131628, 70331962). 무신사 newera
+    # 카테고리 101 모자에서 goodsName 끝에 노출. 날짜(20YYMMDD/19YYMMDD)
+    # 패턴은 false positive 회피를 위해 배제.
+    m = re.search(r"(?:^|[^A-Z0-9])(\d{8})(?:$|[^A-Z0-9])", text)
+    if m:
+        cand = m.group(1)
+        if not re.match(r"^(19|20)\d{6}$", cand):
+            return normalize_model_number(cand)
+
     # The North Face: 영문2 + 숫자1 + 영문2 + 숫자2 + 영문1 (NM5MS04K, NJ3BQ60J).
     # 무신사 thenorthface 의류 카탈로그 100% 노출. 한글 경계 안전 위해 non-alnum.
     m = re.search(r"(?:^|[^A-Z0-9])([A-Z]{2}\d[A-Z]{2}\d{2}[A-Z])(?:$|[^A-Z0-9])", text)

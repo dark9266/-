@@ -83,6 +83,7 @@ DEFAULT_BRANDS: tuple[str, ...] = (
     "arcteryx",
     "thenorthface",
     "adidasgolf",
+    "newera",
 )
 
 
