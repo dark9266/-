@@ -55,6 +55,8 @@ PB_BLACKLIST_SLUGS: frozenset[str] = frozenset({
 # 비율을 왜곡. 크림 커버리지가 확실한 103(신발) 단독 덤프로 축소.
 DEFAULT_CATEGORIES: dict[str, str] = {
     "103": "신발",
+    "001": "상의",
+    "002": "아우터",
 }
 
 # 덤프 대상 브랜드 — 크림 DB 에 커버리지가 있고 goodsName 에 모델번호가
