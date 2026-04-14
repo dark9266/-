@@ -325,6 +325,11 @@ class MusinsaAdapter:
                 continue
 
             kream_row = kream_index.get(key)
+            # Vans 전용 퍼징: 크림은 11자 형식 (VN000EJ9BLK) 과
+            # 12자 형식 (VN000CRRBJ41) 혼재. 무신사 goodsName 은 항상 12자
+            # (사이즈/variant 꼬리 1 포함). exact miss 시 꼬리 숫자 1자 제거 재시도.
+            if kream_row is None and key.startswith("VN") and len(key) >= 12 and key[-1].isdigit():
+                kream_row = kream_index.get(key[:-1])
             if kream_row is None:
                 # 미등재 신상 → batch flush 대기열
                 pending_collect.append(self._build_collect_row(item, model_from_name))

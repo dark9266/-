@@ -179,6 +179,12 @@ def extract_model_from_name(name: str) -> str | None:
     if m:
         return normalize_model_number(m.group(1))
 
+    # Vans: VN + 9~10자리 영숫자 (VN000EJ9BLK1, VN0A2Z3Z2VZ1). 크림은 일부
+    # 11자 형식(trailing digit 제거) 으로도 저장 — 어댑터 lookup 레이어에서 퍼징.
+    m = re.search(r"(?:^|[^A-Z0-9])(VN[A-Z0-9]{9,10})(?:$|[^A-Z0-9])", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
     # Converse: 6자리+C 꼬리 (563508C, 132169C) 또는 1J+3자리+C (1J793C, 1J794C).
     # 크림 961 + 2행 실존. 척테일러/원스타 모델 풀 활성화.
     m = re.search(r"(?:^|[^A-Z0-9])(\d{6}C)(?:$|[^A-Z0-9])", text)
