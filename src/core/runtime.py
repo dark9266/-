@@ -151,6 +151,7 @@ class V3Runtime:
         min_profit: int = _MIN_PROFIT_DEFAULT,
         min_roi: float = _MIN_ROI_DEFAULT,
         min_volume_7d: int = _MIN_VOLUME_7D_DEFAULT,
+        discord_channel_send: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         """
         Parameters
@@ -201,6 +202,7 @@ class V3Runtime:
         self._hot_watcher_override = hot_watcher
         self._delta_watcher_override = delta_watcher
 
+        self._discord_channel_send = discord_channel_send
         self._min_profit = min_profit
         self._min_roi = min_roi
         self._min_volume_7d = min_volume_7d
@@ -364,7 +366,10 @@ class V3Runtime:
         from src.config import settings as _settings_for_webhook
 
         webhook = getattr(_settings_for_webhook, "discord_profit_webhook", None)
-        self._discord_publisher = V3DiscordPublisher(webhook)
+        self._discord_publisher = V3DiscordPublisher(
+            webhook,
+            channel_send=self._discord_channel_send,
+        )
         inner_handler = build_profit_handler(self._alert_logger)
         self._orchestrator.on_profit_found(wrap_handler(inner_handler, self._discord_publisher))
 

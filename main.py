@@ -9,6 +9,8 @@ import atexit
 import os
 import sys
 
+import discord
+
 from src.config import settings
 from src.core.runtime import V3Runtime, _safe_start_v3
 from src.discord_bot.bot import bot
@@ -94,6 +96,21 @@ def _register_v3_runtime_hook() -> None:
         _throttle_burst = settings.v3_throttle_burst
         _recover_cap = 50
 
+    # v3 수익 알림 → 기존 CHANNEL_PROFIT_ALERT 채널로 직접 send.
+    # 새 webhook URL 필요 없음 — 기존 discord.py bot 핸들을 DI 로 재사용.
+    async def _discord_channel_send(embed_dict: dict) -> None:
+        channel_id = settings.channel_profit_alert
+        if not channel_id:
+            return
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            logger.warning("[v3] profit 채널 미발견 id=%s — 알림 drop", channel_id)
+            return
+        try:
+            await channel.send(embed=discord.Embed.from_dict(embed_dict))
+        except Exception:
+            logger.exception("[v3] profit 채널 send 실패")
+
     _v3_runtime = V3Runtime(
         db_path=settings.db_path,
         enabled=settings.v3_runtime_enabled,
@@ -107,6 +124,7 @@ def _register_v3_runtime_hook() -> None:
         alert_log_path=settings.v3_alert_log_path,
         kream_snapshot_fn=snapshot_fn,
         kream_delta_client=delta_client,
+        discord_channel_send=_discord_channel_send,
     )
 
     _already_started = {"flag": False}

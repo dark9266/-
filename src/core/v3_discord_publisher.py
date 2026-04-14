@@ -81,17 +81,34 @@ def _build_embed(event: ProfitFound) -> dict:
     return embed
 
 
+ChannelSendFn = Callable[[dict], Awaitable[None]]
+"""async 콜백 — embed dict 하나를 받아 discord.py 채널로 전송.
+
+main.py 에서 `lambda embed: bot.get_channel(id).send(embed=Embed.from_dict(embed))`
+형태로 주입한다. 여기서는 duck-typing — discord 라이브러리 import 금지.
+"""
+
+
 class V3DiscordPublisher:
-    """ProfitHandler wrapper — alert_logger 다음에 webhook POST."""
+    """ProfitHandler wrapper — alert_logger 다음에 embed 발송.
+
+    경로 우선순위 (생성 시 하나 선택):
+        1. channel_send 콜백 주입 → discord.py bot 채널로 직접 send
+           (기존 CHANNEL_PROFIT_ALERT 채널 재사용, 추가 URL 불필요)
+        2. webhook_url 문자열 → httpx POST
+        3. 둘 다 없음 → no-op (JSONL 만 기록)
+    """
 
     def __init__(
         self,
-        webhook_url: str | None,
+        webhook_url: str | None = None,
         *,
+        channel_send: ChannelSendFn | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float = 5.0,
     ) -> None:
         self._webhook_url = webhook_url
+        self._channel_send = channel_send
         self._client = client
         self._timeout = timeout
         self._owns_client = client is None
@@ -102,16 +119,27 @@ class V3DiscordPublisher:
         return self._client
 
     async def publish(self, event: ProfitFound) -> None:
-        """webhook POST. 실패 흡수 — 다음 알림 차단 X.
+        """수익 알림 발송. 실패 흡수 — 다음 알림 차단 X.
 
         매수/강력매수 시그널만 발송. 관망/비추천은 forensic JSONL 에만 남기고
         사용자 채널 노이즈 차단.
         """
-        if not self._webhook_url:
-            return
         if event.signal not in _ALERT_SIGNALS:
             return
         embed = _build_embed(event)
+
+        # 1순위: discord.py bot 채널 직접 send (기존 profit 채널 재사용)
+        if self._channel_send is not None:
+            try:
+                await self._channel_send(embed)
+                return
+            except Exception as e:
+                logger.warning("[v3_discord] 채널 send 예외: %s", e)
+                return
+
+        # 2순위: webhook POST
+        if not self._webhook_url:
+            return
         payload = {"embeds": [embed]}
         try:
             client = await self._get_client()
