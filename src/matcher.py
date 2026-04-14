@@ -93,7 +93,8 @@ def extract_model_from_name(name: str) -> str | None:
 
     text = name.strip().upper()
 
-    # "/" 뒤의 모델번호 (예: "덩크 로우 W - 세일:화이트 / IO4244-100")
+    # "/" 뒤의 모델번호 (예: "덩크 로우 W - 세일:화이트 / IO4244-100",
+    # 또는 무신사 NB 편집숍 "NBPDGS197F / U204LMMA (BROWN)")
     m = re.search(r"/\s*([A-Za-z0-9][-A-Za-z0-9]+)", text)
     if m:
         candidate = m.group(1).strip()
@@ -102,6 +103,12 @@ def extract_model_from_name(name: str) -> str | None:
         # ASICS: 숫자시작 (1203A879-021)
         if re.match(r"\d{4}[A-Z]\d{3,4}-\d{3}", candidate):
             return normalize_model_number(candidate)
+        # NB 장형 (U204LMMA, U574LGAS, U1906LAI, U990RB4, U204L86W 등):
+        # 영문1~2자 + 숫자3~4자 + 영숫자 2~6자(최소 1 letter). 단순 product
+        # line name(`1080 V15`) 이나 내부 SKU(`NBPDGS197F`) 는 배제.
+        if re.match(r"^[A-Z]{1,2}\d{3,4}[A-Z0-9]{2,6}$", candidate):
+            if re.search(r"[A-Z]", candidate[3:]):
+                return normalize_model_number(candidate)
 
     # ASICS: 숫자4자리+영문1자리+숫자3~4자리-숫자3자리 (1203A879-021, 1201A256-105)
     m = re.search(r"\b(\d{4}[A-Z]\d{3,4}-\d{3})\b", text)
