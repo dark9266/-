@@ -83,8 +83,13 @@ TILE_HREF_RE = re.compile(
     r'href="(/en/us/[^"\s]*?/(\d{7})\.html\?dwvar_\d+_color=([A-Z0-9]{2,10}))"'
 )
 
-# data-suggestion-pid (UPC 12자리)
+# data-suggestion-pid (UPC 12자리) — autosuggest 드롭다운용 (레거시, 일부 페이지에만 존재)
 SUGG_PID_RE = re.compile(r'data-suggestion-pid="(\d{10,14})"')
+
+# 메인 그리드 tile-row 블록 시작 마커. 각 블록은 `<div class="tile-row ..."` 로 시작하고
+# `data-tile-analytics="{...JSON...}"` 속성 안에 customData(contentIDValue/name/id) 가 들어있다.
+TILE_ROW_START_RE = re.compile(r'<div\s+class="tile-row\b')
+TILE_ANALYTICS_RE = re.compile(r'data-tile-analytics="([^"]+)"')
 
 # 가격 (USD)
 PRICE_RE = re.compile(r"\$(\d+(?:\.\d{2})?)")
@@ -161,23 +166,82 @@ def _extract_analytics_masters(text: str) -> list[dict]:
 def _extract_tiles_from_html(text: str) -> list[HokaTile]:
     """HTML 파싱 → HokaTile 리스트.
 
-    전략: `data-suggestion-pid` 블록 단위로 자르고 각 블록에서 href/name/price
-    를 독립 파싱. 블록 경계가 모호하면 href 기준 단순 fallback.
+    전략 (2026-04-14 재작성): 메인 그리드 `<div class="tile-row ..."` 블록 단위로
+    자르고, 각 블록의 `data-tile-analytics` JSON customData 에서 master/name/sku
+    를 추출. 가격·href 는 블록 내 regex 로 보강. 레거시 `tile-suggest` 블록은
+    autosuggest 드롭다운 (메인 그리드 아님) 이라 파싱 대상에서 제외한다.
+
+    Fallback: tile-row 미존재 시(이전 응답 포맷) tile-suggest 블록을 보조 파싱.
     """
     tiles: list[HokaTile] = []
-
-    # 블록 분리: tile 루트 `<div class="... tile-suggest ... data-suggestion-pid="..."`
-    # 이후 다음 `data-suggestion-pid` 까지를 한 블록으로 본다.
-    positions = [m.start() for m in SUGG_PID_RE.finditer(text)]
-    positions.append(len(text))
-
     seen_skus: set[str] = set()
-    for i in range(len(positions) - 1):
-        block = text[positions[i] : positions[i + 1]]
 
+    positions = [m.start() for m in TILE_ROW_START_RE.finditer(text)]
+    if positions:
+        positions.append(len(text))
+        for i in range(len(positions) - 1):
+            block = text[positions[i] : positions[i + 1]]
+            ta_m = TILE_ANALYTICS_RE.search(block)
+            if not ta_m:
+                continue
+            try:
+                payload = json.loads(html.unescape(ta_m.group(1)))
+            except (ValueError, json.JSONDecodeError):
+                continue
+            custom = payload.get("customData") or {}
+            master = str(custom.get("contentIDValue") or "").strip()
+            full_id = str(custom.get("id") or "").strip()  # 1147810-RSLT-10.5B
+            name = str(custom.get("name") or "").strip()
+            if not master or not full_id:
+                continue
+            # full_id 에서 color_code 추출 — 형태 master-COLOR-size
+            parts = full_id.split("-")
+            if len(parts) < 2:
+                continue
+            color = parts[1]
+            sku = f"{master}-{color}"
+            if sku in seen_skus:
+                continue
+
+            href = ""
+            href_m = TILE_HREF_RE.search(block)
+            if href_m:
+                href = href_m.group(1)
+
+            price_m = PRICE_RE.search(block)
+            try:
+                price_usd = float(price_m.group(1)) if price_m else 0.0
+            except ValueError:
+                price_usd = 0.0
+
+            # 품절 감지: 메인 그리드는 `add-to-cart` 영역 대신 `sold-out` 클래스나
+            # `Notify Me` 버튼이 노출된다. 블록 내 단순 문자열 탐지.
+            block_lower = block.lower()
+            available = "sold-out" not in block_lower and "notify me" not in block_lower
+
+            seen_skus.add(sku)
+            tiles.append(
+                HokaTile(
+                    master_id=master,
+                    color_code=color,
+                    sku=sku,
+                    name=name,
+                    href=href,
+                    url=f"{BASE_URL}{href}" if href else "",
+                    upc="",
+                    price_usd=price_usd,
+                    available=available,
+                )
+            )
+        return tiles
+
+    # Fallback: tile-suggest 경로 (호카 자체 레거시 검색결과 포맷 또는 테스트 픽스처)
+    sugg_positions = [m.start() for m in SUGG_PID_RE.finditer(text)]
+    sugg_positions.append(len(text))
+    for i in range(len(sugg_positions) - 1):
+        block = text[sugg_positions[i] : sugg_positions[i + 1]]
         upc_m = SUGG_PID_RE.search(block)
         upc = upc_m.group(1) if upc_m else ""
-
         href_m = TILE_HREF_RE.search(block)
         if not href_m:
             continue
@@ -185,29 +249,19 @@ def _extract_tiles_from_html(text: str) -> list[HokaTile]:
         master = href_m.group(2)
         color = href_m.group(3)
         sku = f"{master}-{color}"
-
-        # tile 내 첫 번째 가격을 USD 로 채택
+        if sku in seen_skus:
+            continue
         price_m = PRICE_RE.search(block)
         try:
             price_usd = float(price_m.group(1)) if price_m else 0.0
         except ValueError:
             price_usd = 0.0
-
-        # 상품명: `<div class="name">` 블록
         name = ""
-        name_m = re.search(
-            r'<div class="name">(.*?)</div>', block, flags=re.S
-        )
+        name_m = re.search(r'<div class="name">(.*?)</div>', block, flags=re.S)
         if name_m:
-            raw = name_m.group(1)
-            # 태그 제거 + 엔티티 복원 + 공백 정리
-            raw = re.sub(r"<[^>]+>", " ", raw)
+            raw = re.sub(r"<[^>]+>", " ", name_m.group(1))
             name = re.sub(r"\s+", " ", html.unescape(raw)).strip()
-
-        if sku in seen_skus:
-            continue
         seen_skus.add(sku)
-
         tiles.append(
             HokaTile(
                 master_id=master,
@@ -221,7 +275,6 @@ def _extract_tiles_from_html(text: str) -> list[HokaTile]:
                 available=True,
             )
         )
-
     return tiles
 
 

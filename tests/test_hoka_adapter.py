@@ -217,6 +217,51 @@ def test_extract_tiles_dedup_duplicate_sku():
     assert len(tiles) == 1
 
 
+def test_extract_tiles_from_tile_row_main_grid():
+    """메인 그리드 ``tile-row`` 블록 + ``data-tile-analytics`` JSON 파싱.
+
+    2026-04-14: 프로덕션 Coveo-Show 응답 실 구조. customData.id 에서 color 추출,
+    customData.name 과 가격·href 독립 파싱.
+    """
+    html_doc = (
+        '<div class="tile-row col-6 col-md-4" '
+        'data-tile-analytics="{&quot;customData&quot;:{&quot;contentIDValue&quot;:&quot;1147810&quot;,'
+        '&quot;name&quot;:&quot;Mach 6&quot;,&quot;id&quot;:&quot;1147810-RSLT-10.5B&quot;}}">'
+        '<a href="/en/us/womens-road/mach-6/1147810.html?dwvar_1147810_color=RSLT">link</a>'
+        '<span class="sales">$140.00</span>'
+        '</div>'
+        '<div class="tile-row col-6 col-md-4" '
+        'data-tile-analytics="{&quot;customData&quot;:{&quot;contentIDValue&quot;:&quot;1176251&quot;,'
+        '&quot;name&quot;:&quot;Mach Remastered&quot;,&quot;id&quot;:&quot;1176251-FCG-09D&quot;}}">'
+        '<a href="/en/us/all-gender/mach-remastered/1176251.html?dwvar_1176251_color=FCG">link</a>'
+        '<span class="sales">$170.00</span>'
+        '</div>'
+    )
+    tiles = _extract_tiles_from_html(html_doc)
+    assert {t.sku for t in tiles} == {"1147810-RSLT", "1176251-FCG"}
+    by_sku = {t.sku: t for t in tiles}
+    assert by_sku["1147810-RSLT"].name == "Mach 6"
+    assert by_sku["1147810-RSLT"].price_usd == 140.0
+    assert by_sku["1147810-RSLT"].master_id == "1147810"
+    assert by_sku["1147810-RSLT"].color_code == "RSLT"
+    assert by_sku["1176251-FCG"].url.startswith("https://www.hoka.com/en/us/all-gender")
+
+
+def test_extract_tiles_tile_row_detects_sold_out():
+    html_doc = (
+        '<div class="tile-row" '
+        'data-tile-analytics="{&quot;customData&quot;:{&quot;contentIDValue&quot;:&quot;1111111&quot;,'
+        '&quot;name&quot;:&quot;Test&quot;,&quot;id&quot;:&quot;1111111-AAA-09D&quot;}}">'
+        '<a href="/en/us/x/y/1111111.html?dwvar_1111111_color=AAA">x</a>'
+        '<button class="sold-out">Notify Me</button>'
+        '<span class="sales">$100.00</span>'
+        '</div>'
+    )
+    tiles = _extract_tiles_from_html(html_doc)
+    assert len(tiles) == 1
+    assert tiles[0].available is False
+
+
 def test_extract_analytics_masters():
     payload = (
         '<div class="search-results" '
