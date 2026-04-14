@@ -30,6 +30,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from src.adapters.abcmart_adapter import AbcmartAdapter
+from src.adapters.adidas_adapter import AdidasAdapter
 from src.adapters.arcteryx_adapter import ArcteryxAdapter
 from src.adapters.asics_adapter import AsicsAdapter
 from src.adapters.beaker_adapter import BeakerAdapter
@@ -86,9 +87,7 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("29cm", TwentynineCmAdapter),
     ("nike", NikeAdapter),
     ("kasina", KasinaAdapter),
-    # ("abcmart", AbcmartAdapter),  # 크롤러에 채널 listing API 미구축 —
-    # search_products(keyword) 만 존재. 푸시 덤프용 fetch_channel_listing
-    # 배선 후 복구. (adidas/arcteryx 와 동일 패턴)
+    ("abcmart", AbcmartAdapter),  # 그랜드스테이지+온더스팟 통합 (Phase 3 복구)
     ("tune", TuneAdapter),
     ("eql", EqlAdapter),
     ("nbkorea", NbkoreaAdapter),
@@ -97,7 +96,7 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("vans", VansAdapter),
     ("wconcept", WconceptAdapter),
     ("worksout", WorksoutAdapter),
-    # ("adidas", AdidasAdapter),  # fetch_taxonomy_page 미구현 — AdidasCrawler 랩퍼 배선 후 복구.
+    ("adidas", AdidasAdapter),
     ("hoka", HokaAdapter),
     # ("beaker", BeakerAdapter),      # 46k dumps/0 match — 한국 에디토리얼 패션
     # ("thehandsome", ThehandsomeAdapter),  # 36k dumps/0 match — 한섬 ERP 코드, 크림 풀 불일치

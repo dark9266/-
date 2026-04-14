@@ -45,9 +45,9 @@ logger = logging.getLogger(__name__)
 # ─── 덤프 기본 카테고리 — 크림 커버리지 우선순위 ───────────────
 # adidas.co.kr taxonomy 경로 slug. 값은 로그/알림 표시용.
 DEFAULT_CATEGORIES: dict[str, str] = {
-    "men_shoes": "남성 신발",
-    "women_shoes": "여성 신발",
-    "kids_shoes": "키즈 신발",
+    "men-shoes": "남성 신발",
+    "women-shoes": "여성 신발",
+    "kids-shoes": "키즈 신발",
 }
 
 BASE_URL = "https://www.adidas.co.kr"

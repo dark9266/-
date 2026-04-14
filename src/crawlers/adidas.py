@@ -143,6 +143,78 @@ class AdidasCrawler:
             logger.error("아디다스 검색 에러 (%s): %s", keyword, e)
             return []
 
+    async def fetch_taxonomy_page(
+        self,
+        *,
+        category: str,
+        page_size: int = 48,
+        page_number: int = 1,
+    ) -> dict:
+        """카테고리 페이지네이션 덤프 — `AdidasAdapter.dump_catalog` 전용.
+
+        adidas KR taxonomy API 는 `query` 에 카테고리 slug(예: ``men-shoes``)
+        를 그대로 넘기고 `start` 로 offset 페이지네이션한다. 응답의
+        `itemList.items` 를 어댑터가 기대하는 정규화 dict 리스트로 변환한 뒤
+        `{"items": [...], "totalCount": N}` 형태로 감싸 반환한다.
+
+        Parameters
+        ----------
+        category:
+            adidas 카테고리 slug (예: ``men-shoes`` / ``women-shoes`` /
+            ``kids-shoes``).
+        page_size:
+            페이지당 아이템 수. adidas 기본 48.
+        page_number:
+            1-base 페이지 번호.
+
+        Returns
+        -------
+        dict
+            ``{"items": list[dict], "totalCount": int}``. items 는
+            `_parse_items` 결과(`product_id`/`name`/`price`/`sizes`/...) 와
+            동일하며 어댑터가 카테고리 메타를 추가한다. 실패/차단 시
+            ``{"items": [], "totalCount": 0}`` 반환.
+        """
+        client = await self._get_client()
+        start = max(0, (int(page_number) - 1) * int(page_size))
+
+        try:
+            async with self._rate_limiter.acquire():
+                resp = await client.get(
+                    SEARCH_API,
+                    params={"query": category, "start": str(start)},
+                    headers=_build_headers(),
+                )
+
+            if resp.status_code == 403:
+                logger.warning(
+                    "아디다스 카테고리 덤프 차단(403): %s start=%d", category, start,
+                )
+                return {"items": [], "totalCount": 0}
+            if resp.status_code != 200:
+                logger.warning(
+                    "아디다스 카테고리 덤프 실패(HTTP %d): %s start=%d",
+                    resp.status_code, category, start,
+                )
+                return {"items": [], "totalCount": 0}
+
+            data = resp.json()
+            items = _parse_items(data)
+            item_list = data.get("itemList") or {}
+            total_count = int(item_list.get("count") or 0)
+            logger.info(
+                "아디다스 카탈로그 '%s' page=%d: %d건 (total=%d)",
+                category, page_number, len(items), total_count,
+            )
+            return {"items": items, "totalCount": total_count}
+
+        except Exception as e:
+            logger.error(
+                "아디다스 카탈로그 덤프 에러 (%s page=%d): %s",
+                category, page_number, e,
+            )
+            return {"items": [], "totalCount": 0}
+
     async def get_product_detail(self, product_id: str) -> RetailProduct | None:
         """taxonomy API에서 상품 상세 조회.
 
