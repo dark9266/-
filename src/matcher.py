@@ -118,14 +118,16 @@ def extract_model_from_name(name: str) -> str | None:
     if m:
         return normalize_model_number(m.group(1))
 
-    # ASICS: 숫자4자리+영문1자리+숫자3~4자리-숫자3자리 (1203A879-021, 1201A256-105)
-    m = re.search(r"\b(\d{4}[A-Z]\d{3,4}-\d{3})\b", text)
+    # ASICS: 숫자4자리+영문1자리+숫자3~4자리-숫자3자리 (1203A879-021, 1201A256-105).
+    # Python `\b` 는 한글을 word-char 로 보므로 `그레이1203A529-100` 경계 실패 →
+    # Salomon 과 동일한 명시적 non-alnum 경계.
+    m = re.search(r"(?:^|[^A-Z0-9])(\d{4}[A-Z]\d{3,4}-\d{3})(?:$|[^A-Z0-9])", text)
     if m:
         return normalize_model_number(m.group(1))
 
     # ASICS (W컨셉 concat form): 하이픈 없이 붙여쓴 11자리 (1203A759103).
     # 크림은 `1203A759-103` 로 저장 → 하이픈 복원. 4digit+letter+3digit+3digit.
-    m = re.search(r"\b(\d{4}[A-Z])(\d{3})(\d{3})\b", text)
+    m = re.search(r"(?:^|[^A-Z0-9])(\d{4}[A-Z])(\d{3})(\d{3})(?:$|[^A-Z0-9])", text)
     if m:
         return normalize_model_number(f"{m.group(1)}{m.group(2)}-{m.group(3)}")
 
