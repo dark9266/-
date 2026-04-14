@@ -194,6 +194,13 @@ def extract_model_from_name(name: str) -> str | None:
     if m:
         return normalize_model_number(m.group(1))
 
+    # NB 미니머스/도쿄 디자인 라인: MT10O/MT10T + 2~4자 영숫자 (MT10OPS,
+    # MT10OAA, MT10TDS, MT10T7OV, MT10TOK2 등). 숫자 2자라 일반 NB regex의
+    # \d{3,5} 미달 → 전용 패턴. 크림 18행 실존 (MT10O* 12건, MT10T* 6건).
+    m = re.search(r"(?:^|[^A-Z0-9])(MT10[OT][A-Z0-9]{2,4})(?:$|[^A-Z0-9])", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
     # NB/기타: 영문1~2자+숫자3~5자+영문0~4자 (U7408PL, MT410GC5, BB550, U204LMMA)
     m = re.search(r"\b([A-Z]{1,2}\d{3,5}[A-Z]{0,4}\d{0,2})\b", text)
     if m:
