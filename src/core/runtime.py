@@ -358,7 +358,7 @@ class V3Runtime:
         # webhook POST 추가. webhook URL 미설정 시 publisher 가 no-op.
         from src.config import settings as _settings_for_webhook
 
-        webhook = getattr(_settings_for_webhook, "discord_notify_webhook", None)
+        webhook = getattr(_settings_for_webhook, "discord_profit_webhook", None)
         self._discord_publisher = V3DiscordPublisher(webhook)
         inner_handler = build_profit_handler(self._alert_logger)
         self._orchestrator.on_profit_found(wrap_handler(inner_handler, self._discord_publisher))

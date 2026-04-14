@@ -41,23 +41,44 @@ _SIGNAL_COLOR: dict[str, int] = {
 }
 
 
+_ALERT_SIGNALS: frozenset[str] = frozenset({"강력매수", "매수"})
+
+
 def _build_embed(event: ProfitFound) -> dict:
     color = _SIGNAL_COLOR.get(event.signal, 0x5865F2)
-    title = f"[{event.signal}] {event.source} · {event.model_no}"
-    desc_lines = [
-        f"**순수익**: {event.net_profit:,}원 (ROI {event.roi:.1f}%)",
-        f"**크림 즉시판매**: {event.kream_sell_price:,}원",
-        f"**소싱가**: {event.retail_price:,}원",
-        f"**거래량 7d**: {event.volume_7d}",
+    title = f"[{event.signal}] {event.source} · {event.model_no}"[:256]
+    fields = [
+        {
+            "name": "순수익",
+            "value": f"{event.net_profit:,}원 (ROI {event.roi:.1f}%)",
+            "inline": True,
+        },
+        {
+            "name": "거래량 7d",
+            "value": f"{event.volume_7d}건",
+            "inline": True,
+        },
+        {
+            "name": "크림 즉시판매",
+            "value": f"{event.kream_sell_price:,}원",
+            "inline": True,
+        },
+        {
+            "name": "소싱가",
+            "value": f"{event.retail_price:,}원",
+            "inline": True,
+        },
     ]
     if event.size:
-        desc_lines.append(f"**사이즈**: {event.size}")
-    return {
-        "title": title[:256],
-        "description": "\n".join(desc_lines),
-        "url": event.url or None,
+        fields.append({"name": "사이즈", "value": event.size, "inline": True})
+    embed: dict = {
+        "title": title,
         "color": color,
+        "fields": fields,
     }
+    if event.url:
+        embed["url"] = event.url
+    return embed
 
 
 class V3DiscordPublisher:
@@ -81,8 +102,14 @@ class V3DiscordPublisher:
         return self._client
 
     async def publish(self, event: ProfitFound) -> None:
-        """webhook POST. 실패 흡수 — 다음 알림 차단 X."""
+        """webhook POST. 실패 흡수 — 다음 알림 차단 X.
+
+        매수/강력매수 시그널만 발송. 관망/비추천은 forensic JSONL 에만 남기고
+        사용자 채널 노이즈 차단.
+        """
         if not self._webhook_url:
+            return
+        if event.signal not in _ALERT_SIGNALS:
             return
         embed = _build_embed(event)
         payload = {"embeds": [embed]}
