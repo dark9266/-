@@ -161,6 +161,33 @@ def extract_model_from_name(name: str) -> str | None:
     if m:
         return normalize_model_number(m.group(1))
 
+    # Puma: 6자리-2자리 (409183-01, 398846-02). 크림 puma 2,414행 실존.
+    # adidas 6-3 와 구분 — word boundary 로 3자리 꼬리는 매칭 거부.
+    m = re.search(r"\b(\d{6}-\d{2})\b", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
+    # Hoka: 7자리-색상코드 (1155133-WFD, 1019271-BBLC). 크림 228행 실존.
+    # 무신사 goodsName `/ 1155133-WFD` 슬래시 뒤 노출.
+    m = re.search(r"(?:^|[^A-Z0-9])(\d{7}-[A-Z]{2,5})(?:$|[^A-Z0-9])", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
+    # The North Face (신발 라인): N + 영문1 + 숫자2 + 영문1 + 숫자2 + 영숫자1
+    # (NS82S66J, NS94S01B, NS94R03C). 의류 패턴(NM5MS04K) 과 구분. 크림 132행 실존.
+    m = re.search(r"(?:^|[^A-Z0-9])(N[A-Z]\d{2}[A-Z]\d{2}[A-Z0-9])(?:$|[^A-Z0-9])", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
+    # Converse: 6자리+C 꼬리 (563508C, 132169C) 또는 1J+3자리+C (1J793C, 1J794C).
+    # 크림 961 + 2행 실존. 척테일러/원스타 모델 풀 활성화.
+    m = re.search(r"(?:^|[^A-Z0-9])(\d{6}C)(?:$|[^A-Z0-9])", text)
+    if m:
+        return normalize_model_number(m.group(1))
+    m = re.search(r"(?:^|[^A-Z0-9])(1J\d{3}C)(?:$|[^A-Z0-9])", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
     # NB/기타: 영문1~2자+숫자3~5자+영문0~4자 (U7408PL, MT410GC5, BB550, U204LMMA)
     m = re.search(r"\b([A-Z]{1,2}\d{3,5}[A-Z]{0,4}\d{0,2})\b", text)
     if m:
