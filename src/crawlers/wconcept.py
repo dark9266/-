@@ -56,6 +56,9 @@ _BRACKET_MODEL_RE = re.compile(r"\[([A-Z0-9]+-[A-Z0-9]+)\]")
 _MODEL_HYPHEN_RE = re.compile(r"(?=[A-Z0-9]*\d)[A-Z0-9]{2,10}-\d{2,4}")
 # 하이픈 없음: IE4195, VN000BW5BKA
 _MODEL_NOHYPHEN_RE = re.compile(r"[A-Z]{1,3}\d[A-Z0-9]{3,9}")
+# ASICS 스타일코드: `1203A543 021` 또는 `1203A543` (공백 구분 컬러코드 복원)
+# 크림은 `1203A543-021` 로 저장하므로 컬러코드까지 찾아 하이픈으로 이어붙임.
+_MODEL_ASICS_RE = re.compile(r"(\d{4}[A-Z]\d{3})(?:[\s-]+(\d{3}))?")
 
 # HTML 파싱: saleprice
 _SALE_PRICE_RE = re.compile(r'name="saleprice"\s+value="(\d+)"')
@@ -92,7 +95,13 @@ def _extract_model_number(name: str) -> str:
     if matches:
         return matches[-1]
 
-    # 3) 하이픈 없음 패턴
+    # 3) ASICS 스타일코드 (숫자로 시작해 일반 패턴에 걸리지 않음)
+    m_asics = _MODEL_ASICS_RE.search(name)
+    if m_asics:
+        style, color = m_asics.group(1), m_asics.group(2)
+        return f"{style}-{color}" if color else style
+
+    # 4) 하이픈 없음 패턴
     matches = _MODEL_NOHYPHEN_RE.findall(name)
     if matches:
         return matches[-1]
