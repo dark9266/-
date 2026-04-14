@@ -27,7 +27,7 @@ from typing import Any
 from src.adapters._collect_queue import enqueue_collect_batch
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
-from src.matcher import normalize_model_number
+from src.matcher import extract_model_from_name, normalize_model_number
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +262,24 @@ class KasinaAdapter:
                 continue
 
             kream_row = kream_index.get(key)
+            match_model = mgmt
+
+            # Fallback 1: productName 에서 모델번호 regex 추출 재시도
+            # (카시나 NB 는 mgmt=내부SKU, productName 에 실 NB 코드 노출;
+            #  adidas 일반품도 NOS 케이스 일부가 mgmt 대신 productName 에 노출)
+            if kream_row is None:
+                source_name_probe = (
+                    item.get("productName") or item.get("productNameEn") or ""
+                )
+                name_model = extract_model_from_name(source_name_probe) or ""
+                if name_model:
+                    name_key = _strip_key(name_model)
+                    if name_key and name_key != key:
+                        alt = kream_index.get(name_key)
+                        if alt is not None:
+                            kream_row = alt
+                            match_model = name_model
+
             if kream_row is None:
                 pending_collect.append(self._build_collect_row(item, mgmt))
                 continue
@@ -308,7 +326,7 @@ class KasinaAdapter:
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
-                model_no=normalize_model_number(mgmt),
+                model_no=normalize_model_number(match_model),
                 retail_price=price,
                 size="",  # 리스팅 단계엔 사이즈 정보 없음 — 수익 consumer 가 보강
                 url=url,
