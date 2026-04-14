@@ -162,21 +162,25 @@ def test_parse_listing_html_extracts_tiles():
 <html><body>
 <ul>
   <li>
+    <p class="name">
+      <a class="text-link" data-name="HST Fume 6" data-id="NA5AS41B" href="/product/NA5AS41B">HST Fume 6</a>
+    </p>
     <a class="swatch swatch-tile" data-product-id="4000059442" data-product-sold-out="false"
        data-product-image-urls="/cmsstatic/product/NA5AS41B_primary.jpg@/cmsstatic/product/NA5AS41B_00.jpg"
        data-product-url="/product/NA5AS41B" href="/product/NA5AS41B">
     </a>
-    <div class="name-block">
-      <span class="name">HST Fume 6</span>
+    <div class="price-block">
       <span class="price">269,000 원</span>
     </div>
   </li>
   <li>
+    <p class="name">
+      <a class="text-link" data-name="1996 Eco Nuptse Jacket" data-id="NJ1DR82J" href="/product/NJ1DR82J">1996 Eco Nuptse Jacket</a>
+    </p>
     <a class="swatch swatch-tile" data-product-id="4000059999" data-product-sold-out="true"
        data-product-url="/product/NJ1DR82J" href="/product/NJ1DR82J">
     </a>
     <div>
-      <span class="name">1996 Eco Nuptse Jacket</span>
       <span class="price">459,000 원</span>
     </div>
   </li>

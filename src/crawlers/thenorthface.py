@@ -83,7 +83,11 @@ _TILE_HREF_RE = re.compile(
 _TILE_PID_RE = re.compile(r'data-product-id="(\d+)"')
 _TILE_SOLDOUT_RE = re.compile(r'data-product-sold-out="(true|false)"')
 _TILE_IMG_RE = re.compile(r'data-product-image-urls="([^"]*)"')
-_NAME_RE = re.compile(r'<span class="name"[^>]*>(.*?)</span>', re.S)
+# 상품명은 타일 블록 앵커(data-product-id)보다 앞쪽 `<a data-name="X" data-id="MODEL">`
+# 위치에 있어 블록 슬라이스로는 못 잡음. 전역 맵을 만들어 lookup.
+_NAME_BY_MODEL_RE = re.compile(
+    r'data-name="([^"]+)"\s+data-id="([A-Z0-9]{6,12})"'
+)
 _PRICE_RE = re.compile(r"([\d,]{3,})\s*원")
 
 # 타일 블록 분리용 앵커 — `data-product-id="숫자"` 가 타일 시작 위치.
@@ -171,6 +175,14 @@ def parse_listing_html(html_text: str) -> list[TnfTile]:
     if not html_text:
         return []
 
+    # 상품명 전역 맵 — `<a data-name data-id>` 는 타일 앵커 앞에 위치해
+    # 블록 슬라이스로는 못 잡기 때문에 문서 전체에서 미리 추출.
+    name_by_model: dict[str, str] = {}
+    for m in _NAME_BY_MODEL_RE.finditer(html_text):
+        model = m.group(2).upper()
+        if model not in name_by_model:
+            name_by_model[model] = _clean_text(m.group(1))
+
     # 타일 블록 단위로 자르기 — 같은 블록 안에서 name/price/model 을 묶어야
     # 타 상품의 값이 섞이지 않는다.
     tiles: dict[str, TnfTile] = {}
@@ -191,8 +203,7 @@ def parse_listing_html(html_text: str) -> list[TnfTile]:
         soldout_m = _TILE_SOLDOUT_RE.search(block)
         is_sold_out = bool(soldout_m and soldout_m.group(1) == "true")
 
-        name_m = _NAME_RE.search(block)
-        name = _clean_text(name_m.group(1)) if name_m else ""
+        name = name_by_model.get(model_number, "")
 
         price = _parse_price(block)
 
