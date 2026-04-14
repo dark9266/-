@@ -123,6 +123,12 @@ def extract_model_from_name(name: str) -> str | None:
     if m:
         return normalize_model_number(m.group(1))
 
+    # ASICS (W컨셉 concat form): 하이픈 없이 붙여쓴 11자리 (1203A759103).
+    # 크림은 `1203A759-103` 로 저장 → 하이픈 복원. 4digit+letter+3digit+3digit.
+    m = re.search(r"\b(\d{4}[A-Z])(\d{3})(\d{3})\b", text)
+    if m:
+        return normalize_model_number(f"{m.group(1)}{m.group(2)}-{m.group(3)}")
+
     # ASICS (구형): 영문2자리+숫자1+영문1+숫자1+영문1-숫자3 (TH7S2N-100)
     m = re.search(r"\b([A-Z]{2}\d[A-Z]\d[A-Z]-\d{3})\b", text)
     if m:
@@ -138,8 +144,8 @@ def extract_model_from_name(name: str) -> str | None:
     if m:
         return normalize_model_number(m.group(1))
 
-    # NB/기타: 영문1~2자+숫자3~5자+영문0~3자 (U7408PL, MT410GC5, BB550)
-    m = re.search(r"\b([A-Z]{1,2}\d{3,5}[A-Z]{0,3}\d{0,2})\b", text)
+    # NB/기타: 영문1~2자+숫자3~5자+영문0~4자 (U7408PL, MT410GC5, BB550, U204LMMA)
+    m = re.search(r"\b([A-Z]{1,2}\d{3,5}[A-Z]{0,4}\d{0,2})\b", text)
     if m:
         candidate = m.group(1)
         if len(candidate) >= 5:

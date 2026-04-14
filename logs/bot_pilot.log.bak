@@ -1,0 +1,154 @@
+[14:20:57] INFO     main: 크림봇 시작
+[14:20:57] INFO     main: [v3] KreamDeltaClient 배선 완료 — candidate snapshot + delta watcher 활성
+[14:20:57] INFO     database: 실시간 DB 마이그레이션 완료
+[14:20:57] INFO     database: 데이터베이스 연결 완료: /mnt/c/Users/USER/Desktop/크림봇/data/kream_bot.db
+[14:20:57] INFO     watchlist: 워치리스트 로드: 24건
+[14:20:57] INFO     discord_bot: 봇 초기화 완료
+[14:21:00] INFO     discord_bot: 봇 로그인: 크림수익봇 (ID: 1485609500584054905)
+[14:21:03] INFO     kream_crawler: 초기 쿠키 확보: status=200, api_ver=56, build=26.4.3
+[14:21:06] INFO     database: scan_priority 재분류 완료: hot=163, warm=24, cold=47028
+[14:21:06] INFO     discord_bot: 시작 시 scan_priority 재분류: hot=163
+[14:21:06] WARNING  scheduler: [v2] reverse_scanner 경로 비활성 (V2_REVERSE_DISABLED=true) — Tier1/Tier2/continuous 루프 미가동
+[14:21:06] INFO     scheduler: 스케줄러 시작 완료 (Tier1=30분, Tier2=60초)
+[14:21:13] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:21:26] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:21:42] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:21:54] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/465724
+[14:22:05] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:22:18] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:22:34] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:22:46] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/465724
+[14:22:56] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:23:09] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:23:25] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:23:37] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/80847
+[14:23:48] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:24:01] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:24:07] INFO     kream_crawler: 초기 쿠키 확보: status=200, api_ver=56, build=26.4.3
+[14:24:17] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:24:17] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:24:29] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/80847
+[14:24:29] INFO     main: [v3] 런타임 기동 성공 (병행 운영)
+[14:24:29] INFO     musinsa_crawler: 무신사 세션 쿠키 로드: 87개
+[14:24:30] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:24:34] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=103, 600건
+[14:24:39] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=001, 600건
+[14:24:44] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=002, 600건
+[14:24:46] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:24:49] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=003, 600건
+[14:24:54] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=004, 600건
+[14:24:58] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/108194
+[14:24:59] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=017, 600건
+[14:25:09] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:25:11] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:25:22] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:25:24] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:25:38] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:25:40] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:25:50] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/108194
+[14:25:50] WARNING  kream_price_refresher: 시세 갱신 실패 (1/3): 108194
+[14:25:52] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/184733
+[14:26:00] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:26:04] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:26:08] INFO     kream_collector: 신발 [nike] page 1: 50건 (신규 0)
+[14:26:12] INFO     kream_collector: 신발 [jordan] page 1: 50건 (신규 0)
+[14:26:13] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:26:15] INFO     kream_collector: 신발 [adidas] page 1: 50건 (신규 0)
+[14:26:17] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:26:17] INFO     kream_collector: 신발 [new balance] page 1: 50건 (신규 0)
+[14:26:20] INFO     kream_collector: 신발 [asics] page 1: 50건 (신규 0)
+[14:26:23] INFO     kream_collector: 신발 [puma] page 1: 50건 (신규 0)
+[14:26:26] INFO     kream_collector: 신발 [converse] page 1: 50건 (신규 0)
+[14:26:29] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:26:30] INFO     kream_collector: 신발 [vans] page 1: 50건 (신규 0)
+[14:26:33] INFO     kream_collector: 신발 [reebok] page 1: 50건 (신규 0)
+[14:26:33] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:26:36] INFO     kream_collector: 상의 [nike] page 1: 50건 (신규 0)
+[14:26:39] INFO     kream_collector: 상의 [adidas] page 1: 50건 (신규 0)
+[14:26:41] INFO     kream_collector: 상의 [stussy] page 1: 50건 (신규 0)
+[14:26:41] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/96370
+[14:26:44] INFO     kream_collector: 상의 [supreme] page 1: 50건 (신규 0)
+[14:26:45] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/184733
+[14:26:47] INFO     kream_collector: 상의 [the north face] page 1: 50건 (신규 0)
+[14:26:49] INFO     kream_collector: 상의 [arc'teryx] page 1: 50건 (신규 0)
+[14:26:52] INFO     kream_collector: 하의 [nike] page 1: 50건 (신규 0)
+[14:26:53] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:26:54] INFO     kream_collector: 하의 [adidas] page 1: 50건 (신규 0)
+[14:26:55] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:26:57] INFO     kream_collector: 하의 [stussy] page 1: 50건 (신규 0)
+[14:27:00] INFO     kream_collector: 하의 [supreme] page 1: 50건 (신규 0)
+[14:27:02] INFO     kream_collector: 하의 [carhartt] page 1: 50건 (신규 0)
+[14:27:04] INFO     kream_collector: 아우터 [nike] page 1: 50건 (신규 0)
+[14:27:06] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:27:07] INFO     kream_collector: 아우터 [the north face] page 1: 50건 (신규 0)
+[14:27:08] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:27:09] INFO     kream_collector: 아우터 [arc'teryx] page 1: 50건 (신규 0)
+[14:27:12] INFO     kream_collector: 아우터 [supreme] page 1: 50건 (신규 0)
+[14:27:15] INFO     kream_collector: 아우터 [adidas] page 1: 50건 (신규 0)
+[14:27:17] INFO     kream_collector: 아우터 [patagonia] page 1: 50건 (신규 0)
+[14:27:19] INFO     kream_collector: 가방 [nike] page 1: 50건 (신규 0)
+[14:27:22] INFO     kream_collector: 가방 [supreme] page 1: 50건 (신규 0)
+[14:27:22] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:27:24] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:27:25] INFO     kream_collector: 가방 [the north face] page 1: 50건 (신규 0)
+[14:27:27] INFO     kream_collector: 가방 [louis vuitton] page 1: 50건 (신규 0)
+[14:27:29] INFO     kream_collector: 가방 [chanel] page 1: 50건 (신규 0)
+[14:27:31] INFO     kream_collector: 모자 [nike] page 1: 50건 (신규 0)
+[14:27:34] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/96370
+[14:27:34] WARNING  kream_price_refresher: 시세 갱신 실패 (1/3): 96370
+[14:27:34] INFO     kream_collector: 모자 [new era] page 1: 50건 (신규 0)
+[14:27:36] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/184728
+[14:27:36] INFO     kream_collector: 모자 [supreme] page 1: 50건 (신규 0)
+[14:27:39] INFO     kream_collector: 모자 [adidas] page 1: 50건 (신규 0)
+[14:27:41] INFO     kream_collector: 모자 [stussy] page 1: 50건 (신규 0)
+[14:27:44] INFO     kream_collector: 액세서리 [nike] page 1: 50건 (신규 0)
+[14:27:44] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:27:46] INFO     kream_collector: 액세서리 [supreme] page 1: 50건 (신규 0)
+[14:27:47] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:27:49] INFO     kream_collector: 액세서리 [chrome hearts] page 1: 50건 (신규 0)
+[14:27:52] INFO     kream_collector: 액세서리 [rolex] page 1: 50건 (신규 0)
+[14:27:55] INFO     kream_collector: 액세서리 [apple] page 1: 50건 (신규 0)
+[14:27:55] INFO     kream_collector: 수집 완료: 신규 0건, 110초
+[14:27:55] INFO     scheduler: 신규 수집: 0건 (110초)
+[14:27:57] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:28:00] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:28:13] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:28:16] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:28:25] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/60294
+[14:28:28] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/184728
+[14:28:37] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:28:38] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:28:50] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:28:51] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:29:06] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:29:07] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:29:18] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/60294
+[14:29:18] WARNING  kream_price_refresher: 시세 갱신 실패 (1/3): 60294
+[14:29:19] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/316511
+[14:29:23] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:29:28] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:29:31] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:29:36] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:29:41] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:29:44] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:29:52] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:29:57] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:30:00] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:30:04] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/465724
+[14:30:09] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/39449
+[14:30:12] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/316511
+[14:30:15] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:30:20] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:30:22] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:30:28] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:30:33] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:30:35] WARNING  kream_crawler: 서버 에러 500 — 6초 후 재시도 (2/3)
+[14:30:44] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:30:49] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:30:51] WARNING  kream_crawler: 서버 에러 500 — 12초 후 재시도 (3/3)
+[14:30:56] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/465724
+[14:31:01] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/39449
+[14:31:01] WARNING  kream_price_refresher: 시세 갱신 실패 (1/3): 39449
+[14:31:03] ERROR    kream_crawler: 최대 재시도(3회) 초과: https://kream.co.kr/products/316512
+[14:31:06] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)
+[14:31:11] WARNING  kream_crawler: 서버 에러 500 — 3초 후 재시도 (1/3)

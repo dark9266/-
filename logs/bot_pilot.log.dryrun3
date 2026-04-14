@@ -1,0 +1,126 @@
+[19:43:01] INFO     main: 크림봇 시작
+[19:43:01] WARNING  main: [v3] V3_KREAM_DRY_RUN=true — 크림 snapshot_fn/delta_client 미배선. 어댑터 덤프·매칭·이벤트버스만 검증 (크림 호출 0건)
+[19:43:03] INFO     database: 실시간 DB 마이그레이션 완료
+[19:43:03] INFO     database: 데이터베이스 연결 완료: /mnt/c/Users/USER/Desktop/크림봇/data/kream_bot.db
+[19:43:03] INFO     watchlist: 워치리스트 로드: 24건
+[19:43:03] INFO     discord_bot: 봇 초기화 완료
+[19:43:07] INFO     discord_bot: 봇 로그인: 크림수익봇 (ID: 1485609500584054905)
+[19:43:13] INFO     database: scan_priority 재분류 완료: hot=248, warm=45, cold=46922
+[19:43:13] INFO     discord_bot: 시작 시 scan_priority 재분류: hot=248
+[19:43:13] WARNING  scheduler: [v2] reverse_scanner 경로 비활성 (V2_REVERSE_DISABLED=true) — Tier1/Tier2/continuous 루프 미가동
+[19:43:13] WARNING  scheduler: [v2] price_refresher/spike_detector 비활성 (V2_REVERSE_DISABLED=true) — DB 쓰기 경합 방지
+[19:43:13] INFO     scheduler: 스케줄러 시작 완료 (Tier1=30분, Tier2=60초)
+candidate recover 캡 초과 — stale drop: count=2886 (cap=50, 크림 캡 보호)
+[19:43:14] INFO     main: [v3] 런타임 기동 성공 (병행 운영)
+[kream_hot] kream_client 미주입 — 폴링 스킵 (Phase 2.5 mock 전용)
+[19:43:14] INFO     musinsa_crawler: 무신사 세션 쿠키 로드: 87개
+[19:43:20] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=103, 600건
+[19:43:25] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=001, 600건
+[19:43:30] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=002, 600건
+[19:43:35] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=003, 600건
+[19:43:40] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=004, 600건
+[19:43:45] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=017, 600건
+[19:43:46] INFO     29cm_crawler: 29CM 검색 'Nike': 100건
+[19:43:48] INFO     29cm_crawler: 29CM 검색 'Jordan': 53건
+[19:43:50] INFO     29cm_crawler: 29CM 검색 'Adidas': 100건
+[19:43:52] INFO     29cm_crawler: 29CM 검색 'New Balance': 100건
+[19:43:54] INFO     29cm_crawler: 29CM 검색 'Salomon': 100건
+[19:43:56] INFO     29cm_crawler: 29CM 검색 'Arc'teryx': 100건
+[19:43:58] INFO     29cm_crawler: 29CM 검색 'Vans': 100건
+[19:44:00] INFO     29cm_crawler: 29CM 검색 'Asics': 41건
+[19:44:02] INFO     29cm_crawler: 29CM 검색 'Hoka': 0건
+[19:45:45] INFO     eql_crawler: EQL 검색 'NIKE': 0건
+[19:45:47] INFO     eql_crawler: EQL 검색 'ADIDAS': 0건
+[19:45:48] INFO     eql_crawler: EQL 검색 'NEW BALANCE': 0건
+[19:45:50] INFO     eql_crawler: EQL 검색 'ASICS': 0건
+[19:45:51] INFO     eql_crawler: EQL 검색 'SALOMON': 0건
+[19:45:53] INFO     eql_crawler: EQL 검색 'VANS': 0건
+[19:46:19] INFO     nbkorea_crawler: NB Korea 매핑 캐시 갱신: 0건
+[19:47:15] INFO     vans_crawler: Vans 검색 'Old Skool': 0건
+[19:47:17] INFO     vans_crawler: Vans 검색 'Authentic': 0건
+[19:47:18] INFO     vans_crawler: Vans 검색 'Era': 0건
+[19:47:20] INFO     vans_crawler: Vans 검색 'Sk8-Hi': 1건
+[19:47:21] INFO     vans_crawler: Vans 검색 'Slip-On': 0건
+[19:47:23] INFO     vans_crawler: Vans 검색 'Knu Skool': 0건
+[19:47:24] INFO     vans_crawler: Vans 검색 'Knu-Skool': 0건
+[19:47:45] INFO     wconcept_crawler: W컨셉 검색 'Nike': 40건
+[19:47:47] INFO     wconcept_crawler: W컨셉 검색 'adidas': 40건
+[19:47:49] INFO     wconcept_crawler: W컨셉 검색 'New Balance': 40건
+[19:47:51] INFO     wconcept_crawler: W컨셉 검색 'Salomon': 40건
+[19:47:53] INFO     wconcept_crawler: W컨셉 검색 'Asics': 40건
+[19:48:14] CRITICAL kream_budget: KREAM 일일 캡 초과: 10001/10000 — 파이프라인 정지
+[19:48:14] ERROR    scheduler: 신규 수집 실패: 10001/10000 calls in last 24h
+[kream_hot] kream_client 미주입 — 폴링 스킵 (Phase 2.5 mock 전용)
+[worksout] 카탈로그 HTTP 400 page=0
+[19:48:45] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Mach)
+[19:48:47] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Clifton)
+[19:48:50] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Bondi)
+[19:48:51] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Rincon)
+[19:48:53] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Arahi)
+[19:48:55] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Gaviota)
+[19:48:57] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Speedgoat)
+[19:49:00] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Challenger)
+[19:49:01] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Stinson)
+[19:49:03] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Torrent)
+[19:49:05] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Tecton)
+[19:49:07] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Zinal)
+[19:49:09] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Kawana)
+[19:49:11] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Solimar)
+[19:49:14] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Transport)
+[19:49:15] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_WOMEN page=1: 60건
+[19:49:16] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Skyflow)
+[19:49:17] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_WOMEN page=2: 60건
+[19:49:18] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Skyward)
+[19:49:18] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_WOMEN page=3: 60건
+[19:49:20] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Cielo)
+[19:49:20] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_MEN page=1: 60건
+[19:49:21] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_MEN page=2: 60건
+[19:49:22] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Rocket)
+[19:49:23] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_MEN page=3: 60건
+[19:49:24] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Mafate)
+[19:49:24] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_BAG_SHOES page=1: 60건
+[19:49:26] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Kaha)
+[19:49:26] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_BAG_SHOES page=2: 60건
+[19:49:27] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_BAG_SHOES page=3: 60건
+[19:49:28] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Anacapa)
+[19:49:30] WARNING  hoka_crawler: 호카 Coveo HTTP 403 (keyword=Ora)
+[19:49:45] INFO     thehandsome_crawler: 더한섬 브랜드 리스트: 43개
+[19:49:55] INFO     thehandsome_crawler: 더한섬 브랜드 BR100 덤프: 200건
+[19:50:05] INFO     thehandsome_crawler: 더한섬 브랜드 BR103 덤프: 200건
+[19:50:09] INFO     thehandsome_crawler: 더한섬 브랜드 BR104 덤프: 55건
+[19:50:13] INFO     thehandsome_crawler: 더한섬 브랜드 BR105 덤프: 53건
+[19:50:15] INFO     asics_crawler: asics netfunnel 미통과 스켈레톤: path=/c/001100060012 len=3798
+[19:50:17] INFO     asics_crawler: asics netfunnel 미통과 스켈레톤: path=/c/001100060013 len=3798
+[19:50:19] INFO     asics_crawler: asics netfunnel 미통과 스켈레톤: path=/c/001100060014 len=3798
+[19:50:21] INFO     asics_crawler: asics netfunnel 미통과 스켈레톤: path=/c/sps_collection len=3800
+[19:50:21] INFO     thehandsome_crawler: 더한섬 브랜드 BR108 덤프: 137건
+[19:50:23] INFO     asics_crawler: asics netfunnel 미통과 스켈레톤: path=/c/0001 len=3790
+[19:50:25] INFO     asics_crawler: asics netfunnel 미통과 스켈레톤: path=/c/0002 len=3790
+[19:50:27] INFO     asics_crawler: asics netfunnel 미통과 스켈레톤: path=/c/0003 len=3790
+[19:50:29] INFO     asics_crawler: asics netfunnel 미통과 스켈레톤: path=/c/0004 len=3790
+[19:50:32] INFO     thehandsome_crawler: 더한섬 브랜드 BR19 덤프: 200건
+[19:50:36] INFO     thehandsome_crawler: 더한섬 브랜드 BR20 덤프: 72건
+[19:50:45] INFO     puma_crawler: 푸마 그리드 cgid=mens-shoes start=0: 48건
+[19:50:46] INFO     thehandsome_crawler: 더한섬 브랜드 BR21 덤프: 200건
+[19:50:47] INFO     puma_crawler: 푸마 그리드 cgid=mens-shoes start=48: 48건
+[19:50:49] INFO     puma_crawler: 푸마 그리드 cgid=mens-shoes start=96: 48건
+[19:50:52] INFO     puma_crawler: 푸마 그리드 cgid=mens-shoes start=144: 48건
+[19:50:54] INFO     puma_crawler: 푸마 그리드 cgid=mens-shoes start=192: 22건
+[19:50:55] INFO     puma_crawler: 푸마 그리드 cgid=womens-shoes start=0: 48건
+[19:50:56] INFO     thehandsome_crawler: 더한섬 브랜드 BR53 덤프: 200건
+[19:50:58] INFO     puma_crawler: 푸마 그리드 cgid=womens-shoes start=48: 48건
+[19:50:59] INFO     puma_crawler: 푸마 그리드 cgid=womens-shoes start=96: 47건
+[19:51:01] INFO     puma_crawler: 푸마 그리드 cgid=kids-shoes start=0: 29건
+[19:51:03] INFO     puma_crawler: 푸마 그리드 cgid=mens-apparel start=0: 0건
+[19:51:05] INFO     puma_crawler: 푸마 그리드 cgid=womens-apparel start=0: 0건
+[19:51:06] INFO     thehandsome_crawler: 더한섬 브랜드 BR54 덤프: 200건
+[19:51:07] INFO     puma_crawler: 푸마 그리드 cgid=mens-accessories start=0: 47건
+[19:51:09] INFO     puma_crawler: 푸마 그리드 cgid=womens-accessories start=0: 48건
+[19:51:12] INFO     puma_crawler: 푸마 그리드 cgid=womens-accessories start=48: 14건
+[19:51:16] INFO     thehandsome_crawler: 더한섬 브랜드 BR63 덤프: 200건
+[19:51:25] INFO     patagonia_crawler: 파타고니아 카탈로그 덤프: 카테고리 4개 → 341건
+[19:51:26] INFO     thehandsome_crawler: 더한섬 브랜드 BR64 덤프: 200건
+[19:51:36] INFO     thehandsome_crawler: 더한섬 브랜드 BR69 덤프: 200건
+[19:51:44] INFO     thehandsome_crawler: 더한섬 브랜드 BR70 덤프: 139건
+[kream_hot] kream_client 미주입 — 폴링 스킵 (Phase 2.5 mock 전용)
+[kream_hot] kream_client 미주입 — 폴링 스킵 (Phase 2.5 mock 전용)

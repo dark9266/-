@@ -1,0 +1,86 @@
+[18:46:24] INFO     main: 크림봇 시작
+[18:46:24] WARNING  main: [v3] V3_KREAM_DRY_RUN=true — 크림 snapshot_fn/delta_client 미배선. 어댑터 덤프·매칭·이벤트버스만 검증 (크림 호출 0건)
+[18:46:25] INFO     database: 실시간 DB 마이그레이션 완료
+[18:46:25] INFO     database: 데이터베이스 연결 완료: /mnt/c/Users/USER/Desktop/크림봇/data/kream_bot.db
+[18:46:25] INFO     watchlist: 워치리스트 로드: 24건
+[18:46:25] INFO     discord_bot: 봇 초기화 완료
+[18:46:28] INFO     discord_bot: 봇 로그인: 크림수익봇 (ID: 1485609500584054905)
+candidate recover 캡 초과 — stale drop: count=336 (cap=50, 크림 캡 보호)
+[18:46:30] INFO     main: [v3] 런타임 기동 성공 (병행 운영)
+[kream_hot] kream_client 미주입 — 폴링 스킵 (Phase 2.5 mock 전용)
+[18:46:30] INFO     musinsa_crawler: 무신사 세션 쿠키 로드: 87개
+[18:46:33] INFO     database: scan_priority 재분류 완료: hot=248, warm=45, cold=46922
+[18:46:33] INFO     discord_bot: 시작 시 scan_priority 재분류: hot=248
+[18:46:33] WARNING  scheduler: [v2] reverse_scanner 경로 비활성 (V2_REVERSE_DISABLED=true) — Tier1/Tier2/continuous 루프 미가동
+[18:46:33] WARNING  scheduler: [v2] price_refresher/spike_detector 비활성 (V2_REVERSE_DISABLED=true) — DB 쓰기 경합 방지
+[18:46:33] INFO     scheduler: 스케줄러 시작 완료 (Tier1=30분, Tier2=60초)
+[18:46:35] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=103, 600건
+[18:46:40] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=001, 600건
+[18:46:45] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=002, 600건
+[18:46:50] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=003, 600건
+[18:46:55] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=004, 600건
+[18:47:00] INFO     musinsa_crawler: 카테고리 리스팅 완료: category=017, 600건
+[18:47:02] INFO     29cm_crawler: 29CM 검색 'Nike': 100건
+[18:47:04] INFO     29cm_crawler: 29CM 검색 'Jordan': 53건
+[18:47:06] INFO     29cm_crawler: 29CM 검색 'Adidas': 100건
+[18:47:08] INFO     29cm_crawler: 29CM 검색 'New Balance': 100건
+[18:47:10] INFO     29cm_crawler: 29CM 검색 'Salomon': 100건
+[18:47:12] INFO     29cm_crawler: 29CM 검색 'Arc'teryx': 100건
+[18:47:14] INFO     29cm_crawler: 29CM 검색 'Vans': 100건
+[18:47:16] INFO     29cm_crawler: 29CM 검색 'Asics': 41건
+[18:47:18] INFO     29cm_crawler: 29CM 검색 'Hoka': 0건
+[18:49:01] INFO     eql_crawler: EQL 검색 'NIKE': 0건
+[18:49:02] INFO     eql_crawler: EQL 검색 'ADIDAS': 0건
+[18:49:04] INFO     eql_crawler: EQL 검색 'NEW BALANCE': 0건
+[18:49:05] INFO     eql_crawler: EQL 검색 'ASICS': 0건
+[18:49:07] INFO     eql_crawler: EQL 검색 'SALOMON': 0건
+[18:49:08] INFO     eql_crawler: EQL 검색 'VANS': 0건
+[18:49:35] INFO     nbkorea_crawler: NB Korea 매핑 캐시 갱신: 0건
+[18:50:31] INFO     vans_crawler: Vans 검색 'Old Skool': 0건
+[18:50:32] INFO     vans_crawler: Vans 검색 'Authentic': 0건
+[18:50:34] INFO     vans_crawler: Vans 검색 'Era': 0건
+[18:50:35] INFO     vans_crawler: Vans 검색 'Sk8-Hi': 1건
+[18:50:37] INFO     vans_crawler: Vans 검색 'Slip-On': 0건
+[18:50:38] INFO     vans_crawler: Vans 검색 'Knu Skool': 0건
+[18:50:40] INFO     vans_crawler: Vans 검색 'Knu-Skool': 0건
+[18:51:01] INFO     wconcept_crawler: W컨셉 검색 'Nike': 40건
+[18:51:03] INFO     wconcept_crawler: W컨셉 검색 'adidas': 40건
+[18:51:05] INFO     wconcept_crawler: W컨셉 검색 'New Balance': 40건
+[18:51:07] INFO     wconcept_crawler: W컨셉 검색 'Salomon': 40건
+[18:51:09] INFO     wconcept_crawler: W컨셉 검색 'Asics': 40건
+[kream_hot] kream_client 미주입 — 폴링 스킵 (Phase 2.5 mock 전용)
+[worksout] 카탈로그 HTTP 400 page=0
+[18:51:35] CRITICAL kream_budget: KREAM 일일 캡 초과: 10001/10000 — 파이프라인 정지
+[18:51:35] ERROR    scheduler: 신규 수집 실패: 10001/10000 calls in last 24h
+[18:52:02] INFO     hoka_crawler: 호카 검색 'Mach': 4건
+[18:52:04] INFO     hoka_crawler: 호카 검색 'Clifton': 4건
+[18:52:06] INFO     hoka_crawler: 호카 검색 'Bondi': 4건
+[18:52:08] INFO     hoka_crawler: 호카 검색 'Rincon': 4건
+[18:52:10] INFO     hoka_crawler: 호카 검색 'Arahi': 4건
+[18:52:12] INFO     hoka_crawler: 호카 검색 'Gaviota': 4건
+[18:52:15] INFO     hoka_crawler: 호카 검색 'Speedgoat': 4건
+[18:52:16] INFO     hoka_crawler: 호카 검색 'Challenger': 4건
+[18:52:19] INFO     hoka_crawler: 호카 검색 'Stinson': 4건
+[18:52:20] INFO     hoka_crawler: 호카 검색 'Torrent': 4건
+[18:52:22] INFO     hoka_crawler: 호카 검색 'Tecton': 4건
+[18:52:24] INFO     hoka_crawler: 호카 검색 'Zinal': 4건
+[18:52:26] INFO     hoka_crawler: 호카 검색 'Kawana': 4건
+[18:52:28] INFO     hoka_crawler: 호카 검색 'Solimar': 4건
+[18:52:31] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_WOMEN page=1: 60건
+[18:52:31] INFO     hoka_crawler: 호카 검색 'Transport': 4건
+[18:52:32] INFO     hoka_crawler: 호카 검색 'Skyflow': 4건
+[18:52:32] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_WOMEN page=2: 60건
+[18:52:34] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_WOMEN page=3: 60건
+[18:52:35] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_MEN page=1: 60건
+[18:52:36] INFO     hoka_crawler: 호카 검색 'Skyward': 4건
+[18:52:37] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_MEN page=2: 60건
+[18:52:38] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_MEN page=3: 60건
+[18:52:38] INFO     hoka_crawler: 호카 검색 'Cielo': 4건
+[18:52:39] INFO     hoka_crawler: 호카 검색 'Rocket': 4건
+[18:52:40] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_BAG_SHOES page=1: 60건
+[18:52:41] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_BAG_SHOES page=2: 60건
+[18:52:41] INFO     hoka_crawler: 호카 검색 'Mafate': 4건
+[18:52:43] INFO     beaker_crawler: BEAKER 리스팅 BEAKER_BAG_SHOES page=3: 60건
+[18:52:44] INFO     hoka_crawler: 호카 검색 'Kaha': 4건
+[18:52:45] INFO     hoka_crawler: 호카 검색 'Anacapa': 4건
+[18:52:48] INFO     hoka_crawler: 호카 검색 'Ora': 4건
