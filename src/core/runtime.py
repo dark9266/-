@@ -34,6 +34,7 @@ from src.adapters.adidas_adapter import AdidasAdapter
 from src.adapters.arcteryx_adapter import ArcteryxAdapter
 from src.adapters.asics_adapter import AsicsAdapter
 from src.adapters.beaker_adapter import BeakerAdapter
+from src.adapters.carhartt_adapter import CarharttAdapter
 from src.adapters.converse_adapter import ConverseAdapter
 from src.adapters.eql_adapter import EqlAdapter
 from src.adapters.hoka_adapter import HokaAdapter
@@ -109,6 +110,7 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("thenorthface", TheNorthFaceAdapter),
     ("stussy", StussyAdapter),
     ("converse", ConverseAdapter),
+    ("carhartt", CarharttAdapter),
 ]
 
 
