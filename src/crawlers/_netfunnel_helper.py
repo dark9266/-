@@ -38,9 +38,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOME_URL = "https://www.asics.co.kr/main/index"
 DEFAULT_COOKIE_NAME = "NetFunnel_ID_act_1"
-DEFAULT_TTL_SECONDS = 180.0          # 초기 TTL — EMA 관측 전
-DEFAULT_TTL_MIN = 30.0
-DEFAULT_TTL_MAX = 600.0
+# NetFunnel 서버측 토큰 TTL 은 쿠키 값 내부에 ``ttl=15`` 로 고정되어 있고
+# 실측(2026-04-14)상 단일 사용에 가까운 one-shot 에 가깝다. 초기 TTL 은
+# 보수적으로 10초로 짧게 잡고, EMA 관측으로 서버가 더 관대하면 점진 상향.
+DEFAULT_TTL_SECONDS = 10.0
+DEFAULT_TTL_MIN = 5.0
+DEFAULT_TTL_MAX = 60.0
 DEFAULT_COOLDOWN_SECONDS = 15.0      # 연속 실패 사이 최소 간격
 DEFAULT_TIMEOUT_MS = 20_000
 DEFAULT_USER_AGENT = (

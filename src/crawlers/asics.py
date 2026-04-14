@@ -314,8 +314,17 @@ class AsicsCrawler:
             logger.warning("asics GET %s → HTTP %s", path, status)
             return ""
         text = resp.text or ""
-        # NetFunnel 스켈레톤 감지: 전형적으로 3~5KB + ``NetFunnel_Action`` 문자열.
-        if len(text) < 6000 and "NetFunnel_Action" in text:
+        # NetFunnel 미통과 응답은 두 가지 포맷:
+        #   1) 3~5KB 스켈레톤 + ``NetFunnel_Action`` JS 블록 (완전 초기 진입)
+        #   2) ~150~200B location.reload() 리다이렉트 + netfunnel.js 참조
+        #      (쿠키 만료/무효 시 — 서버측 토큰 TTL ~15s)
+        # 둘 다 실SSR(수백 KB) 과 구분 가능. netfunnel 키워드 + 작은 본문 조건.
+        is_skeleton = len(text) < 6000 and (
+            "NetFunnel_Action" in text
+            or "netfunnel.js" in text
+            or "location.reload()" in text
+        )
+        if is_skeleton:
             logger.info("asics netfunnel 미통과 스켈레톤: path=%s len=%d", path, len(text))
             if self._skeleton_callback is not None:
                 try:
