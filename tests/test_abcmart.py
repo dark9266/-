@@ -146,3 +146,95 @@ class TestArtCrawlerProductPageUrl:
         from src.crawlers.abcmart import onthespot_crawler
         url = onthespot_crawler._product_page_url("67890")
         assert url == "https://www.onthespot.co.kr/product/new?prdtNo=67890"
+
+
+class TestFetchListingResponseShapes:
+    """fetch_listing 의 grandstage(SEARCH 최상위) / onthespot(result.SEARCH)
+    두 응답 형태 파싱 + PRDT_NO dedupe 검증."""
+
+    def _make_crawler_with_fake_client(self, monkeypatch, response_payload):
+        import json as _json
+
+        from src.crawlers import abcmart as _abc
+
+        class _FakeResp:
+            status_code = 200
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return _json.loads(_json.dumps(self._payload))
+
+        class _FakeClient:
+            is_closed = False
+
+            def __init__(self, payload):
+                self._payload = payload
+                self.calls = []
+
+            async def get(self, url, params=None, headers=None):
+                self.calls.append({"url": url, "params": dict(params or {})})
+                # 두 번째 호출부터는 빈 SEARCH → 루프 종료
+                if len(self.calls) > 1:
+                    empty = {"SEARCH": []} if "search-word/result-total" in url \
+                        else {"result": {"SEARCH": []}}
+                    return _FakeResp(empty)
+                return _FakeResp(self._payload)
+
+        crawler = _abc.ArtCrawler(_abc.GRANDSTAGE_CONFIG)
+        client = _FakeClient(response_payload)
+        crawler._client = client  # type: ignore[assignment]
+        return crawler, client
+
+    async def test_fetch_listing_grandstage_top_level_search(self, monkeypatch):
+        payload = {
+            "SEARCH": [
+                {"PRDT_NO": "1", "STYLE_INFO": "AA1", "COLOR_ID": "001"},
+                {"PRDT_NO": "2", "STYLE_INFO": "BB2", "COLOR_ID": "002"},
+                {"PRDT_NO": "1", "STYLE_INFO": "AA1", "COLOR_ID": "001"},  # dupe
+            ],
+            "PAGE": {"finalPageNo": 1},
+        }
+        crawler, _ = self._make_crawler_with_fake_client(monkeypatch, payload)
+        items = await crawler.fetch_listing(
+            brand_keywords=["nike"], max_pages=1, page_size=10
+        )
+        assert [i["PRDT_NO"] for i in items] == ["1", "2"]
+
+    async def test_fetch_listing_onthespot_nested_result(self, monkeypatch):
+        from src.crawlers import abcmart as _abc
+
+        class _FakeResp:
+            status_code = 200
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class _FakeClient:
+            is_closed = False
+            calls = 0
+
+            async def get(self, url, params=None, headers=None):
+                _FakeClient.calls += 1
+                if _FakeClient.calls > 1:
+                    return _FakeResp({"result": {"SEARCH": []}})
+                return _FakeResp({
+                    "result": {
+                        "SEARCH": [
+                            {"PRDT_NO": "10", "STYLE_INFO": "X", "COLOR_ID": "100"},
+                        ],
+                        "PAGE": {"finalPageNo": 1},
+                    }
+                })
+
+        crawler = _abc.ArtCrawler(_abc.ONTHESPOT_CONFIG)
+        crawler._client = _FakeClient()  # type: ignore[assignment]
+        items = await crawler.fetch_listing(
+            brand_keywords=["nike"], max_pages=1, page_size=10
+        )
+        assert len(items) == 1
+        assert items[0]["PRDT_NO"] == "10"

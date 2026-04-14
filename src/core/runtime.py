@@ -63,6 +63,7 @@ from src.core.event_bus import (
 )
 from src.core.orchestrator import Orchestrator
 from src.core.v3_alert_logger import V3AlertLogger, build_profit_handler
+from src.core.v3_discord_publisher import V3DiscordPublisher, wrap_handler
 from src.models.product import Signal
 from src.profit_calculator import calculate_size_profit, determine_signal
 
@@ -350,7 +351,17 @@ class V3Runtime:
 
             log_path = settings.v3_alert_log_path
         self._alert_logger = V3AlertLogger(self._db_path, log_path)
-        self._orchestrator.on_profit_found(build_profit_handler(self._alert_logger))
+
+        # v3 → Discord 브릿지: alert_logger handler 를 wrap 해서 신규 알림이면
+        # webhook POST 추가. webhook URL 미설정 시 publisher 가 no-op.
+        from src.config import settings as _settings_for_webhook
+
+        webhook = getattr(_settings_for_webhook, "discord_notify_webhook", None)
+        self._discord_publisher = V3DiscordPublisher(webhook)
+        inner_handler = build_profit_handler(self._alert_logger)
+        self._orchestrator.on_profit_found(
+            wrap_handler(inner_handler, self._discord_publisher)
+        )
 
         await self._orchestrator.start()
         await self._orchestrator.recover()

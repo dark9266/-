@@ -318,6 +318,94 @@ class ArtCrawler:
         )
         return product
 
+    async def fetch_listing(
+        self,
+        *,
+        brand_keywords: list[str],
+        max_pages: int = 6,
+        page_size: int = 200,
+    ) -> list[dict]:
+        """채널 카탈로그 덤프 — 브랜드 키워드 셋 순회.
+
+        a-rt.com 카테고리 PLP 는 SSR HTML 만 반환하여 모델번호가 없으므로,
+        JSON 검색 API (`search-word/result-total/list` / `search-word/result/list`)
+        를 브랜드 키워드 별로 페이지네이션 호출해 STYLE_INFO+COLOR_ID+SOLD_OUT
+        포함 raw item 을 수집한다.
+
+        Onthespot 응답은 `result.SEARCH` 한 단계 안쪽이고 grandstage 는 최상위
+        `SEARCH` — 두 형태 모두 처리.
+
+        Returns
+        -------
+        list[dict]
+            검색 API raw 아이템 (`PRDT_NO/PRDT_NAME/STYLE_INFO/COLOR_ID/
+            PRDT_DC_PRICE/NRMAL_AMT/BRAND_NAME/SOLD_OUT`) 리스트.
+            PRDT_NO 단위로 deduplicate.
+        """
+        client = await self._get_client()
+        cfg = self._config
+        search_url = cfg.base_url + cfg.search_path
+
+        seen: set[str] = set()
+        results: list[dict] = []
+
+        for keyword in brand_keywords:
+            for page in range(1, max_pages + 1):
+                try:
+                    async with self._rate_limiter.acquire():
+                        resp = await client.get(
+                            search_url,
+                            params={
+                                "searchWord": keyword,
+                                "channel": cfg.channel_id,
+                                "page": str(page),
+                                "perPage": str(page_size),
+                                "tabGubun": "total",
+                            },
+                            headers={"User-Agent": _random_ua()},
+                        )
+                    if resp.status_code != 200:
+                        logger.warning(
+                            "%s listing 실패 (HTTP %d): %s p=%d",
+                            cfg.label, resp.status_code, keyword, page,
+                        )
+                        break
+                    body = resp.json()
+                except Exception as e:
+                    logger.error(
+                        "%s listing 에러 (%s p=%d): %s",
+                        cfg.label, keyword, page, e,
+                    )
+                    break
+
+                # grandstage: 최상위 SEARCH / onthespot: result.SEARCH
+                root = body.get("result") if isinstance(body.get("result"), dict) else body
+                items = root.get("SEARCH") or []
+                if not items:
+                    break
+
+                added = 0
+                for item in items:
+                    pno = str(item.get("PRDT_NO") or "")
+                    if not pno or pno in seen:
+                        continue
+                    seen.add(pno)
+                    results.append(item)
+                    added += 1
+
+                page_info = root.get("PAGE") or {}
+                final_page = int(page_info.get("finalPageNo") or 0)
+                if final_page and page >= final_page:
+                    break
+                if added == 0:
+                    break
+
+        logger.info(
+            "%s 카탈로그 listing: %d건 (keywords=%d)",
+            cfg.label, len(results), len(brand_keywords),
+        )
+        return results
+
     async def disconnect(self) -> None:
         """클라이언트 종료."""
         if self._client and not self._client.is_closed:

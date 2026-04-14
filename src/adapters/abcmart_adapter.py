@@ -52,6 +52,24 @@ CHANNEL_LABEL: dict[str, str] = {
 # 기본 덤프 채널 — 2개 모두
 DEFAULT_CHANNELS: tuple[str, ...] = (GRANDSTAGE, ONTHESPOT)
 
+# 카탈로그 listing 에 사용할 브랜드 키워드 셋. 케찹/크림 매칭 풀 기준 메이저
+# 운동화/스포츠 브랜드 위주. 키워드는 검색 API 에 그대로 전달되어 PRDT_NO
+# 단위로 dedupe 되므로 중복 안전.
+DEFAULT_BRAND_KEYWORDS: tuple[str, ...] = (
+    "nike",
+    "jordan",
+    "adidas",
+    "new balance",
+    "puma",
+    "asics",
+    "salomon",
+    "hoka",
+    "vans",
+    "converse",
+    "reebok",
+    "on running",
+)
+
 
 def _strip_key(model_number: str) -> str:
     return re.sub(r"[\s\-]", "", normalize_model_number(model_number))
@@ -121,8 +139,9 @@ class AbcmartAdapter:
         http_client: Any = None,
         *,
         channels: tuple[str, ...] | list[str] | None = None,
-        max_pages: int = 10,
-        page_size: int = 100,
+        max_pages: int = 6,
+        page_size: int = 200,
+        brand_keywords: tuple[str, ...] | list[str] | None = None,
     ) -> None:
         """
         Parameters
@@ -156,11 +175,44 @@ class AbcmartAdapter:
         self._channels = tuple(channels or DEFAULT_CHANNELS)
         self._max_pages = max_pages
         self._page_size = page_size
+        self._brand_keywords = tuple(brand_keywords or DEFAULT_BRAND_KEYWORDS)
 
     # ------------------------------------------------------------------
     # HTTP 레이어
     # ------------------------------------------------------------------
     def _get_http(self) -> Any | None:
+        if self._http is not None:
+            return self._http
+        # 지연 import — 테스트 격리. ArtCrawler 싱글톤 두 개를 채널 라우팅
+        # 래퍼로 묶어 어댑터가 기대하는 fetch_channel_listing 시그니처 제공.
+        from src.crawlers.abcmart import grandstage_crawler, onthespot_crawler
+
+        brand_keywords = self._brand_keywords
+
+        class _ArtListingHttp:
+            def __init__(self) -> None:
+                self._routes = {
+                    GRANDSTAGE: grandstage_crawler,
+                    ONTHESPOT: onthespot_crawler,
+                }
+
+            async def fetch_channel_listing(
+                self,
+                channel: str,
+                *,
+                max_pages: int,
+                page_size: int,
+            ) -> list[dict]:
+                crawler = self._routes.get(channel)
+                if crawler is None:
+                    return []
+                return await crawler.fetch_listing(
+                    brand_keywords=list(brand_keywords),
+                    max_pages=max_pages,
+                    page_size=page_size,
+                )
+
+        self._http = _ArtListingHttp()
         return self._http
 
     # ------------------------------------------------------------------
