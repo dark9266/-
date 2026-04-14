@@ -213,18 +213,25 @@ class AsicsAdapter:
                 pid = (t.get("product_id") or "").strip()
                 if not pid or pid in dedup:
                     continue
+                # 새 크롤러는 카테고리 덤프에서 model_number/sizes/available 을
+                # 이미 채워 돌려준다(상세 보강 불필요). 레거시 파서(stub) 가
+                # model_number 를 비워 돌려주는 경우를 위해 원본 dict 를 그대로
+                # 보존하되 필수 필드는 기본값을 보장한다.
                 dedup[pid] = {
                     "product_id": pid,
                     "name": t.get("name") or "",
                     "url": t.get("url") or _build_url(pid),
                     "price_krw": int(t.get("price_krw") or 0),
-                    "model_number": "",
-                    "sizes": [],
-                    "available": True,
+                    "model_number": (t.get("model_number") or "").strip().upper(),
+                    "sizes": [dict(s) for s in (t.get("sizes") or [])],
+                    "available": bool(t.get("available", True)),
                 }
 
-        # 상세 보강 — product master 당 1회 상세 호출
+        # 상세 보강 — 카테고리 덤프가 이미 모델번호/사이즈를 포함하는 경우는
+        # 스킵. 레거시/stub 응답으로 model_number 가 비어있는 항목만 상세 호출.
         for pid, item in dedup.items():
+            if item.get("model_number"):
+                continue
             try:
                 detail = await http.fetch_product_detail(pid)
             except Exception:
@@ -246,7 +253,6 @@ class AsicsAdapter:
                 item["sizes"] = [dict(s) for s in sizes]
                 item["available"] = any(s.get("available") for s in sizes)
             else:
-                # 사이즈 정보가 없으면 상세 필드의 available 신호 사용
                 item["available"] = bool(detail.get("available", True))
 
         variants = list(dedup.values())

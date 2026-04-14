@@ -79,21 +79,16 @@ OG_TITLE_RE = re.compile(
     flags=re.I,
 )
 
-# 카테고리 코드들 — 아식스 한국몰 주요 카테고리 트리. 순회 키로 사용.
-# (운영 중 추가/삭제 자유. 중복 상품은 adapter 레벨 dedup.)
+# 카테고리 코드들 — 아식스 한국몰 계층 카테고리 트리 (2026-04-14 실측).
+# 코드 구조: ``{gender_top}{category_top}`` (4+4 digit).
+#   0018=Men, 0019=Women, 0021=Sportstyle/Unisex
+#   ...0001=신발, 0002=의류, 0003=용품
+# 페이지당 32상품 · 평균 ~10페이지/카테고리 → 총 ~800~1000 상품 예상.
+# 운영 중 추가/삭제 자유. 중복 상품은 hosting_product_id 기준 dedup.
 ASICS_CATEGORY_CODES: tuple[str, ...] = (
-    # RUNNING / 러닝화 메인
-    "001100060012",  # #RUN > 컬렉션
-    "001100060013",
-    "001100060014",
-    # SPORTSTYLE
-    "sps_collection",
-    # MENS SHOES
-    "0001",
-    "0002",
-    # WOMENS SHOES
-    "0003",
-    "0004",
+    "00180001",  # Men 신발
+    "00190001",  # Women 신발
+    "00210001",  # Sportstyle/Unisex 신발
 )
 
 
@@ -191,6 +186,179 @@ def _extract_tiles_from_category_html(text: str) -> list[AsicsTile]:
     return list(tiles.values())
 
 
+# ─── 새 파서: dataLayer view_item_list 배열 (2026-04-14 실측) ─────────
+#
+# 아식스 한국몰 `/goods/catalog?code={code}` 카테고리 페이지는 GA ecommerce
+# 이벤트 dataLayer 에 `products` 배열을 임베드한다. 배열 원소 하나당 한 상품
+# 이며 아래 필드가 전부 노출된다:
+#
+#   - hosting_product_id  : 내부 product id (URL /p/ 뒤)
+#   - styleCode           : "1203A899.101" 형식 (dot → hyphen = kream 포맷)
+#   - name                : "젤 1130_1203A899101_21855" (디스플레이명_id_hostingId)
+#   - price / originalPrice / markedDownPrice
+#   - stock               : 'yes'|'no' — 총량 재고
+#   - stockSize           : {"230":"yes","235":"yes",...} — 사이즈별 재고
+#   - url                 : "/p/AKR_112619330-101" (상세 URL)
+#   - brand               : "ASICS" 또는 "Onitsuka Tiger"
+#   - gender              : MALE/FEMALE/UNISEX
+#   - variant             : 색상명
+#   - tag                 : [aliases...] — 검색용
+#
+# 이 배열만 파싱하면 카테고리 덤프 1회로 모델번호·사이즈 재고·가격·이름이
+# 전부 확보되며, 상세 페이지 재방문이 불필요하다.
+
+_DL_PRODUCTS_START_RE = re.compile(
+    r"'event':\s*'view_item_list'.*?'products':\s*(\[)", re.S
+)
+_DL_BLOCK_START_RE = re.compile(r"\{'name':\s*'")
+_DL_FIELD_STR_RE = {
+    "hosting_product_id": re.compile(r"'hosting_product_id':\s*'(\d+)'"),
+    "style_code": re.compile(r"'styleCode':\s*'([^']+)'"),
+    "raw_name": re.compile(r"'name':\s*'([^']+)'"),
+    "url": re.compile(r"'url':\s*'([^']+)'"),
+    "brand": re.compile(r"'brand':\s*'([^']+)'"),
+    "gender": re.compile(r"'gender':\s*'([^']+)'"),
+    "variant": re.compile(r"'variant':\s*'([^']+)'"),
+    "product_color": re.compile(r"'product_color':\s*'([^']+)'"),
+    "stock": re.compile(r"'stock':\s*'(yes|no)'"),
+}
+_DL_FIELD_NUM_RE = {
+    "price": re.compile(r"'price':\s*(\d+(?:\.\d+)?)"),
+    "original_price": re.compile(r"'originalPrice':\s*(\d+)"),
+    "marked_down_price": re.compile(r"'markedDownPrice':\s*(\d+)"),
+}
+_DL_STOCK_SIZE_RE = re.compile(r"'stockSize':\s*(\{[^}]*\})")
+_DL_SIZE_PAIR_RE = re.compile(r'"([^"]+)":"(yes|no)"')
+
+
+def _find_array_span(text: str, open_idx: int) -> int:
+    """문자열 리터럴을 건너뛰며 ``text[open_idx]`` 에서 시작하는 배열의 종료
+    인덱스(``]`` 의 다음 위치)를 반환. 실패 시 ``open_idx`` 반환.
+    """
+    if open_idx >= len(text) or text[open_idx] != "[":
+        return open_idx
+    depth = 0
+    in_str = False
+    quote = ""
+    i = open_idx
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if in_str:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                in_str = False
+        else:
+            if c == "'" or c == '"':
+                in_str = True
+                quote = c
+            elif c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+        i += 1
+    return open_idx
+
+
+def _parse_catalog_product_block(block: str) -> dict | None:
+    """dataLayer products 배열의 한 원소(JS object 문자열) → dict.
+
+    hosting_product_id 가 없으면 None 반환. 가격은 int(krw), 사이즈는
+    ``[{"size": "255", "available": True}, ...]`` 형식.
+    """
+
+    def _s(key: str) -> str:
+        m = _DL_FIELD_STR_RE[key].search(block)
+        return m.group(1) if m else ""
+
+    def _n(key: str) -> int:
+        m = _DL_FIELD_NUM_RE[key].search(block)
+        if not m:
+            return 0
+        try:
+            return int(float(m.group(1)))
+        except ValueError:
+            return 0
+
+    hosting_id = _s("hosting_product_id")
+    if not hosting_id:
+        return None
+
+    style_code = _s("style_code")
+    model_number = style_code.replace(".", "-").upper() if style_code else ""
+
+    raw_name = _s("raw_name")
+    # 디스플레이명 추출 — `_styleCodeColor_hostingId` 접미사 제거.
+    # 최종 underscore 두 조각이 숫자/모델ID 이므로 첫 underscore 앞까지 취한다.
+    display_name = raw_name.split("_", 1)[0].strip() if raw_name else ""
+
+    price_krw = _n("price")
+    original_price_krw = _n("original_price") or price_krw
+    marked_price_krw = _n("marked_down_price") or price_krw
+
+    stock = _s("stock")
+    overall_available = stock == "yes"
+
+    sizes: list[dict] = []
+    sz_m = _DL_STOCK_SIZE_RE.search(block)
+    if sz_m:
+        for size, avail in _DL_SIZE_PAIR_RE.findall(sz_m.group(1)):
+            sizes.append({"size": size, "available": avail == "yes"})
+
+    url_path = _s("url")
+    url = f"{BASE_URL}{url_path}" if url_path else ""
+
+    return {
+        "product_id": hosting_id,
+        "name": display_name,
+        "brand": _s("brand"),
+        "model_number": model_number,
+        "style_code": style_code,
+        "url": url,
+        "price_krw": price_krw,
+        "original_price_krw": original_price_krw,
+        "marked_down_price_krw": marked_price_krw,
+        "sizes": sizes,
+        "available": overall_available,
+        "variant": _s("variant"),
+        "gender": _s("gender"),
+        "product_color": _s("product_color"),
+    }
+
+
+def _extract_products_from_catalog_html(text: str) -> list[dict]:
+    """카테고리 페이지 HTML → dataLayer products 배열 → dict 리스트.
+
+    파싱 실패(배열 미존재)면 빈 리스트. NetFunnel 통과 전 스켈레톤이면
+    _fetch 단계에서 이미 빈 문자열로 차단되므로 여기서는 실 SSR 만 기대.
+    """
+    m = _DL_PRODUCTS_START_RE.search(text)
+    if not m:
+        return []
+    arr_start = m.start(1)
+    arr_end = _find_array_span(text, arr_start)
+    if arr_end <= arr_start:
+        return []
+    arr = text[arr_start:arr_end]
+
+    positions = [p.start() for p in _DL_BLOCK_START_RE.finditer(arr)]
+    if not positions:
+        return []
+    positions.append(len(arr))
+
+    out: list[dict] = []
+    for i in range(len(positions) - 1):
+        block = arr[positions[i] : positions[i + 1]]
+        product = _parse_catalog_product_block(block)
+        if product:
+            out.append(product)
+    return out
+
+
 def _extract_detail(text: str) -> tuple[str, str, int, list[dict]]:
     """상세 페이지 HTML → (model_number, name, price_krw, sizes).
 
@@ -261,6 +429,10 @@ class AsicsCrawler:
         self._rate_limiter = AsyncRateLimiter(max_concurrent=2, min_interval=2.0)
         self._netfunnel_cookie: str | None = None
         self._skeleton_callback = None  # () -> Awaitable[None] | None
+        # code → slug 캐시. /goods/catalog?code=XXX 는 /c/{slug} 로 리다이렉트되는데,
+        # 페이지네이션(``?page=N``)은 friendly slug URL 에서만 동작한다. 첫 페이지
+        # 리다이렉트 시 추출한 slug 를 캐시해 이후 요청 재사용.
+        self._category_slug_cache: dict[str, str] = {}
 
     async def _get_client(self):
         if self._client is None:
@@ -305,6 +477,17 @@ class AsicsCrawler:
                 pass
 
     async def _fetch(self, path: str) -> str:
+        text, _ = await self._fetch_full(path)
+        return text
+
+    async def _fetch_full(self, path: str, *, _retried: bool = False) -> tuple[str, str]:
+        """``_fetch`` 의 확장판 — (text, final_url) 튜플 반환.
+
+        리다이렉트 후 최종 URL 이 필요한 경로에서 사용한다 (예: 카테고리
+        ``/goods/catalog?code=XXX`` → ``/c/{slug}`` 로 302 리다이렉트되는
+        경우 slug 추출). 스켈레톤 감지 시 콜백이 쿠키를 재주입하므로
+        자동으로 1회 재시도한다 (``_retried`` 로 무한루프 방지).
+        """
         client = await self._get_client()
         url = f"{BASE_URL}{path}"
         async with self._rate_limiter.acquire():
@@ -312,8 +495,9 @@ class AsicsCrawler:
         status = getattr(resp, "status_code", 0)
         if status != 200:
             logger.warning("asics GET %s → HTTP %s", path, status)
-            return ""
+            return "", ""
         text = resp.text or ""
+        final_url = str(getattr(resp, "url", "") or url)
         # NetFunnel 미통과 응답은 두 가지 포맷:
         #   1) 3~5KB 스켈레톤 + ``NetFunnel_Action`` JS 블록 (완전 초기 진입)
         #   2) ~150~200B location.reload() 리다이렉트 + netfunnel.js 참조
@@ -331,21 +515,126 @@ class AsicsCrawler:
                     await self._skeleton_callback()
                 except Exception:  # pragma: no cover
                     logger.exception("asics skeleton callback 실패")
-            return ""
-        return text
+                # 콜백이 쿠키를 재주입했다면 1회 재시도 — 연속 스켈레톤 시엔
+                # 두 번째 호출에서 정상 SSR 이 반환되는 케이스가 잦다.
+                if not _retried:
+                    return await self._fetch_full(path, _retried=True)
+            return "", ""
+        return text, final_url
 
     # ------------------------------------------------------------------
     # 공용 인터페이스
     # ------------------------------------------------------------------
-    async def fetch_category_products(self, category_code: str) -> list[dict]:
-        """카테고리 SSR → AsicsTile dict 리스트. 상세 미보강."""
-        path = f"/c/{category_code}"
+    async def fetch_catalog_page(
+        self, category_code: str, page: int = 1
+    ) -> list[dict]:
+        """단일 페이지 카탈로그 덤프.
+
+        엔드포인트 규칙 (실측 2026-04-14)
+        --------------------------------
+        - ``/goods/catalog?code={code}`` 는 서버측에서 ``/c/{slug}`` 로
+          리다이렉트된다 (``men_shoes``/``women_shoes``/``sps_shoes`` 등).
+        - ``?page=N`` 쿼리 파라미터는 friendly slug URL(``/c/{slug}``) 에서만
+          동작한다. ``/goods/catalog?page=N&code=XXX`` 는 page 무시하고 항상 1
+          페이지를 반환 (서버 라우팅 버그로 보임).
+        - 따라서 첫 페이지는 ``/goods/catalog`` 로 진입해 slug 를 추출해
+          캐시하고, 2페이지 이후는 ``/c/{slug}?page=N&code={code}`` 로 직접
+          요청한다. Referer 는 동일 카테고리 첫 페이지로 고정.
+        """
+        slug = self._category_slug_cache.get(category_code)
+        if page == 1 or not slug:
+            path = f"/goods/catalog?code={category_code}"
+            text, final_url = await self._fetch_full(path)
+            if not text:
+                return []
+            # 최종 URL 에서 slug 추출: https://.../c/{slug}[?...]
+            m = re.search(r"/c/([a-zA-Z0-9_]+)", final_url)
+            if m:
+                slug = m.group(1)
+                self._category_slug_cache[category_code] = slug
+            else:
+                # 리다이렉트 누락 시 og:url fallback
+                og = re.search(
+                    r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\'][^"\']*/c/([a-zA-Z0-9_]+)',
+                    text,
+                )
+                if og:
+                    slug = og.group(1)
+                    self._category_slug_cache[category_code] = slug
+            if page == 1:
+                products = _extract_products_from_catalog_html(text)
+                logger.info(
+                    "asics 카테고리 %s[%s] p1: %d products",
+                    category_code,
+                    slug or "?",
+                    len(products),
+                )
+                return products
+
+        # page >= 2: slug 필요. 없으면 종료.
+        if not slug:
+            return []
+        path = (
+            f"/c/{slug}?page={page}&popup=&iframe=&code={category_code}"
+        )
         text = await self._fetch(path)
         if not text:
             return []
-        tiles = _extract_tiles_from_category_html(text)
-        logger.info("asics 카테고리 %s: %d tiles", category_code, len(tiles))
-        return [t.as_dict() for t in tiles]
+        products = _extract_products_from_catalog_html(text)
+        logger.info(
+            "asics 카테고리 %s[%s] p%d: %d products",
+            category_code,
+            slug,
+            page,
+            len(products),
+        )
+        return products
+
+    async def fetch_category_products(
+        self,
+        category_code: str,
+        *,
+        max_pages: int = 40,
+    ) -> list[dict]:
+        """카테고리 전체 페이지 순회 → dedup 후 dict 리스트 반환.
+
+        어댑터 호환 시그니처(단일 인자 `category_code`) 유지. 페이지 순회는
+        빈 페이지 또는 이전 페이지와 동일 결과를 만나면 즉시 종료.
+        """
+        dedup: dict[str, dict] = {}
+        prev_first_id = ""
+        for page in range(1, max_pages + 1):
+            items = await self.fetch_catalog_page(category_code, page=page)
+            if not items:
+                break
+            first_id = items[0].get("product_id") or ""
+            if page > 1 and first_id and first_id == prev_first_id:
+                # 동일 페이지 반복 — 페이지네이션 종료 또는 슬러그 오류
+                logger.info(
+                    "asics 카테고리 %s p%d: 첫 상품 동일(%s) — 종료",
+                    category_code,
+                    page,
+                    first_id,
+                )
+                break
+            prev_first_id = first_id
+            added = 0
+            for item in items:
+                pid = (item.get("product_id") or "").strip()
+                if not pid or pid in dedup:
+                    continue
+                dedup[pid] = item
+                added += 1
+            # 새 상품이 전혀 안 들어오면 종료
+            if added == 0:
+                break
+        logger.info(
+            "asics 카테고리 %s 전수: %d products (<=%d pages)",
+            category_code,
+            len(dedup),
+            max_pages,
+        )
+        return list(dedup.values())
 
     async def fetch_product_detail(self, product_id: str) -> dict:
         """상품 상세 SSR → 모델번호/이름/가격/사이즈 보강 dict.
@@ -392,24 +681,22 @@ class AsicsCrawler:
         if not m:
             return []
         target = m.group(1)
-        # 카테고리 순회 후 모델번호 매칭 (제한적 사용).
         results: list[dict] = []
         for code in ASICS_CATEGORY_CODES:
-            tiles = await self.fetch_category_products(code)
-            for t in tiles:
-                detail = await self.fetch_product_detail(t["product_id"])
-                if detail.get("model_number") == target:
+            items = await self.fetch_category_products(code)
+            for item in items:
+                if item.get("model_number") == target:
                     results.append({
-                        "product_id": t["product_id"],
-                        "name": detail.get("name") or t.get("name") or "",
-                        "brand": "Asics",
+                        "product_id": item["product_id"],
+                        "name": item.get("name") or "",
+                        "brand": item.get("brand") or "Asics",
                         "model_number": target,
-                        "price": int(detail.get("price_krw") or t.get("price_krw") or 0),
-                        "original_price": int(detail.get("price_krw") or 0),
-                        "url": t["url"],
+                        "price": int(item.get("price_krw") or 0),
+                        "original_price": int(item.get("original_price_krw") or 0),
+                        "url": item.get("url") or "",
                         "image_url": "",
-                        "is_sold_out": not detail.get("available", True),
-                        "sizes": list(detail.get("sizes") or []),
+                        "is_sold_out": not item.get("available", True),
+                        "sizes": list(item.get("sizes") or []),
                     })
                     if len(results) >= limit:
                         return results
