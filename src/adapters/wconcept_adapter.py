@@ -44,6 +44,9 @@ DEFAULT_BRAND_KEYWORDS: dict[str, str] = {
     "New Balance": "New Balance",
     "Salomon": "Salomon",
     "Asics": "Asics",
+    "The North Face": "The North Face",
+    "Hoka": "Hoka",
+    "Vans": "Vans",
 }
 
 
