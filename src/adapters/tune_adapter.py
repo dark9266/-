@@ -314,6 +314,15 @@ class TuneAdapter:
             kream_row = kream_index.get(key)
             match_model = sku
 
+            # Vans 전용 퍼징: 크림은 11자 (VN000CQA2BO) / 12자 혼재,
+            # 튠 variant SKU 는 항상 12자 (꼬리 variant digit 1 포함).
+            # exact miss 시 꼬리 숫자 1자 제거 재시도 — musinsa_adapter 와 동일.
+            if kream_row is None and key.startswith("VN") and len(key) >= 12 and key[-1].isdigit():
+                alt = kream_index.get(key[:-1])
+                if alt is not None:
+                    kream_row = alt
+                    match_model = sku[:-1]
+
             if kream_row is None:
                 # product title 에서 실제 모델번호 추출 fallback
                 # (튠 NB 계열 — variant SKU 는 내부 코드(`NBPFEB737B`), 실제 모델
