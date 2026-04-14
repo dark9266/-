@@ -110,6 +110,13 @@ def extract_model_from_name(name: str) -> str | None:
             if re.search(r"[A-Z]", candidate[3:]):
                 return normalize_model_number(candidate)
 
+    # Salomon: L + 8자리 숫자 (L47801400). 크림에 L+8자리 형태 242건 존재.
+    # 29cm 살로몬 상품명은 `XT-위스퍼_L47801400` 처럼 언더스코어 접두라
+    # \b 매칭이 실패 → 명시적 non-alnum 경계로 추출.
+    m = re.search(r"(?:^|[^A-Z0-9])(L\d{8})(?:$|[^A-Z0-9])", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
     # ASICS: 숫자4자리+영문1자리+숫자3~4자리-숫자3자리 (1203A879-021, 1201A256-105)
     m = re.search(r"\b(\d{4}[A-Z]\d{3,4}-\d{3})\b", text)
     if m:
