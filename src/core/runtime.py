@@ -44,6 +44,7 @@ from src.adapters.nike_adapter import NikeAdapter
 from src.adapters.patagonia_adapter import PatagoniaAdapter
 from src.adapters.puma_adapter import PumaAdapter
 from src.adapters.salomon_adapter import SalomonAdapter
+from src.adapters.stussy_adapter import StussyAdapter
 from src.adapters.thehandsome_adapter import ThehandsomeAdapter
 from src.adapters.thenorthface_adapter import TheNorthFaceAdapter
 from src.adapters.tune_adapter import TuneAdapter
@@ -105,6 +106,7 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("puma", PumaAdapter),
     ("patagonia", PatagoniaAdapter),
     ("thenorthface", TheNorthFaceAdapter),
+    ("stussy", StussyAdapter),
 ]
 
 
