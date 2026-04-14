@@ -34,7 +34,6 @@ from src.adapters.adidas_adapter import AdidasAdapter
 from src.adapters.arcteryx_adapter import ArcteryxAdapter
 from src.adapters.asics_adapter import AsicsAdapter
 from src.adapters.beaker_adapter import BeakerAdapter
-from src.adapters.carhartt_adapter import CarharttAdapter
 from src.adapters.converse_adapter import ConverseAdapter
 from src.adapters.eql_adapter import EqlAdapter
 from src.adapters.hoka_adapter import HokaAdapter
@@ -110,7 +109,13 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("thenorthface", TheNorthFaceAdapter),
     ("stussy", StussyAdapter),
     ("converse", ConverseAdapter),
-    ("carhartt", CarharttAdapter),
+    # ("carhartt", CarharttAdapter),
+    # 2026-04-14 abort: 한국 공식몰(carhartt-wip.co.kr) 은 WORKSOUT 운영 플랫폼
+    # 이라 productCode 가 WORKSOUT 내부 SKU (CAAACOJAJL00040002) 로만 노출되고,
+    # 크림 Carhartt WIP 풀 (1,984행) 의 브랜드 공식 style-number (I033112-00E-02)
+    # 가 detail / info / productName 어느 필드에도 나오지 않는다. 샘플 15건 전부
+    # I-code 매칭 0건. 한국 공홈만 사용 시 매칭 0건 확정 — 어댑터 등록 해제.
+    # EU 글로벌 스토어 (carhartt-wip.com/en-gb) 는 KRW 정합성 위반으로 사용 금지.
 ]
 
 
