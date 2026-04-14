@@ -17,7 +17,10 @@ Phase 0 보안 레이어 — 실계정 보호를 위한 하드 캡.
 
 from __future__ import annotations
 
+import contextvars
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 
 import aiosqlite
@@ -31,6 +34,36 @@ BUDGET: int = int(os.getenv("KREAM_DAILY_CAP", "10000"))
 WARN_RATIO: float = 0.9
 
 _warned_today: str | None = None
+
+# 호출 원점(워커/루프) 태그. 각 스케줄 루프가 kream 호출 직전에
+# `with kream_purpose("v3_delta"):` 로 감싸면 _request 가 이 값을
+# 자동으로 picking up 하여 kream_api_calls.purpose 컬럼에 기록한다.
+# 기본값 "manual" 은 사용자 명령/임시 호출을 의미.
+_purpose_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "kream_call_purpose", default="manual"
+)
+
+
+def current_purpose() -> str:
+    """현재 컨텍스트의 호출 원점 태그. _request 기본값 분기에 사용."""
+    return _purpose_var.get()
+
+
+@contextmanager
+def kream_purpose(tag: str) -> Iterator[None]:
+    """크림 호출 원점 태그 설정 (동기/비동기 블록 공통, contextvars 기반).
+
+    사용:
+        with kream_purpose("v3_delta"):
+            await kream_client.get_products(...)
+
+    중첩 허용 — 안쪽 값이 우선.
+    """
+    token = _purpose_var.set(tag)
+    try:
+        yield
+    finally:
+        _purpose_var.reset(token)
 
 
 class KreamBudgetExceeded(RuntimeError):
@@ -68,7 +101,13 @@ async def record_call(
     latency_ms: int,
     purpose: str = "manual",
 ) -> None:
-    """호출 기록 (비동기, 실패 무시 — 계측 실패로 서비스 막지 않음)."""
+    """호출 기록 (비동기, 실패 무시 — 계측 실패로 서비스 막지 않음).
+
+    purpose 가 기본값 "manual" 이면 contextvar 의 현재 태그로 대체한다.
+    명시적으로 다른 값을 넘긴 호출부는 그대로 존중 (예: blacklist_500 접미사).
+    """
+    if purpose == "manual":
+        purpose = _purpose_var.get()
     try:
         async with aiosqlite.connect(settings.db_path, timeout=30.0) as db:
             await db.execute(

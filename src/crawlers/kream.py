@@ -22,6 +22,7 @@ from src.config import settings
 from src.core.kream_budget import (
     KreamBudgetExceeded,
     check_budget,
+    current_purpose,
     record_call,
 )
 from src.models.product import KreamProduct, KreamSizePrice
@@ -322,6 +323,12 @@ class KreamCrawler:
             await check_budget()
         except KreamBudgetExceeded:
             raise
+
+        # 호출 원점 태그 해석: 기본값이면 contextvar 에서 조회.
+        # 각 스케줄 루프가 `with kream_purpose("v3_delta"):` 로 래핑하면
+        # 그 값이 kream_api_calls.purpose 에 기록된다.
+        if purpose == "manual":
+            purpose = current_purpose()
 
         session = await self._get_session()
 
