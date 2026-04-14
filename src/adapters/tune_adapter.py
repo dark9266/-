@@ -41,6 +41,31 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://tune.kr"
 
 
+# 크림 미등재 vendor — 의류/캡/가방/잡화 위주. 라이브 1240 unique sku
+# 분포 측정 결과 hit 0% 인 vendor 만 (2026-04-14). matched 손실 0,
+# no_model_number/collect_queue 노이즈 제거 목적. 새 운동화 라인 출시 시
+# 재평가 필요 (config 수동 갱신).
+VENDOR_BLACKLIST: frozenset[str] = frozenset({
+    "On",
+    "Cayl",
+    "Roa Hiking",
+    "Montbell",
+    "Xlim",
+    "Goldwin",
+    "Song For The Mute",
+    "Clarks Originals",
+    "By Parra",
+    "BoTT",
+    "Khakis",
+    "Metalwood",
+    "Ostrya",
+    "Levi's",
+    "Birkenstock",
+    "Dr. Martens",
+    "Arc'teryx",
+})
+
+
 def _strip_key(model_number: str) -> str:
     return re.sub(r"[\s\-]", "", normalize_model_number(model_number))
 
@@ -62,6 +87,7 @@ class TuneMatchStats:
 
     dumped: int = 0
     soldout_dropped: int = 0
+    vendor_blocked: int = 0
     no_model_number: int = 0
     matched: int = 0
     collected_to_queue: int = 0
@@ -71,6 +97,7 @@ class TuneMatchStats:
         return {
             "dumped": self.dumped,
             "soldout_dropped": self.soldout_dropped,
+            "vendor_blocked": self.vendor_blocked,
             "no_model_number": self.no_model_number,
             "matched": self.matched,
             "collected_to_queue": self.collected_to_queue,
@@ -258,6 +285,9 @@ class TuneAdapter:
         for item in variants:
             if not item.get("available", False):
                 stats.soldout_dropped += 1
+                continue
+            if (item.get("vendor") or "").strip() in VENDOR_BLACKLIST:
+                stats.vendor_blocked += 1
                 continue
 
             sku = (item.get("sku") or "").strip()
