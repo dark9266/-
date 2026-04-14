@@ -136,6 +136,12 @@ def extract_model_from_name(name: str) -> str | None:
     if m:
         return normalize_model_number(m.group(1))
 
+    # The North Face: 영문2 + 숫자1 + 영문2 + 숫자2 + 영문1 (NM5MS04K, NJ3BQ60J).
+    # 무신사 thenorthface 의류 카탈로그 100% 노출. 한글 경계 안전 위해 non-alnum.
+    m = re.search(r"(?:^|[^A-Z0-9])([A-Z]{2}\d[A-Z]{2}\d{2}[A-Z])(?:$|[^A-Z0-9])", text)
+    if m:
+        return normalize_model_number(m.group(1))
+
     # Nike/Jordan: XX1234-123
     m = re.search(r"\b([A-Z]{1,3}\d{3,5}-\d{2,4})\b", text)
     if m:
