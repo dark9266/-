@@ -349,10 +349,10 @@ class StussyAdapter:
             try:
                 inserted = enqueue_collect_batch(self._db_path, pending_collect)
                 stats.collected_to_queue += inserted
-            except Exception:
+            except Exception as e:
                 logger.warning(
-                    "[stussy] collect_queue 배치 flush 실패: n=%d",
-                    len(pending_collect),
+                    "[stussy] collect_queue 배치 flush 실패: n=%d type=%s msg=%s",
+                    len(pending_collect), type(e).__name__, str(e)[:200],
                 )
 
         logger.info("[stussy] 매칭 완료: %s", stats.as_dict())
