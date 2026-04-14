@@ -39,13 +39,22 @@ MODEL_HYPHEN_RE = re.compile(r"(?=[A-Z0-9]*\d)[A-Z0-9]{2,8}-\d{2,4}")
 # 2) 하이픈 없음: IE4195, VN000BW5BKA
 MODEL_NOHYPHEN_RE = re.compile(r"[A-Z]{1,3}\d[A-Z0-9]{3,9}")
 
-# 검색 HTML 파싱: <a> 태그에서 godNo, godNm, brndNm 속성 추출
+# 검색 HTML 파싱: 실제 EQL 응답은 ``<li  >``(class 속성 없음) → <a class="link_wrap ...">
+# 앵커 기반으로 godNo/godNm/brndNm 을 직접 추출한다. 앵커 class 에 `link_wrap`
+# 필터를 걸어 하단 favorite button 의 동일 속성과 충돌하지 않게 한다.
 _SEARCH_ITEM_RE = re.compile(
-    r'<li[^>]*class="([^"]*)"[^>]*>.*?'
-    r'<a\s[^>]*'
-    r'godNo="([^"]*)"[^>]*'
-    r'godNm="([^"]*)"[^>]*'
+    r'<a\s[^>]*class="link_wrap[^"]*"[^>]*?'
+    r'godNo="([^"]*)"[^>]*?'
+    r'godNm="([^"]*)"[^>]*?'
     r'brndNm="([^"]*)"',
+    re.DOTALL,
+)
+
+# 품절 마커: ``<li ... class="... is_soldout ...">`` 직후 같은 블록 내 godNo 를
+# 찾는다. 실제 EQL 은 현재 class 를 비워두지만 (``<li  >``) 기존 테스트 fixture
+# 와 하위호환을 위해 별도 regex 로 soldout godNo 집합을 만들어 lookup 한다.
+_SOLDOUT_LI_RE = re.compile(
+    r'<li[^>]*class="[^"]*is_soldout[^"]*"[^>]*>.*?godNo="([^"]+)"',
     re.DOTALL,
 )
 
@@ -101,8 +110,11 @@ def _parse_search_html(html: str) -> list[dict]:
     """
     results: list[dict] = []
 
-    # godNo/godNm/brndNm 추출
+    # godNo/godNm/brndNm 추출 (앵커 기반)
     items = _SEARCH_ITEM_RE.findall(html)
+
+    # 품절 godNo 집합 (하위호환)
+    soldout_set: set[str] = set(_SOLDOUT_LI_RE.findall(html))
 
     # 가격 매핑: godNo -> price
     price_map: dict[str, int] = {}
@@ -113,10 +125,12 @@ def _parse_search_html(html: str) -> list[dict]:
         elif m.group(3):
             price_map[god_no] = int(m.group(3).replace(",", ""))
 
-    for li_class, god_no, god_nm, brnd_nm in items:
-        if not god_no:
+    seen: set[str] = set()
+    for god_no, god_nm, brnd_nm in items:
+        if not god_no or god_no in seen:
             continue
-        is_sold_out = "is_soldout" in li_class
+        seen.add(god_no)
+        is_sold_out = god_no in soldout_set
         model_number = _extract_model_from_name(god_nm)
         price = price_map.get(god_no, 0)
 
@@ -175,20 +189,29 @@ class EqlCrawler:
             self._client = None
         logger.info("EQL 크롤러 연결 해제")
 
-    async def search_products(self, keyword: str, limit: int = 30) -> list[dict]:
-        """모델번호로 EQL 검색.
+    async def search_products(
+        self, keyword: str, limit: int = 30, page_no: int = 1
+    ) -> list[dict]:
+        """키워드로 EQL 검색.
 
         GET /public/search/getSearchGodPaging -> HTML 파싱.
+        ``page_no`` 는 1-base. 어댑터가 페이지네이션 덤프에 사용.
         """
         keyword = (keyword or "").strip()
         if not keyword:
             return []
 
+        # EQL API 파라미터 관찰 (2026-04-14):
+        # - ``productPage`` = 페이지 번호 (1, 2, ..., totalPage). 페이지당 고정 40건.
+        # - ``currentPage`` = 호환용 필드. 실질 효과 미관측, "1" 고정.
+        # - ``excludeSoldoutGodYn`` = 서버가 현재 무시. 품절 감지는 list 마커에 의존.
+        # 이전 코드는 ``productPage`` 에 ``min(limit, 40)`` (30) 를 넣어 page 30
+        # (totalPage 밖) 조회 → 빈 응답 → 0건으로 관측됐다. limit 은 post-parse 적용.
         client = await self._get_client()
         params = {
             "searchWord": keyword,
             "currentPage": "1",
-            "productPage": str(min(limit, 40)),
+            "productPage": str(max(1, int(page_no))),
             "gubunFilter": "SEARCH",
             "excludeSoldoutGodYn": "Y",
         }

@@ -50,8 +50,8 @@ class TestExtractModelFromName:
 
 SEARCH_HTML_FIXTURE = """
 <ul class="product_list">
-<li class="product_item ">
-  <a href="/product/GM0026032747213/detail"
+<li  >
+  <a href="/product/GM0026032747213/detail" class="link_wrap go-product-detail"
      godNo="GM0026032747213"
      godNm="WMNS NIKE FIRST SIGHT NOIR HQ2409-001"
      brndNm="NIKE"
@@ -64,7 +64,7 @@ SEARCH_HTML_FIXTURE = """
   <button lastSalePrc="149000" brndNm="NIKE"></button>
 </li>
 <li class="product_item is_soldout">
-  <a href="/product/GM0026032747999/detail"
+  <a href="/product/GM0026032747999/detail" class="link_wrap go-product-detail"
      godNo="GM0026032747999"
      godNm="ADIDAS SAMBA OG IE4195"
      brndNm="ADIDAS"
