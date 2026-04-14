@@ -23,7 +23,7 @@ ruff format src/ tests/          # 포맷
 ### 핵심 파이프라인
 
 ```
-크림 DB (47k) → 우선순위 큐 → 소싱처 16곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
+크림 DB (47k) → 우선순위 큐 → 소싱처 22곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
 ```
 
 ### 3티어 스캔 구조
@@ -43,7 +43,7 @@ ruff format src/ tests/          # 포맷
 
 | 등급 | 조건 | 재스캔 주기 | 검색 소싱처 | 규모 |
 |------|------|-----------|-----------|------|
-| **hot** | 거래량 ≥ 5 | 2시간 | 16곳 전부 | ~130건 |
+| **hot** | 거래량 ≥ 5 | 2시간 | 22곳 전부 (역방향 v2 — 푸시 전환 후 폐기 예정) | ~130건 |
 | **warm** | 거래량 3~4 | 8시간 | 무신사+나이키+29CM+카시나+튠+살로몬+아크테릭스+W컨셉+웍스아웃 (9곳) | ~16건 |
 | **cold** | 거래량 < 3 | 48시간 | 무신사+나이키+그랜드스테이지+온더스팟 (4곳) | ~37,000건 |
 
@@ -52,13 +52,13 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 ## Key Modules
 
 ### 스캐너
-- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 16곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수, in_stock 기본 False) → 수익 분석. BRAND_SOURCES 브랜드 필터(Nike/Jordan 등). 웍스아웃 등 모델번호 없는 소싱처는 이름 매칭(한→영 변환+키워드 교차+콜라보/서브타입 검증)
+- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 22곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수, in_stock 기본 False) → 수익 분석. BRAND_SOURCES 브랜드 필터(Nike/Jordan 등). 웍스아웃 등 모델번호 없는 소싱처는 이름 매칭(한→영 변환+키워드 교차+콜라보/서브타입 검증)
 - `src/scanner.py` — 카테고리 스캔, 키워드 스캔 오케스트레이터
 - `src/tier1_scanner.py` — 워치리스트 빌더. 역방향 + 카테고리 gap 스크리닝
 - `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링. sell_now_price(즉시판매가) 기준 수익 계산, 5배 안전망(오매칭 방어)
 - `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
 
-### 크롤러 (16개 소싱처)
+### 크롤러 (22개 소싱처 — 2026-04-14 stussy 추가)
 - `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
 - `src/crawlers/twentynine_cm.py` — 29CM. 검색 API v4/products + HTML 파싱
 - `src/crawlers/nike.py` — 나이키 공식몰. `__NEXT_DATA__` JSON 파싱 (selectedProduct 구조). LAUNCH 상품 자동 스킵
@@ -73,6 +73,8 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 - `src/crawlers/vans.py` — 반스 공식몰. Topick Commerce 플랫폼. 검색 JSON API + HTML data-sku-data 사이즈별 재고 파싱
 - `src/crawlers/wconcept.py` — W컨셉. POST 검색 API (gw-front, DISPLAY-API-KEY) + GET 상세 HTML 파싱 (brazeJson/skuqty)
 - `src/crawlers/worksout.py` — 웍스아웃. REST API 검색(사이즈/재고 포함) + 상세. 모델번호 없음(역방향 이름 매칭)
+- `src/adapters/stussy_adapter.py` — Stussy 한국 공식몰 (kr.stussy.com, Shopify). `/products.json` 페이지네이션. variant.sku digit prefix → 크림 prefix 인덱스 매칭. 다중 후보 시 영문→한글 색상 사전으로 disambiguation. 크림 Stussy 2,389행 풀 활성화 (2026-04-14 추가)
+- `src/adapters/{patagonia,beaker,thehandsome,puma,asics,nike,adidas,thenorthface}_adapter.py` — Phase 3 배치 어댑터들 (직접 httpx/Shopify 기반 푸시 어댑터, crawler 레이어 없이 어댑터에 통합)
 - `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
 
 ### 크림 데이터
@@ -174,7 +176,7 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 | `/status` | DB 현황 + 워치리스트 + 최근 알림 |
 | `/queue` | 스캔 큐 현황 — priority별 분포, 적체, ETA |
 | `/trace` | 특정 모델번호 스캔 파이프라인 추적 |
-| `/health` | 소싱처 16곳 헬스체크 — 응답시간, 서킷브레이커, 기법별 상태 |
+| `/health` | 소싱처 22곳 헬스체크 — 응답시간, 서킷브레이커, 기법별 상태 |
 | `/add-source` | URL 하나로 소싱처 추가 (분석→구현→테스트→커밋) |
 | `/catalog` | 소싱처별 카탈로그 현황 — 덤프 시각, 상품 수, 매칭율 |
 | `/coverage` | 크림 DB 대비 소싱처 커버율 — 브랜드별 갭, 추가 제안 |
