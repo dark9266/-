@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     channel_progress: int = 0  # 스캔 진행상황 알림 채널
     channel_match_review: int = 0  # 매칭 애매한 경우 검토용 채널
 
+    # Discord 웹훅 — v3 푸시 알림 발송용 (브릿지 v3_discord_publisher).
+    # 미설정(빈 문자열) 시 publisher 가 no-op → 파일 로그만.
+    discord_notify_webhook: str = ""
+
     # 배송비
     shipping_cost_to_kream: int = 3000  # 사업자 택배비
 

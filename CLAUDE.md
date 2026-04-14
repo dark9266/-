@@ -2,10 +2,16 @@
 
 크림봇 (Kream Monitor Bot) — 크림 차익거래 자동화 Discord 봇. Python 3.12+, async-first.
 
-> ⚠️ **v2→v3 푸시 전환 진행 중 (2026-04-13~)** · 배포 형태: 개인용 초고성능 (A)
-> 아래 "v2 Architecture"·"스캔 방향"·"hot/warm/cold 큐" 섹션은 **과도기 현행 상태** 서술임.
-> 전환 후 목표 구조·우선순위·단계는 `~/.claude/.../memory/project_current_track.md` 가 단일 source of truth.
-> cold/warm 순환 폐기 예정, 푸시(소싱처 카탈로그 덤프→크림 DB 필터→sell_now)가 주력이 됨.
+> 🔴 **현행 메인 트랙 = 푸시 (어댑터 카탈로그 덤프 → 크림 DB 매칭)**. 배포 형태: 개인용 초고성능 (A).
+> 단일 source of truth: `~/.claude/projects/-mnt-c-Users-USER-Desktop----/memory/project_current_track.md`.
+>
+> **메인**: `src/adapters/*_adapter.py` (22곳) → `src/core/event_bus` → `kream_collect_queue` → 알림.
+> **보조**: 역방향 hot 130건 60초 폴링 (`tier2_monitor.py` = 축 ②) — 폐기 X, 재포지셔닝.
+> **폐기 예정**: `continuous_scanner` (Tier 0 cold 47k 순환) · `tier1_scanner` 일부 · hot/warm/cold 큐 컬럼.
+>
+> **방향 흔들리지 말 것**: "케찹은 못하고 우리만 하는" 분모 = 22 소싱처 카탈로그 합집합 ∩ 크림 47k.
+> 역방향 디테일·cold 큐·v2 스캐너 리팩터링 손대지 말 것 — 시간 낭비.
+> 아래 "v2 Architecture" 섹션은 **참조용 구조 설명**이지 현행 메인 아님.
 
 ## Commands
 
@@ -18,7 +24,10 @@ ruff check src/ tests/           # 린트
 ruff format src/ tests/          # 포맷
 ```
 
-## v2 Architecture
+## v2 Architecture (참조용 — 현행 메인 아님)
+
+> ⚠️ 아래 Tier 0/1, hot/warm/cold 큐, 스캔 방향 표는 v2 시절 구조. 현재는 어댑터 푸시가 메인.
+> 역방향 hot(축 ②, `tier2_monitor`) 만 유지. 나머지는 폐기 흐름.
 
 ### 핵심 파이프라인
 

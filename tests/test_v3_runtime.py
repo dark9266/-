@@ -313,12 +313,24 @@ async def test_candidate_handler_kream_hot_source_drops(tmp_path):
 # ─── (e) v3_alert_logger — 외부 메시징 금지 + JSONL + dedup ─
 
 def test_v3_logger_forbids_external_messaging_imports():
-    """runtime.py / v3_alert_logger.py 에 외부 메시징 클라이언트 토큰 금지."""
+    """v3_alert_logger.py 는 외부 메시징 import 금지 (forensic JSONL 전용).
+
+    runtime.py 는 2026-04-15 이후 v3_discord_publisher 브릿지를 통해
+    웹훅 발송 — discord_notify_webhook 설정 참조 + V3DiscordPublisher
+    import 가 정당하므로 substring 금지 해제. 대신 discord.py 라이브러리
+    실제 import 만 금지 (import discord / from discord 라인).
+    """
     runtime_src = Path("src/core/runtime.py").read_text(encoding="utf-8")
     logger_src = Path("src/core/v3_alert_logger.py").read_text(encoding="utf-8")
-    forbidden = "discord"
-    assert forbidden not in runtime_src.lower(), "runtime.py 에 외부 메시징 토큰 금지"
-    assert forbidden not in logger_src.lower(), "v3_alert_logger.py 에 외부 메시징 토큰 금지"
+    # alert_logger 는 여전히 discord 토큰 금지 (forensic 순수성)
+    assert "discord" not in logger_src.lower(), (
+        "v3_alert_logger.py 는 외부 메시징 토큰 금지 (forensic JSONL 전용)"
+    )
+    # runtime.py 는 discord.py 라이브러리 직접 import 만 금지
+    for line in runtime_src.splitlines():
+        s = line.strip()
+        assert not s.startswith("import discord"), f"runtime.py 에 discord 라이브러리 직접 import 금지: {s}"
+        assert not s.startswith("from discord"), f"runtime.py 에 discord 라이브러리 직접 import 금지: {s}"
 
 
 async def test_v3_logger_append_and_dedup(tmp_path):
