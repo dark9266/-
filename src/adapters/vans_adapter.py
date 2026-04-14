@@ -174,11 +174,14 @@ class VansAdapter:
                 item["_keyword"] = keyword
                 products.append(item)
 
-        # 경로 2: 카테고리 HTML 리스팅 (discovery 전용)
-        for category in ("SHOES", "MEN", "WOMEN", "KIDS"):
+        # 경로 2: 카테고리 HTML 리스팅 (주력 — 실측 2026-04-14)
+        # ``shoes`` 단일 카테고리만으로 677 uniq 모델 + 6개 하위 카테고리로
+        # ~771 uniq 합집합. 각 카드가 **price_krw 포함** 이므로 경로 1 키워드
+        # 검색보다 훨씬 풍부하다 (키워드 경로는 fallback).
+        for category in ("shoes", "vanspremium", "new", "old-skool", "authentic", "slip-on"):
             try:
                 cat_items = await http.fetch_category_models(
-                    category=category, max_pages=30
+                    category=category, max_pages=40
                 )
             except Exception:
                 logger.exception("[vans] 카테고리 덤프 실패: %s", category)
@@ -189,14 +192,14 @@ class VansAdapter:
                 if not model or model in seen_models:
                     continue
                 seen_models.add(model)
-                # price=0 은 match_to_kream 가 CandidateMatched 대신 queue 로 보냄
+                price = int(item.get("price_krw") or item.get("price") or 0)
                 products.append(
                     {
                         "model_number": model,
                         "name": item.get("name") or "",
                         "brand": item.get("brand") or "Vans",
                         "url": item.get("url") or _build_url(model),
-                        "price": 0,
+                        "price": price,
                         "is_sold_out": False,
                         "_category": category,
                     }

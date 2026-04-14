@@ -253,34 +253,44 @@ class VansCrawler:
         return results
 
     async def fetch_category_models(
-        self, category: str = "SHOES", max_pages: int = 30
+        self, category: str = "shoes", max_pages: int = 40
     ) -> list[dict]:
-        """카테고리 HTML 리스팅에서 모델코드 + 이름 discovery.
+        """카테고리 HTML 리스팅 전수 덤프 — 모델코드 + 이름 + 가격.
 
-        `search_products` 는 키워드 5개 seed 로 약 20건만 긁지만, Vans 공식몰
-        ``/category/{cat}`` 페이지는 페이지당 ~25 모델씩 수백 페이지까지
-        열려있다. 가격/사이즈 정보는 없고 모델코드와 대략적 상품명(alt) 만
-        얻지만 kream_collect_queue discovery 용도로는 충분하다.
+        Vans 공식몰 ``/category/{slug}`` 는 페이지당 **25 모델**, ``?page=N``
+        쿼리 파라미터로 페이지네이션. 2026-04-14 실측 기준 ``shoes`` 단일
+        카테고리만으로 677 uniq 모델 (28 pages). 기본 정렬은 *품절 상품
+        제외* 가 적용되어 있어 리스팅에 노출된 카드는 전부 재고 있음 —
+        ``is_sold_out=False`` 로 반환.
+
+        파서 전략
+        ---------
+        - ``<li class="plp-grid-item`` 기준으로 타일 단위 split.
+        - 각 타일 블록 안에서:
+            · ``href="/PRODUCT/{MODEL}"`` → 모델코드 (SKU 겸용)
+            · ``alt="{name}"`` → 상품명 (첫 매칭)
+            · ``\\d{2,3},\\d{3}\\s*원`` → 가격 (마지막 매칭 — 할인가 우선)
+        - 가격 매칭은 *마지막 매칭* 을 채택해 "정가 → 할인가" 노출 시
+          할인가가 선택되도록 함.
 
         Returns
         -------
         list[dict]
-            `[{"model_number": "VN000...", "name": "...", "url": "..."}]`.
-            중복 모델코드는 dedup. 품절/비활성 필터는 없음 (카테고리 HTML
-            에서는 판별 불가).
+            ``[{"model_number": "VN000...", "name": "...", "price_krw": int,
+            "url": "...", "brand": "Vans", "is_sold_out": False}]``.
+            중복 모델코드는 dedup.
         """
         client = await self._get_client()
         seen: set[str] = set()
         results: list[dict] = []
 
-        # 상품 카드 컨텍스트에서 가장 가까운 alt 를 짝짓기 위한 근사 파서.
-        # 정확한 블록 매칭보다는 "카드 경계 ≒ product-tile-main 시작점" 휴리스틱.
-        _card_pat = re.compile(
-            r'product-tile-main.*?href="/PRODUCT/([A-Z0-9]{5,20})".*?alt="([^"]{2,80})"',
-            re.DOTALL,
-        )
+        href_re = re.compile(r'href="/PRODUCT/([A-Z0-9]{5,20})"')
+        alt_re = re.compile(r'alt="([^"]{2,80})"')
+        price_re = re.compile(r'(\d{2,3}(?:,\d{3})+)\s*원')
 
+        last_page_scanned = 0
         for page in range(1, max_pages + 1):
+            last_page_scanned = page
             try:
                 async with self._rate_limiter.acquire():
                     resp = await client.get(
@@ -301,20 +311,40 @@ class VansCrawler:
                 break
 
             html = resp.text
+            tiles = html.split('<li class="plp-grid-item')
             page_new = 0
-            for m in _card_pat.finditer(html):
-                model = m.group(1).strip()
-                name = m.group(2).strip()
-                # alt 는 Handlebars 템플릿 토큰({{...}}) 인 경우 스킵
-                if name.startswith("{{"):
-                    name = ""
+            for tile in tiles[1:]:
+                # 타일 경계 — 다음 </li> 까지 잘라 인접 타일 오염 방지.
+                end = tile.find("</li>")
+                block = tile[:end] if end > 0 else tile
+
+                m_href = href_re.search(block)
+                if not m_href:
+                    continue
+                model = m_href.group(1).strip()
                 if not model or model in seen:
                     continue
+
+                m_alt = alt_re.search(block)
+                name = m_alt.group(1).strip() if m_alt else ""
+                # Handlebars 템플릿 토큰 제거
+                if name.startswith("{{"):
+                    name = ""
+
+                # 가격 매칭 — 마지막 매칭(할인가) 우선
+                price_krw = 0
+                matches = price_re.findall(block)
+                if matches:
+                    cleaned = matches[-1].replace(",", "")
+                    if cleaned.isdigit():
+                        price_krw = int(cleaned)
+
                 seen.add(model)
                 results.append(
                     {
                         "model_number": model,
                         "name": name,
+                        "price_krw": price_krw,
                         "url": f"{BASE_URL}/PRODUCT/{model}",
                         "brand": "Vans",
                         "is_sold_out": False,
@@ -323,14 +353,13 @@ class VansCrawler:
                 page_new += 1
 
             if page_new == 0:
-                # 새 모델이 없으면 종료 (HTML 템플릿 fallback 가능성)
                 break
 
         logger.info(
             "Vans 카테고리 %s 덤프: %d 모델 (%d페이지 스캔)",
             category,
             len(results),
-            page,
+            last_page_scanned,
         )
         return results
 
