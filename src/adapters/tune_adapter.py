@@ -33,7 +33,7 @@ from src.adapters._collect_queue import enqueue_collect_batch
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.crawlers.tune import _parse_variant_title
-from src.matcher import normalize_model_number
+from src.matcher import extract_model_from_name, normalize_model_number
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +274,23 @@ class TuneAdapter:
             seen_keys.add(key)
 
             kream_row = kream_index.get(key)
+            match_model = sku
+
+            if kream_row is None:
+                # product title 에서 실제 모델번호 추출 fallback
+                # (튠 NB 계열 — variant SKU 는 내부 코드(`NBPFEB737B`), 실제 모델
+                # 번호는 product title `U1906LAI` 에 노출) — 카시나와 동일 패턴.
+                product_title = item.get("title") or ""
+                name_model = extract_model_from_name(product_title) or ""
+                if name_model:
+                    name_key = _strip_key(name_model)
+                    if name_key and name_key != key and name_key not in seen_keys:
+                        alt = kream_index.get(name_key)
+                        if alt is not None:
+                            kream_row = alt
+                            match_model = name_model
+                            seen_keys.add(name_key)
+
             if kream_row is None:
                 pending_collect.append(self._build_collect_row(item, sku))
                 continue
@@ -317,7 +334,7 @@ class TuneAdapter:
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
-                model_no=normalize_model_number(sku),
+                model_no=normalize_model_number(match_model),
                 retail_price=price,
                 size=item.get("size") or "",
                 url=url,
