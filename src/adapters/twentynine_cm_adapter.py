@@ -35,9 +35,11 @@ logger = logging.getLogger(__name__)
 # 크림 커버리지와 겹치는 핵심 브랜드 — 역방향 BRAND_SOURCES 와 정렬.
 # 29CM 는 카테고리 코드 기반 덤프가 아닌 키워드 검색이 주력이라
 # 브랜드명 자체를 키워드로 사용한다.
+# ⚠️ Jordan 키워드 전체 제외 — 29CM 는 실제 Jordan 스니커를 판매하지
+# 않으며, "Jordan" 은 치약 브랜드 "조르단"(100건), "조던"/"Air Jordan"
+# 둘 다 JILLSTUART 가방/0건 등 전부 false positive (실측 2026-04-14).
 DEFAULT_BRAND_KEYWORDS: tuple[str, ...] = (
     "Nike",
-    "Jordan",
     "Adidas",
     "New Balance",
     "Salomon",
