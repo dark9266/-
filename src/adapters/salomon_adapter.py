@@ -31,11 +31,13 @@ from src.matcher import normalize_model_number
 logger = logging.getLogger(__name__)
 
 
-# 살로몬 SKU = 크림 모델번호. 두 가지 패턴 존재.
+# 살로몬 SKU = 크림 모델번호. 세 가지 패턴 존재.
 #  * `L\d{8}` (3,553 variants, kream 185건) — 표준 신상 SKU
 #  * `LC\d{7}` (1,358 variants, kream 56건) — L'ART 콜라보/의류 SKU
-# 이 패턴 외 variant 는 drop.
-SALOMON_SKU_RE = re.compile(r"^(?:L\d{8}|LC\d{7})$")
+#  * `LD\d{7}` (1,063 variants, kream 3건) — 의류/액세서리 라인. 현재
+#    크림 교집합은 3건이지만 collect_queue 후보로 쌓아두면 향후 크림 등재
+#    시 자동 회수. invalid_sku 로 버리던 1k 건 구제.
+SALOMON_SKU_RE = re.compile(r"^(?:L\d{8}|LC\d{7}|LD\d{7})$")
 
 BASE_URL = "https://salomon.co.kr"
 

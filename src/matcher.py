@@ -114,7 +114,7 @@ def extract_model_from_name(name: str) -> str | None:
     # 크림 kream_products 에 L+8 185건, LC+7 56건 존재. 29cm 살로몬 상품명은
     # `XT-위스퍼_L47801400` 처럼 언더스코어 접두라 \b 매칭이 실패 →
     # 명시적 non-alnum 경계로 추출.
-    m = re.search(r"(?:^|[^A-Z0-9])(LC\d{7}|L\d{8})(?:$|[^A-Z0-9])", text)
+    m = re.search(r"(?:^|[^A-Z0-9])(LC\d{7}|LD\d{7}|L\d{8})(?:$|[^A-Z0-9])", text)
     if m:
         return normalize_model_number(m.group(1))
 
