@@ -63,6 +63,14 @@ VENDOR_BLACKLIST: frozenset[str] = frozenset({
     "Birkenstock",
     "Dr. Martens",
     "Arc'teryx",
+    # 2026-04-15 추가 — page1 진단으로 kream 0행 확정 vendor.
+    # scan-debugger 보고: NO_HIT 14건 / kream 보유 0건. matched 손실 0.
+    "TTT MSW",
+    "Nancy",
+    "Oakley",
+    "Sneeze Magazine",
+    "PWA",
+    "Tabi Footwear",
 })
 
 
