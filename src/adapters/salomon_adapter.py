@@ -31,8 +31,11 @@ from src.matcher import normalize_model_number
 logger = logging.getLogger(__name__)
 
 
-# 살로몬 SKU = 크림 모델번호. "L" + 8자리 숫자 고정. 이 패턴 외 variant 는 drop.
-SALOMON_SKU_RE = re.compile(r"^L\d{8}$")
+# 살로몬 SKU = 크림 모델번호. 두 가지 패턴 존재.
+#  * `L\d{8}` (3,553 variants, kream 185건) — 표준 신상 SKU
+#  * `LC\d{7}` (1,358 variants, kream 56건) — L'ART 콜라보/의류 SKU
+# 이 패턴 외 variant 는 drop.
+SALOMON_SKU_RE = re.compile(r"^(?:L\d{8}|LC\d{7})$")
 
 BASE_URL = "https://salomon.co.kr"
 

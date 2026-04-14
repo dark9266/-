@@ -43,7 +43,12 @@ from src.utils.rate_limiter import AsyncRateLimiter
 logger = setup_logger("hoka_crawler")
 
 BASE_URL = "https://www.hoka.com"
-COVEO_PATH = "/on/demandware.store/Sites-HOKA-US-Site/en_US/Coveo-Show"
+# 2026-04-14: DataDome 이 Coveo XHR 엔드포인트만 선별 차단(403).
+# 스토어프론트 HTML 검색 페이지(`/en/us/search?q=`) 는 200 OK 로 동일한
+# tile-row 그리드를 제공해 같은 파서로 처리 가능 → 프록시·챌린지 우회 없이
+# HTML 경로로 전환.
+SEARCH_PATH = "/en/us/search"
+COVEO_PATH = "/on/demandware.store/Sites-HOKA-US-Site/en_US/Coveo-Show"  # 레거시 — 폴백 유지
 
 
 def _redact_proxy(url: str) -> str:
@@ -172,15 +177,60 @@ def _extract_analytics_masters(text: str) -> list[dict]:
 def _extract_tiles_from_html(text: str) -> list[HokaTile]:
     """HTML 파싱 → HokaTile 리스트.
 
-    전략 (2026-04-14 재작성): 메인 그리드 `<div class="tile-row ..."` 블록 단위로
-    자르고, 각 블록의 `data-tile-analytics` JSON customData 에서 master/name/sku
-    를 추출. 가격·href 는 블록 내 regex 로 보강. 레거시 `tile-suggest` 블록은
-    autosuggest 드롭다운 (메인 그리드 아님) 이라 파싱 대상에서 제외한다.
-
-    Fallback: tile-row 미존재 시(이전 응답 포맷) tile-suggest 블록을 보조 파싱.
+    전략 (2026-04-14 HTML search 전환):
+    1) 스토어프론트 HTML 검색 페이지(`/en/us/search`)는
+       `<div class="product" data-pid data-master-id>` 블록 단위로 렌더링.
+       각 블록의 이미지 URL `/{master}-{COLOR}_N.png` 에서 색상 코드,
+       JSON `&quot;title&quot;:&quot;...&quot;` 에서 상품명을 추출.
+    2) 레거시 Coveo-Show 응답(`<div class="tile-row data-tile-analytics>`)
+       도 지원 — analytics customData JSON 에서 master/name/sku.
+    3) autosuggest 드롭다운 `tile-suggest` 폴백.
     """
     tiles: list[HokaTile] = []
     seen_skus: set[str] = set()
+
+    # 1) 스토어프론트 `<div class="product" data-pid ...>` 블록 (HTML search)
+    product_blocks = re.split(r'(?=<div class="product" data-pid=)', text)
+    if len(product_blocks) > 1:
+        for block in product_blocks[1:]:
+            master_m = re.search(r'data-master-id="(\d+)"', block)
+            if not master_m:
+                continue
+            master = master_m.group(1)
+            color_m = re.search(rf"/{master}-([A-Z0-9]{{2,10}})_", block)
+            if not color_m:
+                continue
+            color = color_m.group(1)
+            sku = f"{master}-{color}"
+            if sku in seen_skus:
+                continue
+            title_m = re.search(r"&quot;title&quot;:&quot;([^&]+)&quot;", block)
+            name = html.unescape(title_m.group(1)).strip() if title_m else ""
+            price_m = PRICE_RE.search(block)
+            try:
+                price_usd = float(price_m.group(1)) if price_m else 0.0
+            except ValueError:
+                price_usd = 0.0
+            href_m = TILE_HREF_RE.search(block)
+            href = href_m.group(1) if href_m else f"/en/us/p/{master}.html?dwvar_{master}_color={color}"
+            block_lower = block.lower()
+            available = "sold-out" not in block_lower and "notify me" not in block_lower
+            seen_skus.add(sku)
+            tiles.append(
+                HokaTile(
+                    master_id=master,
+                    color_code=color,
+                    sku=sku,
+                    name=name,
+                    href=href,
+                    url=f"{BASE_URL}{href}",
+                    upc="",
+                    price_usd=price_usd,
+                    available=available,
+                )
+            )
+        if tiles:
+            return tiles
 
     positions = [m.start() for m in TILE_ROW_START_RE.finditer(text)]
     if positions:
@@ -312,11 +362,29 @@ class HokaCrawler:
             self._client = AsyncSession(**kwargs)
         return self._client
 
+    async def _warmup(self) -> None:
+        """첫 요청 전 루트 방문 — DataDome 쿠키/세션 확보용."""
+        if getattr(self, "_warmed", False):
+            return
+        client = await self._get_client()
+        try:
+            await client.get(f"{BASE_URL}/")
+        except Exception:  # warmup 실패해도 본 요청은 진행
+            logger.debug("호카 warmup 실패 — 본 요청 계속")
+        self._warmed = True
+
     async def _fetch_coveo(self, keyword: str) -> str:
         client = await self._get_client()
-        url = f"{BASE_URL}{COVEO_PATH}"
+        await self._warmup()
+        # 2026-04-14: Coveo XHR 이 DataDome 에 선별 차단되어 HTML search 로 전환.
+        # 동일 `tile-row` 그리드를 반환하므로 기존 파서 그대로 재사용.
+        url = f"{BASE_URL}{SEARCH_PATH}"
         async with self._rate_limiter.acquire():
-            resp = await client.get(url, params={"q": keyword, "qs": "1"})
+            resp = await client.get(
+                url,
+                params={"q": keyword},
+                headers={"Referer": f"{BASE_URL}/en/us/"},
+            )
         status = getattr(resp, "status_code", 0)
         if status != 200:
             # DataDome 봇 차단이 걸리면 전 키워드가 동일 상태로 쏟아진다.
