@@ -103,13 +103,15 @@ class Settings(BaseSettings):
     watchlist_max_age_hours: int = 48  # 워치리스트 항목 최대 유지 시간
 
     # 실시간 DB
-    realtime_collect_interval_hours: int = 6       # 신규 상품 수집 주기
+    realtime_collect_interval_hours: int = 1       # 신규 상품 수집 주기 (1h 레이턴시 목표)
     realtime_hot_refresh_minutes: int = 30         # hot 상품 시세 갱신 주기
     realtime_cold_refresh_hours: int = 6           # cold 상품 시세 갱신 주기
     realtime_volume_check_minutes: int = 60        # 거래량 체크 주기
     realtime_spike_threshold: float = 2.0          # 거래량 급등 판정 배율 (이전 대비)
     realtime_hot_volume_min: int = 5               # hot tier 최소 7일 거래량
-    realtime_collect_pages_per_keyword: int = 5    # 수집 시 키워드당 페이지 수
+    # 1페이지(sort=date) 만으로도 신상 포착 충분 — 1h 주기에서는 쌓이는 신상 적음.
+    # 44 keywords × 1 page × 24 runs = 1,056 calls/day (기존 5×4=880 대비 +20%).
+    realtime_collect_pages_per_keyword: int = 1    # 수집 시 키워드당 페이지 수
     realtime_refresh_batch_size: int = 50          # 1회 시세 갱신 배치 크기
 
     # v2 연속 배치 스캔
