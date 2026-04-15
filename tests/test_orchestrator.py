@@ -636,6 +636,73 @@ async def test_alert_cooldown_allows_signal_upgrade(bus, store):
 
 
 # ----------------------------------------------------------------------
+# 4c) retail_products 자동 영속화 — 22 어댑터 중앙 감사 choke point
+# ----------------------------------------------------------------------
+async def test_retail_products_persisted_centrally(bus, store):
+    """CandidateMatched 처리 시 retail_products 에 자동 업서트.
+
+    2026-04-15 Phase B-4: 기존엔 reverse_scanner 만 retail_products 에
+    기록해 15 소싱처 커버리지 갭. 오케스트레이터 중앙 hook 로 22 어댑터
+    전부에 대해 감사 레코드가 남아야 한다.
+    """
+    orch = Orchestrator(bus, store, _throttle())
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return None
+
+    async def profit_handler(event):
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        # 서로 다른 두 소싱처에서 동일 model_no — 각 row 한 건씩
+        c1 = CandidateMatched(
+            source="nbkorea", kream_product_id=99, model_no="U574WR2",
+            retail_price=109000, size="270", url="https://nb.com/p/1",
+        )
+        c2 = CandidateMatched(
+            source="abcmart", kream_product_id=99, model_no="U574WR2",
+            retail_price=105000, size="270", url="https://abc.com/p/2",
+        )
+        ckpt1 = await store.record(c1, consumer="candidate")
+        ckpt2 = await store.record(c2, consumer="candidate")
+        await orch._process_candidate(c1, ckpt1)
+        await orch._process_candidate(c2, ckpt2)
+
+        db = store._require_db()
+        cur = await db.execute(
+            "SELECT source, product_id, model_number, url FROM retail_products "
+            "WHERE model_number = ? ORDER BY source",
+            ("U574WR2",),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        assert len(rows) == 2
+        sources = sorted(r["source"] for r in rows)
+        assert sources == ["abcmart", "nbkorea"]
+
+        # 같은 (source, product_id) 로 재처리 — 중복 생성 없이 업서트
+        await orch._process_candidate(c1, await store.record(c1, "candidate"))
+        cur = await db.execute(
+            "SELECT COUNT(*) AS n FROM retail_products WHERE model_number = ?",
+            ("U574WR2",),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        assert row["n"] == 2, "UNIQUE(source,product_id) 업서트 실패"
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
 # 5) 중복 handler 등록 → ValueError
 # ----------------------------------------------------------------------
 async def test_duplicate_handler_registration_raises(bus, store):

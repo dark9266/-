@@ -84,6 +84,26 @@ CREATE TABLE IF NOT EXISTS alert_sent (
 CREATE INDEX IF NOT EXISTS idx_alert_sent_kream ON alert_sent(kream_product_id);
 """
 
+# 감사 테이블 — 어댑터가 매칭시킨 후보를 영속화. 사후 분석/false positive
+# 조사에 사용. 22 어댑터 전부에 대해 중앙 choke point 에서 기록되므로
+# 어댑터별 코드 수정 불필요. UNIQUE(source, product_id) 로 자연 dedup.
+_RETAIL_PRODUCTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS retail_products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    model_number TEXT NOT NULL,
+    brand TEXT DEFAULT '',
+    url TEXT DEFAULT '',
+    image_url TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source, product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_retail_model ON retail_products(model_number);
+"""
+
 
 class Orchestrator:
     """이벤트 드리븐 파이프라인 오케스트레이터."""
@@ -155,8 +175,46 @@ class Orchestrator:
             return
         db = self._checkpoints._require_db()  # noqa: SLF001
         await db.executescript(_ALERT_SENT_SCHEMA)
+        await db.executescript(_RETAIL_PRODUCTS_SCHEMA)
         await db.commit()
         self._alert_schema_ready = True
+
+    async def _persist_retail_product(self, event: CandidateMatched) -> None:
+        """감사 목적으로 매칭된 후보를 retail_products 에 영속화.
+
+        CandidateMatched 는 name/brand 를 담지 않으므로 model_no 를 name 및
+        product_id 대체값으로 사용. 풍부한 메타는 향후 event 필드 확장 시
+        주입 가능 (UNIQUE(source, product_id) 덕분에 업서트 호환).
+
+        실패는 감사 경로가 메인 파이프라인을 멈추지 않도록 흡수.
+        """
+        if not event.model_no:
+            return
+        try:
+            db = self._checkpoints._require_db()  # noqa: SLF001
+            await db.execute(
+                """INSERT INTO retail_products
+                    (source, product_id, name, model_number, url, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(source, product_id) DO UPDATE SET
+                    model_number = excluded.model_number,
+                    url = excluded.url,
+                    updated_at = CURRENT_TIMESTAMP""",
+                (
+                    event.source,
+                    event.model_no,
+                    event.model_no,  # name fallback — 어댑터 확장 시 교체
+                    event.model_no,
+                    event.url or "",
+                ),
+            )
+            await db.commit()
+        except aiosqlite.Error:
+            logger.debug(
+                "retail_products 영속화 실패 (비치명): source=%s model=%s",
+                event.source,
+                event.model_no,
+            )
 
     async def start(self) -> None:
         """3개 consumer task 기동."""
@@ -343,6 +401,12 @@ class Orchestrator:
             logger.warning("candidate handler 미등록 — 이벤트 drop")
             await self._mark(ckpt_id)
             return
+
+        # 사후 감사용 — 22 어댑터 전부의 매칭 후보를 중앙에서 영속화.
+        # 2026-04-15 Phase B-4: 기존엔 reverse_scanner 만 retail_products 에
+        # 기록 → 15 소싱처 커버리지 갭. 여기로 옮겨 단일 choke point.
+        await self._persist_retail_product(event)
+
         result: ProfitFound | None = None
         try:
             result = await handler(event)
