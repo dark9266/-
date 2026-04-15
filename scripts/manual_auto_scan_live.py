@@ -1,23 +1,27 @@
-"""자동스캔 실전 테스트.
+"""자동스캔 실전 수동 스크립트.
 
 크림 인기상품 5개 수집 → 상세 조회 → 무신사 매칭까지 확인.
 실제 네트워크 요청을 사용하므로 수동 실행 전용.
+
+※ 과거 tests/ 하위에 있어 pytest 자동 수집으로 실운영 크림 예산 오염
+  (2026-04-15 WARN 확정). scripts/ 이동 + kream_purpose 래핑 격리.
+  tests/ 로 되돌리지 말 것.
 """
 
 import asyncio
 import sys
 from pathlib import Path
 
-# 프로젝트 루트를 path에 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.core.kream_budget import kream_purpose
 from src.crawlers.kream import kream_crawler
 from src.crawlers.musinsa_httpx import musinsa_crawler
 from src.matcher import model_numbers_match, normalize_model_number
 from src.profit_calculator import _normalize_size, analyze_auto_scan_opportunity
 
 
-async def test_live_auto_scan():
+async def _run_live_auto_scan():
     """크림 인기상품 5개 → 무신사 매칭 실전 테스트."""
     print("=" * 60)
     print("자동스캔 실전 테스트 시작")
@@ -192,5 +196,10 @@ async def test_live_auto_scan():
             )
 
 
+async def main() -> None:
+    with kream_purpose("live_test"):
+        await _run_live_auto_scan()
+
+
 if __name__ == "__main__":
-    asyncio.run(test_live_auto_scan())
+    asyncio.run(main())
