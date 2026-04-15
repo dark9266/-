@@ -1,0 +1,31 @@
+{
+  "_meta": {
+    "purpose": "절대 바뀌면 안 되는 소싱처↔크림 매칭 정답셋. 코드 수정 시 이 페어 중 하나라도 깨지면 커밋 차단.",
+    "created_at": "2026-04-15",
+    "policy": "product_id 고정만 검증. 가격/거래량/재고는 시세 변동치라 대상 아님.",
+    "refresh_cadence": "주 1회 일요일 새벽 수동 확인. 크림 product_id가 변경되면 실물 확인 후 업데이트.",
+    "coverage_gap": "Phase B-4 완료 시 15 소싱처 추가 예정 (adidas/abcmart/nbkorea/salomon/arcteryx/vans/stussy/patagonia/beaker/thehandsome/puma/asics/thenorthface/hoka/converse/eql/worksout)"
+  },
+  "pairs": [
+    {"id": 1,  "source": "29cm",       "model_number": "FV1920-001",  "kream_product_id": 396523, "kream_name": "(W) 나이키 에어맥스 뮤즈 블랙 앤 메탈릭 실버"},
+    {"id": 2,  "source": "29cm",       "model_number": "HQ7540-100",  "kream_product_id": 619729, "kream_name": "(W) 나이키 샥스 Z 화이트 메탈릭 골드"},
+    {"id": 3,  "source": "29cm",       "model_number": "AR3566-002",  "kream_product_id": 21441,  "kream_name": "(W) 나이키 샥스 TL 블랙 앤 맥스 오렌지"},
+    {"id": 4,  "source": "29cm",       "model_number": "AR3565-004",  "kream_product_id": 250825, "kream_name": "(W) 나이키 샥스 R4 블랙"},
+    {"id": 5,  "source": "29cm",       "model_number": "IH9256-010",  "kream_product_id": 791668, "kream_name": "나이키 ACG 클럽 언스트럭처 캡 블랙"},
+    {"id": 6,  "source": "musinsa",    "model_number": "DC0774-101",  "kream_product_id": 113527, "kream_name": "(W) 조던 1 로우 블랙 앤 화이트"},
+    {"id": 7,  "source": "musinsa",    "model_number": "553558-040",  "kream_product_id": 36597,  "kream_name": "조던 1 로우 블랙 파티클 그레이"},
+    {"id": 8,  "source": "musinsa",    "model_number": "IB6651-003",  "kream_product_id": 762147, "kream_name": "Nike Dunk Low Retro SE Phantom"},
+    {"id": 9,  "source": "musinsa",    "model_number": "HQ2053-002",  "kream_product_id": 684305, "kream_name": "Nike Dunk Low Gore-Tex Light Bone Mink Brown"},
+    {"id": 10, "source": "musinsa",    "model_number": "IO4244-100",  "kream_product_id": 745488, "kream_name": "(W) Nike Dunk Low Sail Pearl Pink"},
+    {"id": 11, "source": "nike",       "model_number": "AV3595-013",  "kream_product_id": 616207, "kream_name": "나이키 샥스 TL 블랙 유니버시티 골드"},
+    {"id": 12, "source": "nike",       "model_number": "CD6404-105",  "kream_product_id": 470481, "kream_name": "나이키 P-6000 화이트 메탈릭 실버"},
+    {"id": 13, "source": "nike",       "model_number": "BV1358-003",  "kream_product_id": 138416, "kream_name": "나이키 줌 보메로 5 SP 블랙"},
+    {"id": 14, "source": "wconcept",   "model_number": "FZ2068-100",  "kream_product_id": 534188, "kream_name": "(W) 나이키 에어맥스 SNDR 화이트 앤 블랙"},
+    {"id": 15, "source": "wconcept",   "model_number": "HQ7540-002",  "kream_product_id": 612674, "kream_name": "(W) 나이키 샥스 Z 블랙 유니버시티 레드"},
+    {"id": 16, "source": "kasina",     "model_number": "IH9256-010",  "kream_product_id": 791668, "kream_name": "나이키 ACG 클럽 언스트럭처 캡 블랙"},
+    {"id": 17, "source": "kasina",     "model_number": "HQ7540-002",  "kream_product_id": 612674, "kream_name": "(W) 나이키 샥스 Z 블랙 유니버시티 레드"},
+    {"id": 18, "source": "grandstage", "model_number": "U574WR2",     "kream_product_id": 74714,  "kream_name": "뉴발란스 574 헤리티지 그레이"},
+    {"id": 19, "source": "grandstage", "model_number": "U574LGMG",    "kream_product_id": 484906, "kream_name": "뉴발란스 574 레거시 그린 그레이"},
+    {"id": 20, "source": "tune",       "model_number": "HF0074-001",  "kream_product_id": 305982, "kream_name": "(W) 나이키 에어맥스 플러스 TNPO 블랙"}
+  ]
+}

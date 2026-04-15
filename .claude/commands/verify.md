@@ -2,9 +2,10 @@
 
 아래 순서로 실행하고 결과를 요약해주세요:
 
-1. **verify.py**: `cd /mnt/c/Users/USER/Desktop/크림봇 && PYTHONPATH=. python3 scripts/verify.py`
-2. **pytest**: `cd /mnt/c/Users/USER/Desktop/크림봇 && python3 -m pytest tests/test_kream_realtime.py tests/test_matcher.py -v`
-3. **문법 검증**: 최근 수정된 .py 파일을 `python3 -c "import ast; ast.parse(open('<파일>').read())"` 로 검증
+1. **canary**: `cd /mnt/c/Users/USER/Desktop/크림봇 && python3 scripts/run_canary.py` (소싱처↔크림 매칭 정답셋 20페어. 실패 시 즉시 중단)
+2. **verify.py**: `cd /mnt/c/Users/USER/Desktop/크림봇 && PYTHONPATH=. python3 scripts/verify.py`
+3. **pytest**: `cd /mnt/c/Users/USER/Desktop/크림봇 && python3 -m pytest tests/test_kream_realtime.py tests/test_matcher.py -v`
+4. **문법 검증**: 최근 수정된 .py 파일을 `python3 -c "import ast; ast.parse(open('<파일>').read())"` 로 검증
 
 각 단계에서:
 - 성공 시 다음 단계로 진행
