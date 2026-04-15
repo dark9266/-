@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -33,6 +34,14 @@ logger = setup_logger("kream_budget")
 BUDGET: int = int(os.getenv("KREAM_DAILY_CAP", "10000"))
 WARN_RATIO: float = 0.9
 
+# 캡 초과 캐시 — DB 재조회/로그 스팸 동시 억제.
+# check_budget 은 각 kream 호출 전 호출되므로, 초과 상태에서 루프가 10초마다
+# 재진입하면 기존에는 매번 DB COUNT + CRITICAL 로그가 찍혀 kream_budget.log
+# 가 1,700+ 줄로 불어났다. 캐시 TTL 동안은 쿼리 없이 즉시 예외.
+_EXCEEDED_CACHE_TTL_SEC: float = 30.0
+_LOG_THROTTLE_SEC: float = 60.0
+_exceeded_until: float = 0.0
+_last_exceeded_log_at: float = 0.0
 _warned_today: str | None = None
 
 # 호출 원점(워커/루프) 태그. 각 스케줄 루프가 kream 호출 직전에
@@ -80,12 +89,37 @@ async def _count_last_24h() -> int:
 
 
 async def check_budget() -> None:
-    """호출 전 체크. 100% 초과 시 예외."""
-    global _warned_today
+    """호출 전 체크. 100% 초과 시 예외.
+
+    초과 상태가 관찰되면 `_exceeded_until` 타임스탬프까지 DB 쿼리/로그
+    없이 즉시 예외를 던져 루프 스토밍을 흡수한다. 캐시 만료 시 재조회 →
+    정상 복귀하면 자동으로 캐시 해제 + INFO 로그.
+    """
+    global _warned_today, _exceeded_until, _last_exceeded_log_at
+
+    now = time.monotonic()
+    if _exceeded_until and now < _exceeded_until:
+        # 최근에 초과 확인됨 — 조용히 즉시 예외
+        raise KreamBudgetExceeded(f"exceeded (cached until +{_exceeded_until - now:.0f}s)")
+
     used = await _count_last_24h()
     if used >= BUDGET:
-        logger.critical("KREAM 일일 캡 초과: %d/%d — 파이프라인 정지", used, BUDGET)
+        was_recovered = _exceeded_until == 0.0
+        _exceeded_until = now + _EXCEEDED_CACHE_TTL_SEC
+        # 첫 초과거나 로그 쓰로틀 윈도우 경과 시에만 CRITICAL 기록
+        if was_recovered or (now - _last_exceeded_log_at) >= _LOG_THROTTLE_SEC:
+            logger.critical(
+                "KREAM 일일 캡 초과: %d/%d — 파이프라인 정지 (다음 %ds 쿼리 스킵)",
+                used, BUDGET, int(_EXCEEDED_CACHE_TTL_SEC),
+            )
+            _last_exceeded_log_at = now
         raise KreamBudgetExceeded(f"{used}/{BUDGET} calls in last 24h")
+
+    # 정상 범위 — 캐시 해제 + 복구 전이 로그
+    if _exceeded_until:
+        logger.info("KREAM 일일 캡 복구: %d/%d — 파이프라인 재개", used, BUDGET)
+        _exceeded_until = 0.0
+        _last_exceeded_log_at = 0.0
 
     if used >= int(BUDGET * WARN_RATIO):
         today = datetime.now().strftime("%Y-%m-%d")
