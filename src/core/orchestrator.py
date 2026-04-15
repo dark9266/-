@@ -104,6 +104,47 @@ CREATE TABLE IF NOT EXISTS retail_products (
 CREATE INDEX IF NOT EXISTS idx_retail_model ON retail_products(model_number);
 """
 
+# Decision Ledger — 파이프라인 결정 사후 감사.
+# 드롭/통과 양쪽 전부 기록해서 false positive 추적, 하드 플로어 튜닝,
+# 소싱처별 드롭 사유 분포 분석에 사용.
+_DECISION_LOG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS decision_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    stage TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT DEFAULT '',
+    kream_product_id INTEGER DEFAULT 0,
+    model_no TEXT DEFAULT '',
+    extra TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_decision_log_ts ON decision_log(ts);
+CREATE INDEX IF NOT EXISTS idx_decision_log_pid ON decision_log(kream_product_id);
+CREATE INDEX IF NOT EXISTS idx_decision_log_reason ON decision_log(reason);
+"""
+
+# 허용된 decision 값 — 상수로 못 박아 오타/자유문 삽입 방지.
+DECISION_PASS = "pass"
+DECISION_BLOCK = "block"
+
+# 표준 reason 코드 — 대시보드 집계용 (자유문이 섞이면 통계가 깨진다).
+REASON_SENTINEL_PRICE = "sentinel_price"         # sell_now 9,990,000 차단
+REASON_SIZE_INTERSECTION_EMPTY = "size_intersection_empty"
+REASON_SNAPSHOT_EMPTY = "snapshot_empty"
+REASON_BUDGET_EXCEEDED = "budget_exceeded"
+REASON_PROFIT_FLOOR = "profit_floor"
+REASON_ROI_FLOOR = "roi_floor"
+REASON_VOLUME_FLOOR = "volume_floor"
+REASON_COOLDOWN = "cooldown"
+REASON_SIGNAL_UPGRADE = "signal_upgrade"
+REASON_PROFIT_EMITTED = "profit_emitted"
+REASON_ALERT_SENT = "alert_sent"
+REASON_THROTTLE = "throttle_exhausted"
+REASON_HANDLER_MISSING = "handler_missing"
+REASON_HANDLER_EXCEPTION = "handler_exception"
+REASON_DEDUP_CHECKPOINT = "dedup_checkpoint"
+
 
 class Orchestrator:
     """이벤트 드리븐 파이프라인 오케스트레이터."""
@@ -176,8 +217,51 @@ class Orchestrator:
         db = self._checkpoints._require_db()  # noqa: SLF001
         await db.executescript(_ALERT_SENT_SCHEMA)
         await db.executescript(_RETAIL_PRODUCTS_SCHEMA)
+        await db.executescript(_DECISION_LOG_SCHEMA)
         await db.commit()
         self._alert_schema_ready = True
+
+    async def log_decision(
+        self,
+        stage: str,
+        decision: str,
+        reason: str,
+        *,
+        source: str = "",
+        kream_product_id: int = 0,
+        model_no: str = "",
+        extra: str = "",
+    ) -> None:
+        """Decision Ledger 쓰기 — 비치명 실패 흡수.
+
+        파이프라인 어느 단계든 호출 가능. DB 락 등으로 실패해도 메인
+        흐름을 차단해서는 안 되므로 예외는 debug 로그로 흘린다.
+        """
+        try:
+            import time as _time
+            db = self._checkpoints._require_db()  # noqa: SLF001
+            await db.execute(
+                """INSERT INTO decision_log
+                    (ts, stage, decision, reason, source, kream_product_id, model_no, extra)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    _time.time(),
+                    stage,
+                    decision,
+                    reason,
+                    source,
+                    kream_product_id,
+                    model_no,
+                    extra,
+                ),
+            )
+            await db.commit()
+        except aiosqlite.Error:
+            logger.debug(
+                "decision_log 쓰기 실패 (비치명): stage=%s reason=%s",
+                stage,
+                reason,
+            )
 
     async def _persist_retail_product(self, event: CandidateMatched) -> None:
         """감사 목적으로 매칭된 후보를 retail_products 에 영속화.
@@ -388,17 +472,29 @@ class Orchestrator:
         # deferred 락을 발생시켜 candidate 단계 영구 정지. 짧은 wait 로 스파이크 흡수.
         allowed = await self._throttle.acquire_wait(timeout=2.0)
         if not allowed:
-            self._stats["candidate_dropped_throttle"] += 1
-            self._stats["candidate_deferred"] += 1
             logger.info(
                 "candidate throttle deferred: model_no=%s", event.model_no
             )
             await self._defer(ckpt_id, "throttle_exhausted")
+            await self.log_decision(
+                "candidate", DECISION_BLOCK, REASON_THROTTLE,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
+            self._stats["candidate_dropped_throttle"] += 1
+            self._stats["candidate_deferred"] += 1
             return
 
         handler = self._candidate_handler
         if handler is None:
             logger.warning("candidate handler 미등록 — 이벤트 drop")
+            await self.log_decision(
+                "candidate", DECISION_BLOCK, REASON_HANDLER_MISSING,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
             await self._mark(ckpt_id)
             return
 
@@ -418,10 +514,22 @@ class Orchestrator:
             logger.exception(
                 "candidate handler 예외: model_no=%s", event.model_no
             )
+            await self.log_decision(
+                "candidate", DECISION_BLOCK, REASON_HANDLER_EXCEPTION,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
             await self._mark(ckpt_id)
             return
         await self._mark(ckpt_id)
         if result is not None:
+            await self.log_decision(
+                "candidate", DECISION_PASS, REASON_PROFIT_EMITTED,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
             profit_ckpt = await self._record(result, _CONSUMER_PROFIT)
             await self._process_profit(result, profit_ckpt)
 
@@ -431,6 +539,12 @@ class Orchestrator:
         handler = self._profit_handler
         if handler is None:
             logger.warning("profit handler 미등록 — 이벤트 drop")
+            await self.log_decision(
+                "profit", DECISION_BLOCK, REASON_HANDLER_MISSING,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
             await self._mark(ckpt_id)
             return
 
@@ -444,15 +558,25 @@ class Orchestrator:
                     ckpt_id,
                     event.model_no,
                 )
+                # _try_reserve_alert 내부에서 cooldown block 은 이미 기록됨.
+                # 여기 도달은 ckpt_id UNIQUE 재진입 — 별도 이유 코드로 기록.
+                await self.log_decision(
+                    "profit", DECISION_BLOCK, REASON_DEDUP_CHECKPOINT,
+                    source=event.source,
+                    kream_product_id=event.kream_product_id,
+                    model_no=event.model_no,
+                )
                 await self._mark(ckpt_id)
                 return
 
+        alert_emitted = False
         try:
             result = await handler(event)
             self._stats["profit_processed"] += 1
             if result is not None and ckpt_id is not None:
                 # 예약된 행에 실제 alert_id 기록 (없어도 동작은 무방)
                 await self._finalize_alert_row(ckpt_id, result)
+                alert_emitted = True
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -460,12 +584,25 @@ class Orchestrator:
             logger.exception(
                 "profit handler 예외: model_no=%s", event.model_no
             )
+            await self.log_decision(
+                "profit", DECISION_BLOCK, REASON_HANDLER_EXCEPTION,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
             # handler 예외 시 예약 롤백 → 재시도 가능하게
             if ckpt_id is not None:
                 await self._rollback_alert_reservation(ckpt_id)
             await self._mark(ckpt_id)
             return
         await self._mark(ckpt_id)
+        if alert_emitted:
+            await self.log_decision(
+                "profit", DECISION_PASS, REASON_ALERT_SENT,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
 
     async def _try_reserve_alert(
         self, ckpt_id: int, event: ProfitFound
@@ -500,8 +637,22 @@ class Orchestrator:
             new_rank = _SIGNAL_RANK.get(event.signal, 0)
             if new_rank <= old_rank:
                 # 쿨다운 미충족 + 업그레이드 아님 → 중복 차단
+                await self.log_decision(
+                    "profit", DECISION_BLOCK, REASON_COOLDOWN,
+                    source=event.source,
+                    kream_product_id=event.kream_product_id,
+                    model_no=event.model_no,
+                    extra=f"old={recent[0]} new={event.signal}",
+                )
                 return False
             # 업그레이드 → escape 허용 (아래 INSERT 로 계속)
+            await self.log_decision(
+                "profit", DECISION_PASS, REASON_SIGNAL_UPGRADE,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+                extra=f"old={recent[0]} new={event.signal}",
+            )
 
         cur = await db.execute(
             "INSERT OR IGNORE INTO alert_sent "

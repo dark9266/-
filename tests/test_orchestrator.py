@@ -703,6 +703,185 @@ async def test_retail_products_persisted_centrally(bus, store):
 
 
 # ----------------------------------------------------------------------
+# 4-b) Decision Ledger — 드롭/통과 계측
+# ----------------------------------------------------------------------
+async def _fetch_decisions(store: CheckpointStore) -> list[dict]:
+    db = store._require_db()
+    cur = await db.execute(
+        "SELECT stage, decision, reason, source, kream_product_id, model_no "
+        "FROM decision_log ORDER BY id"
+    )
+    rows = await cur.fetchall()
+    await cur.close()
+    return [dict(r) for r in rows]
+
+
+async def test_decision_log_pass_and_alert_sent(bus, store):
+    """수익 도출 + 알림 발송 → decision_log 에 PASS 2건 (profit_emitted, alert_sent)."""
+    orch = Orchestrator(bus, store, _throttle())
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return _sample_profit()
+
+    async def profit_handler(event):
+        return AlertSent(
+            alert_id=1,
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=999.0,
+        )
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        cand = _sample_candidate()
+        ckpt = await store.record(cand, consumer="candidate")
+        await orch._process_candidate(cand, ckpt)
+
+        rows = await _fetch_decisions(store)
+        reasons = [(r["stage"], r["decision"], r["reason"]) for r in rows]
+        assert ("candidate", "pass", "profit_emitted") in reasons
+        assert ("profit", "pass", "alert_sent") in reasons
+    finally:
+        await orch.stop()
+
+
+async def test_decision_log_throttle_block(bus, store):
+    """throttle 고갈 → candidate/block/throttle_exhausted 기록."""
+    throttle = CallThrottle(rate_per_min=1.0, burst=1)
+    # 초기 토큰 1개 선제 소진
+    await throttle.acquire_wait(timeout=1.0)
+    orch = Orchestrator(bus, store, throttle)
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return None
+
+    async def profit_handler(event):
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        cand = _sample_candidate()
+        ckpt = await store.record(cand, consumer="candidate")
+        await orch._process_candidate(cand, ckpt)
+
+        rows = await _fetch_decisions(store)
+        assert any(
+            r["stage"] == "candidate"
+            and r["decision"] == "block"
+            and r["reason"] == "throttle_exhausted"
+            for r in rows
+        )
+    finally:
+        await orch.stop()
+
+
+async def test_decision_log_handler_exception_block(bus, store):
+    """candidate handler 예외 → block/handler_exception 기록."""
+    orch = Orchestrator(bus, store, _throttle())
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        raise RuntimeError("boom")
+
+    async def profit_handler(event):
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        cand = _sample_candidate()
+        ckpt = await store.record(cand, consumer="candidate")
+        await orch._process_candidate(cand, ckpt)
+
+        rows = await _fetch_decisions(store)
+        assert any(
+            r["stage"] == "candidate"
+            and r["decision"] == "block"
+            and r["reason"] == "handler_exception"
+            for r in rows
+        )
+    finally:
+        await orch.stop()
+
+
+async def test_decision_log_cooldown_block(bus, store):
+    """동일 (pid, signal) 두 번째 알림 → profit/block/cooldown 기록."""
+    import time as _time
+
+    orch = Orchestrator(bus, store, _throttle())
+
+    fire_count = {"n": 0}
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return _sample_profit()
+
+    async def profit_handler(event):
+        fire_count["n"] += 1
+        return AlertSent(
+            alert_id=fire_count["n"],
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=_time.time(),
+        )
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        # 첫 번째 — 통과
+        cand1 = _sample_candidate()
+        ckpt1 = await store.record(cand1, consumer="candidate")
+        await orch._process_candidate(cand1, ckpt1)
+
+        # 두 번째 (다른 ckpt) — 쿨다운에 걸려야 함
+        cand2 = _sample_candidate()
+        ckpt2 = await store.record(cand2, consumer="candidate")
+        await orch._process_candidate(cand2, ckpt2)
+
+        rows = await _fetch_decisions(store)
+        assert any(
+            r["stage"] == "profit"
+            and r["decision"] == "block"
+            and r["reason"] == "cooldown"
+            for r in rows
+        )
+        # 첫 번째는 alert_sent 로 통과
+        assert any(
+            r["reason"] == "alert_sent" for r in rows
+        )
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
 # 5) 중복 handler 등록 → ValueError
 # ----------------------------------------------------------------------
 async def test_duplicate_handler_registration_raises(bus, store):
