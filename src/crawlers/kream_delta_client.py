@@ -78,6 +78,10 @@ DEFAULT_RATE_LIMIT_SEC: float = 1.5
 DEFAULT_LIGHT_PURPOSE: str = "delta_light"
 DEFAULT_SNAPSHOT_PURPOSE: str = "delta_snapshot"
 
+# 크림 센티넬 차단: bid_count=0 일 때 크림이 placeholder 가격(9,990,000 / 5,500,000 등)을
+# sell_now_price 로 반환 → 허위 차익 알림 유발. 합리적 최대치 초과 시 실제 호가 없음으로 간주.
+KREAM_SELL_NOW_MAX: int = 8_000_000
+
 
 class KreamDeltaClient:
     """델타 워처용 크림 클라이언트.
@@ -383,6 +387,13 @@ def build_snapshot_fn(
             except (TypeError, ValueError):
                 return None
             if p_int <= 0:
+                return None
+            if p_int >= KREAM_SELL_NOW_MAX:
+                logger.warning(
+                    "[v3] 크림 sell_now 센티넬 차단: pid_size=%s price=%d",
+                    sp.get("size"),
+                    p_int,
+                )
                 return None
             return {
                 "size": str(sp.get("size") or "").strip(),
