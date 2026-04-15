@@ -298,7 +298,7 @@ class V3Runtime:
                 bid_count=0,
             )
 
-            # 하드 플로어 검증
+            # 하드 플로어 검증 — 보수적 대표가(MIN) 기준 통과 여부
             if result.net_profit < min_profit:
                 return None
             if result.roi < min_roi:
@@ -307,6 +307,33 @@ class V3Runtime:
                 return None
 
             signal: Signal = determine_signal(result.net_profit, volume_7d)
+
+            # 사이즈별 수익 테이블 — 알림에서 사용. retail_price 는
+            # 어댑터 단계에서 사이즈별 구분이 없어 동일 소싱가를 전 사이즈에 적용.
+            size_profits: list[dict] = []
+            for sp in snapshot.get("size_prices") or []:
+                try:
+                    sell_px = int(sp.get("sell_now_price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if sell_px <= 0:
+                    continue
+                per = calculate_size_profit(
+                    retail_price=event.retail_price,
+                    kream_sell_price=sell_px,
+                    in_stock=True,
+                    bid_count=0,
+                )
+                size_profits.append(
+                    {
+                        "size": str(sp.get("size") or ""),
+                        "kream_sell_price": sell_px,
+                        "net_profit": per.net_profit,
+                        "roi": per.roi,
+                    }
+                )
+            # 순수익 내림차순 정렬 (상위 마진 우선 노출)
+            size_profits.sort(key=lambda r: r["net_profit"], reverse=True)
 
             return ProfitFound(
                 source=event.source,
@@ -320,6 +347,7 @@ class V3Runtime:
                 signal=signal.value,
                 volume_7d=volume_7d,
                 url=event.url,
+                size_profits=tuple(size_profits),
             )
 
         return _handler
@@ -369,6 +397,7 @@ class V3Runtime:
         self._discord_publisher = V3DiscordPublisher(
             webhook,
             channel_send=self._discord_channel_send,
+            db_path=str(self._db_path),
         )
         inner_handler = build_profit_handler(self._alert_logger)
         self._orchestrator.on_profit_found(wrap_handler(inner_handler, self._discord_publisher))

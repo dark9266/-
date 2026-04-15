@@ -43,8 +43,9 @@ async def test_channel_send_receives_embed_for_strong_buy():
     assert len(captured) == 1
     embed = captured[0]
     assert "[강력매수]" in embed["title"]
-    assert embed["color"] == 0x2ECC71  # 강력매수 green
-    assert any(f["name"] == "순수익" for f in embed["fields"])
+    assert embed["color"] == 0xFF0000  # 강력매수 red (v2 format 호환)
+    assert "순수익" in embed["description"]
+    assert any(f["name"] == "💰 가격" for f in embed["fields"])
     assert embed["url"] == "https://example.com/p/1"
 
 
@@ -59,7 +60,7 @@ async def test_channel_send_receives_embed_for_buy():
 
     assert len(captured) == 1
     assert "[매수]" in captured[0]["title"]
-    assert captured[0]["color"] == 0x3498DB  # 매수 blue
+    assert captured[0]["color"] == 0xFF8C00  # 매수 orange (v2 format 호환)
 
 
 @pytest.mark.parametrize("signal", ["관망", "비추천"])

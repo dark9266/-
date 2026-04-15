@@ -301,7 +301,12 @@ def _extract_best_sell_now(data: Any) -> int | None:
 
 
 def _pick_best_sell(product: KreamProduct) -> tuple[str, int | None]:
-    """size_prices 중 sell_now_price 최고가를 대표로."""
+    """size_prices 중 sell_now_price **최저가**를 대표로.
+
+    최고가 기준은 최소 1개 사이즈만 잘 팔려도 수익 알림이 터져 거짓양성을 유발한다.
+    최저가는 "최악의 사이즈로 팔아도 수익이 나는가" 관점이라 보수적 검증에 안전하다.
+    snapshot_fn (size="" 브랜치) 도 MIN 을 사용해 의미가 일치한다.
+    """
     best_size = ""
     best_price: int | None = None
     for sp in getattr(product, "size_prices", []) or []:
@@ -314,7 +319,7 @@ def _pick_best_sell(product: KreamProduct) -> tuple[str, int | None]:
             continue
         if price_int <= 0:
             continue
-        if best_price is None or price_int > best_price:
+        if best_price is None or price_int < best_price:
             best_price = price_int
             best_size = str(getattr(sp, "size", "") or "")
     return best_size, best_price
@@ -339,7 +344,9 @@ def build_snapshot_fn(
     """V3Runtime `kream_snapshot_fn` (pid, size) → {sell_now_price, volume_7d} 어댑터.
 
     - 사이즈가 size_prices 에 존재하면 해당 sell_now_price 사용 (정확도 우선)
-    - 사이즈가 비거나 "ALL" 이면 대표 sell_now_price (top_size) 반환
+    - 사이즈가 비거나 "ALL" 이면 size_prices 중 **MIN sell_now_price** 를 보수
+      기준으로 사용. 최저 사이즈로도 수익이 나야 거짓 알림을 막을 수 있다.
+      (2026-04-14 사고: MAX 기준이 314건 거짓양성 발생시킴)
     - 매치 실패 시 None → candidate drop
     - KreamBudgetExceeded 는 그대로 전파
     """
@@ -353,18 +360,43 @@ def build_snapshot_fn(
         volume_7d = int(snap.get("volume_7d") or 0)
         size_norm = (size or "").strip()
 
-        if not size_norm or size_norm.upper() == "ALL":
-            best = snap.get("sell_now_price")
-            if not best:
-                return None
-            return {"sell_now_price": int(best), "volume_7d": volume_7d}
+        size_prices_raw = snap.get("size_prices") or []
 
-        for sp in snap.get("size_prices") or []:
-            if str(sp.get("size") or "").strip() == size_norm:
-                price = sp.get("sell_now_price")
-                if not price:
-                    return None
-                return {"sell_now_price": int(price), "volume_7d": volume_7d}
+        def _norm_sp(sp: dict) -> dict | None:
+            price = sp.get("sell_now_price")
+            if not price:
+                return None
+            try:
+                p_int = int(price)
+            except (TypeError, ValueError):
+                return None
+            if p_int <= 0:
+                return None
+            return {
+                "size": str(sp.get("size") or "").strip(),
+                "sell_now_price": p_int,
+                "buy_now_price": sp.get("buy_now_price"),
+            }
+
+        normalized = [x for x in (_norm_sp(sp) for sp in size_prices_raw) if x]
+
+        if not size_norm or size_norm.upper() == "ALL":
+            if not normalized:
+                return None
+            prices = [sp["sell_now_price"] for sp in normalized]
+            return {
+                "sell_now_price": min(prices),
+                "volume_7d": volume_7d,
+                "size_prices": normalized,
+            }
+
+        for sp in normalized:
+            if sp["size"] == size_norm:
+                return {
+                    "sell_now_price": sp["sell_now_price"],
+                    "volume_7d": volume_7d,
+                    "size_prices": [sp],
+                }
         return None
 
     return _snapshot

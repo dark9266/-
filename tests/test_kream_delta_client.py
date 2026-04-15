@@ -235,8 +235,9 @@ async def test_get_snapshot_happy_path() -> None:
     assert out["product_id"] == 111
     assert out["model_number"] == "DZ5485-612"
     assert out["brand"] == "Jordan"
-    assert out["sell_now_price"] == 500000  # 최고가 사이즈 픽
-    assert out["top_size"] == "270"
+    # MIN 기준 보수 대표가 (260=450k, 270=500k, 280=None) → 450000
+    assert out["sell_now_price"] == 450000
+    assert out["top_size"] == "260"
     assert out["volume_7d"] == 12
     assert len(out["size_prices"]) == 3
     assert snapshot.calls == ["111"]
@@ -312,10 +313,11 @@ def test_extract_best_sell_now_none_on_empty() -> None:
 
 
 def test_pick_best_sell_ignores_none_and_zero() -> None:
+    """MIN 기준 — 260 사이즈 450000 이 최저, 280=None 은 스킵."""
     product = _sample_product()
     size, price = _pick_best_sell(product)
-    assert size == "270"
-    assert price == 500000
+    assert size == "260"
+    assert price == 450000
 
 
 # ─── build_snapshot_fn (V3Runtime 어댑터) ────────────────
@@ -329,7 +331,11 @@ async def test_build_snapshot_fn_exact_size_match() -> None:
     )
     fn = build_snapshot_fn(client)
     out = await fn(111, "260")
-    assert out == {"sell_now_price": 450000, "volume_7d": 12}
+    assert out["sell_now_price"] == 450000
+    assert out["volume_7d"] == 12
+    assert out["size_prices"] == [
+        {"size": "260", "sell_now_price": 450000, "buy_now_price": 460000}
+    ]
 
 
 async def test_build_snapshot_fn_size_miss_returns_none() -> None:
@@ -363,15 +369,27 @@ async def test_build_snapshot_fn_empty_snapshot_returns_none() -> None:
     assert await fn(111, "260") is None
 
 
-async def test_build_snapshot_fn_all_size_uses_best() -> None:
+async def test_build_snapshot_fn_all_size_uses_min() -> None:
+    """size='' 또는 'ALL' 은 MIN sell_now 를 보수 기준으로 사용.
+
+    과거: MAX → 사이즈 전량에 걸쳐 최고가 기준 → 거짓양성 314건 (2026-04-14).
+    현재: MIN → 최저 사이즈로도 수익 나면 진짜 기회. 거짓양성 차단.
+    """
     client = KreamDeltaClient(
         request_fn=_FakeRequestFn([]),
         snapshot_fn=_FakeSnapshotFn({"111": _sample_product("111")}),
         sleep_fn=_NoSleep(),
     )
     fn = build_snapshot_fn(client)
+    # _sample_product: 260=450000, 270=500000, 280=None → min=450000
     out = await fn(111, "ALL")
-    assert out == {"sell_now_price": 500000, "volume_7d": 12}
+    assert out["sell_now_price"] == 450000
+    assert out["volume_7d"] == 12
+    assert len(out["size_prices"]) == 2  # 280 sell_now=None 은 제외
+
+    out_empty = await fn(111, "")
+    assert out_empty["sell_now_price"] == 450000
+    assert out_empty["volume_7d"] == 12
 
 
 def test_pick_best_sell_all_none() -> None:

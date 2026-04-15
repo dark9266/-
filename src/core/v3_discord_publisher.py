@@ -20,7 +20,9 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 
 import httpx
 
@@ -32,52 +34,135 @@ logger = logging.getLogger(__name__)
 ProfitHandler = Callable[[ProfitFound], Awaitable[AlertSent | None]]
 
 
-# 시그널별 색상 (Discord embed) — Discord int color
+# 시그널별 색상/이모지
 _SIGNAL_COLOR: dict[str, int] = {
-    "강력매수": 0x2ECC71,  # green
-    "매수": 0x3498DB,      # blue
-    "관망": 0xF1C40F,      # yellow
-    "비추천": 0x95A5A6,    # gray
+    "강력매수": 0xFF0000,  # 빨강 (v2 format_profit_alert 동일)
+    "매수": 0xFF8C00,      # 주황
+    "관망": 0xFFD700,      # 노랑
+    "비추천": 0x808080,    # 회색
+}
+
+_SIGNAL_EMOJI: dict[str, str] = {
+    "강력매수": "🔴",
+    "매수": "🟠",
+    "관망": "🟡",
+    "비추천": "⚪",
 }
 
 
 _ALERT_SIGNALS: frozenset[str] = frozenset({"강력매수", "매수"})
 
 
-def _build_embed(event: ProfitFound) -> dict:
+def _lookup_kream_product(db_path: str, kream_product_id: int) -> dict | None:
+    """크림 상품 메타 조회 (읽기 전용, 동기 SQLite — 수 ms)."""
+    try:
+        conn = sqlite3.connect(db_path, timeout=2.0)
+        try:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT name, brand, category, image_url, url, volume_7d, volume_30d "
+                "FROM kream_products WHERE product_id=?",
+                (str(kream_product_id),),
+            ).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.debug("[v3_discord] kream_products 조회 실패: %s", e)
+        return None
+
+
+def _build_embed(event: ProfitFound, product: dict | None = None) -> dict:
     color = _SIGNAL_COLOR.get(event.signal, 0x5865F2)
-    title = f"[{event.signal}] {event.source} · {event.model_no}"[:256]
-    fields = [
+    emoji = _SIGNAL_EMOJI.get(event.signal, "")
+
+    name = (product or {}).get("name") or event.model_no
+    brand = (product or {}).get("brand") or ""
+    image_url = (product or {}).get("image_url") or ""
+    kream_url = (product or {}).get("url") or f"https://kream.co.kr/products/{event.kream_product_id}"
+    volume_30d = (product or {}).get("volume_30d")
+
+    title = f"{emoji} [{event.signal}] {name}"[:256]
+
+    # 설명: 한눈에 들어오는 수익 요약 (굵게, 개행 포함)
+    description_lines = [
+        f"**모델번호:** `{event.model_no}`",
+    ]
+    if brand:
+        description_lines.append(f"**브랜드:** {brand}")
+    description_lines.append(
+        f"**순수익:** **{event.net_profit:,}원** (ROI {event.roi:.1f}%)"
+    )
+    description = "\n".join(description_lines)
+
+    fields: list[dict] = [
         {
-            "name": "순수익",
-            "value": f"{event.net_profit:,}원 (ROI {event.roi:.1f}%)",
+            "name": "💰 가격",
+            "value": (
+                f"소싱가 **{event.retail_price:,}원**\n"
+                f"크림 즉시판매 **{event.kream_sell_price:,}원**\n"
+                f"차액 **{event.kream_sell_price - event.retail_price:,}원**"
+            ),
             "inline": True,
         },
         {
-            "name": "거래량 7d",
-            "value": f"{event.volume_7d}건",
-            "inline": True,
-        },
-        {
-            "name": "크림 즉시판매",
-            "value": f"{event.kream_sell_price:,}원",
-            "inline": True,
-        },
-        {
-            "name": "소싱가",
-            "value": f"{event.retail_price:,}원",
+            "name": "📊 거래량",
+            "value": (
+                f"7일 **{event.volume_7d}건**"
+                + (f"\n30일 **{volume_30d}건**" if volume_30d is not None else "")
+            ),
             "inline": True,
         },
     ]
     if event.size:
-        fields.append({"name": "사이즈", "value": event.size, "inline": True})
+        fields.append({"name": "📏 대표 사이즈", "value": event.size, "inline": True})
+
+    # 사이즈별 수익 테이블 — ProfitFound.size_profits (tuple of dict)
+    size_profits = getattr(event, "size_profits", None) or ()
+    if size_profits:
+        lines: list[str] = []
+        for row in size_profits[:12]:  # 최대 12 사이즈 (embed 1024자 제한 대비)
+            try:
+                sz = str(row.get("size") or "").strip() or "-"
+                sell = int(row.get("kream_sell_price") or 0)
+                profit = int(row.get("net_profit") or 0)
+                roi_v = float(row.get("roi") or 0.0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            marker = "✅" if profit >= 10000 else "⚠️"
+            lines.append(
+                f"{marker} `{sz:>6}` 즉시판매 {sell:,}원 → **{profit:,}원** (ROI {roi_v:.1f}%)"
+            )
+        if lines:
+            value = "\n".join(lines)
+            if len(value) > 1020:
+                value = value[:1017] + "..."
+            fields.append(
+                {"name": "📐 사이즈별 수익", "value": value, "inline": False}
+            )
+
+    fields.append(
+        {
+            "name": "🔗 링크",
+            "value": f"[크림]({kream_url}) | [{event.source}]({event.url})",
+            "inline": False,
+        }
+    )
+
     embed: dict = {
         "title": title,
+        "description": description,
         "color": color,
         "fields": fields,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "footer": {
+            "text": f"{event.source} • 크림 ID: {event.kream_product_id}"
+        },
     }
     if event.url:
         embed["url"] = event.url
+    if image_url:
+        embed["thumbnail"] = {"url": image_url}
     return embed
 
 
@@ -106,12 +191,14 @@ class V3DiscordPublisher:
         channel_send: ChannelSendFn | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float = 5.0,
+        db_path: str | None = None,
     ) -> None:
         self._webhook_url = webhook_url
         self._channel_send = channel_send
         self._client = client
         self._timeout = timeout
         self._owns_client = client is None
+        self._db_path = db_path
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -126,7 +213,10 @@ class V3DiscordPublisher:
         """
         if event.signal not in _ALERT_SIGNALS:
             return
-        embed = _build_embed(event)
+        product = None
+        if self._db_path:
+            product = _lookup_kream_product(self._db_path, event.kream_product_id)
+        embed = _build_embed(event, product)
 
         # 1순위: discord.py bot 채널 직접 send (기존 profit 채널 재사용)
         if self._channel_send is not None:

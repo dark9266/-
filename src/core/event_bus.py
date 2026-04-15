@@ -49,7 +49,12 @@ class CandidateMatched(Event):
 
 @dataclass(frozen=True)
 class ProfitFound(Event):
-    """수익성 하드 플로어를 통과한 기회."""
+    """수익성 하드 플로어를 통과한 기회.
+
+    `size_profits` 는 사이즈별 {size, kream_sell_price, net_profit, roi} tuple.
+    kream_delta_client 이 size_prices 전체를 보존해 알림에서 사이즈별 수익표를
+    그릴 수 있게 한다. 비어 있으면 publisher 는 단일 요약만 렌더.
+    """
 
     source: str
     kream_product_id: int
@@ -62,6 +67,7 @@ class ProfitFound(Event):
     signal: str
     volume_7d: int
     url: str
+    size_profits: tuple = ()
 
 
 @dataclass(frozen=True)
