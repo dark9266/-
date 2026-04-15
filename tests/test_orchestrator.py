@@ -532,6 +532,110 @@ async def test_alert_dedup_on_duplicate_processing(bus, store):
 
 
 # ----------------------------------------------------------------------
+# 4b) 6시간 쿨다운 윈도우 — 재시작 후 동일 pid 재발화 차단
+# ----------------------------------------------------------------------
+async def test_alert_cooldown_blocks_recent_same_signal(bus, store):
+    """2026-04-15 회귀: 재시작/델타 재발화로 새 ckpt_id 가 할당돼도
+    6h 내 동일 (pid, signal) 은 한 번만 발송되어야 한다."""
+    orch = Orchestrator(bus, store, _throttle())
+
+    alert_calls: list[str] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return None
+
+    async def profit_handler(event):
+        alert_calls.append(event.model_no)
+        import time
+        return AlertSent(
+            alert_id=len(alert_calls),
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=time.time(),
+        )
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        profit = _sample_profit("COOLDOWN-1")
+        # 1차 — 신규 ckpt_id 로 발송 성공
+        ckpt_a = await store.record(profit, consumer="profit")
+        await orch._process_profit(profit, ckpt_a)
+        assert len(alert_calls) == 1
+
+        # 2차 — 완전히 새 ckpt_id (재시작/델타 재발화 시뮬레이션)
+        # 기존 코드는 UNIQUE(checkpoint_id) 만 보기 때문에 통과 → 중복 발송
+        # 새 코드는 쿨다운 윈도우로 차단 → handler 호출 없음
+        ckpt_b = await store.record(profit, consumer="profit")
+        await orch._process_profit(profit, ckpt_b)
+        assert len(alert_calls) == 1, "6h 쿨다운 내 동일 (pid, signal) 차단 실패"
+        assert orch.stats()["alert_duplicated"] >= 1
+    finally:
+        await orch.stop()
+
+
+async def test_alert_cooldown_allows_signal_upgrade(bus, store):
+    """시그널 업그레이드 (매수 → 강력매수) 는 쿨다운 escape 로 통과."""
+    orch = Orchestrator(bus, store, _throttle())
+
+    alert_calls: list[tuple[str, str]] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return None
+
+    async def profit_handler(event):
+        import time
+        alert_calls.append((event.model_no, event.signal))
+        return AlertSent(
+            alert_id=len(alert_calls),
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=time.time(),
+        )
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        # 1차 — "매수" 로 발송
+        weak = ProfitFound(
+            source="musinsa", kream_product_id=42, model_no="UPG-1", size="270",
+            retail_price=100000, kream_sell_price=140000,
+            net_profit=20000, roi=0.2, signal="매수",
+            volume_7d=5, url="https://example.com/p/42",
+        )
+        ckpt_a = await store.record(weak, consumer="profit")
+        await orch._process_profit(weak, ckpt_a)
+        assert alert_calls == [("UPG-1", "매수")]
+
+        # 2차 — 동일 pid, "강력매수" 업그레이드 → escape 허용
+        strong = ProfitFound(
+            source="musinsa", kream_product_id=42, model_no="UPG-1", size="270",
+            retail_price=100000, kream_sell_price=180000,
+            net_profit=60000, roi=0.6, signal="강력매수",
+            volume_7d=5, url="https://example.com/p/42",
+        )
+        ckpt_b = await store.record(strong, consumer="profit")
+        await orch._process_profit(strong, ckpt_b)
+        assert alert_calls == [("UPG-1", "매수"), ("UPG-1", "강력매수")]
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
 # 5) 중복 handler 등록 → ValueError
 # ----------------------------------------------------------------------
 async def test_duplicate_handler_registration_raises(bus, store):

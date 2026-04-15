@@ -61,6 +61,18 @@ _CONSUMER_PROFIT = "profit"
 # 초과분은 stale 처리되고 다음 어댑터 사이클에서 자연 재생성된다.
 RECOVER_CANDIDATE_CAP = 50
 
+# 알림 쿨다운 윈도우 (초) — 동일 (pid, signal) 은 이 구간 내 1회만 발송.
+# 시그널 업그레이드(예: 매수→강력매수) 는 escape 허용.
+ALERT_COOLDOWN_SECONDS = 6 * 3600
+
+# 시그널 rank — 업그레이드 비교용. 값이 클수록 강함.
+_SIGNAL_RANK: dict[str, int] = {
+    "비추천": 0,
+    "관망": 1,
+    "매수": 2,
+    "강력매수": 3,
+}
+
 _ALERT_SENT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS alert_sent (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -394,8 +406,39 @@ class Orchestrator:
     async def _try_reserve_alert(
         self, ckpt_id: int, event: ProfitFound
     ) -> bool:
-        """alert_sent 에 INSERT OR IGNORE. 새로 삽입되면 True."""
+        """alert_sent 에 예약. 6h 쿨다운 내 동일 (pid, signal) 은 차단.
+
+        - checkpoint_id UNIQUE → 같은 ckpt 재처리 방어
+        - 쿨다운 윈도우 → 프로세스 재시작/델타 재발화로 동일 상품 반복 알림 방어
+        - 시그널 업그레이드(예: 매수 → 강력매수) → escape 허용
+
+        2026-04-15 사고: checkpoint_id UNIQUE 단독은 이벤트 리플레이/재생성
+        경로에서 매번 새 ckpt_id 를 할당받아 dedup 이 전혀 동작하지 않았다.
+        338건 중 168건이 6h 내 동일 pid 재발화.
+        """
         db = self._checkpoints._require_db()  # noqa: SLF001
+
+        # 쿨다운 윈도우 내 최근 알림 조회 — fired_at=0(예약중) 은 제외
+        import time as _time
+
+        cutoff = _time.time() - ALERT_COOLDOWN_SECONDS
+        recent_cur = await db.execute(
+            "SELECT signal FROM alert_sent "
+            "WHERE kream_product_id = ? AND fired_at > ? "
+            "ORDER BY fired_at DESC LIMIT 1",
+            (event.kream_product_id, cutoff),
+        )
+        recent = await recent_cur.fetchone()
+        await recent_cur.close()
+
+        if recent is not None:
+            old_rank = _SIGNAL_RANK.get(recent[0], 0)
+            new_rank = _SIGNAL_RANK.get(event.signal, 0)
+            if new_rank <= old_rank:
+                # 쿨다운 미충족 + 업그레이드 아님 → 중복 차단
+                return False
+            # 업그레이드 → escape 허용 (아래 INSERT 로 계속)
+
         cur = await db.execute(
             "INSERT OR IGNORE INTO alert_sent "
             "(checkpoint_id, kream_product_id, signal, fired_at) "
