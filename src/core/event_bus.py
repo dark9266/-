@@ -37,7 +37,13 @@ class CatalogDumped(Event):
 
 @dataclass(frozen=True)
 class CandidateMatched(Event):
-    """소싱처 상품이 크림 DB 모델번호와 매칭된 후보."""
+    """소싱처 상품이 크림 DB 모델번호와 매칭된 후보.
+
+    `available_sizes` 는 소싱처에서 실제 재고 있는 사이즈 목록 (옵션).
+    runtime 핸들러가 크림 size_prices 와 교집합을 계산해 실재 판매 가능한
+    사이즈만 수익 계산 대상에 포함시킨다. 비어 있으면 교집합 가드 미적용
+    (기존 listing-only 어댑터 하위호환).
+    """
 
     source: str
     kream_product_id: int
@@ -45,6 +51,7 @@ class CandidateMatched(Event):
     retail_price: int
     size: str
     url: str
+    available_sizes: tuple = ()
 
 
 @dataclass(frozen=True)

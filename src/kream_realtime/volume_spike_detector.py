@@ -154,18 +154,22 @@ class VolumeSpikeDetector:
     async def run(self) -> dict:
         """급등 감지 전체 사이클."""
         started = datetime.now()
-        volumes = await self.collect_current_volumes()
+        # 크림 호출 원점 태그 — 일일 캡 분포 진단
+        from src.core.kream_budget import kream_purpose
 
-        if not volumes:
-            return {"checked": 0, "spikes": 0, "promoted": [], "elapsed": 0}
+        with kream_purpose("volume_spike"):
+            volumes = await self.collect_current_volumes()
 
-        spikes = await self.detect_spikes(volumes)
-        await self.save_snapshots(volumes)
+            if not volumes:
+                return {"checked": 0, "spikes": 0, "promoted": [], "elapsed": 0}
 
-        promoted = []
-        if spikes:
-            await self.promote_spiked_products(spikes)
-            promoted = [s["product_id"] for s in spikes]
+            spikes = await self.detect_spikes(volumes)
+            await self.save_snapshots(volumes)
+
+            promoted = []
+            if spikes:
+                await self.promote_spiked_products(spikes)
+                promoted = [s["product_id"] for s in spikes]
 
         elapsed = (datetime.now() - started).total_seconds()
         return {"checked": len(volumes), "spikes": len(spikes), "promoted": promoted, "elapsed": elapsed}

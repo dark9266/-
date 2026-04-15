@@ -454,7 +454,6 @@ async def test_all_registered_adapters_started(tmp_path):
     assert len(stats["adapters"]) == expected
     assert "musinsa" in stats["adapters"]
     assert "29cm" in stats["adapters"]
-    assert "worksout" in stats["adapters"]
     assert "thenorthface" in stats["adapters"]
 
     # stagger=0 이므로 모든 어댑터가 최소 1회는 run_once 실행

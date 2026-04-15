@@ -1,17 +1,59 @@
 # CLAUDE.md
 
-크림봇 (Kream Monitor Bot) — 크림 차익거래 자동화 Discord 봇. Python 3.12+, async-first.
+크림봇 (Kream Monitor Bot) — 크림 차익거래 자동화 Discord 봇. Python 3.12+, async-first. 개인용 초고성능 (배포 A).
 
-> 🔴 **현행 메인 트랙 = 푸시 (어댑터 카탈로그 덤프 → 크림 DB 매칭)**. 배포 형태: 개인용 초고성능 (A).
-> 단일 source of truth: `~/.claude/projects/-mnt-c-Users-USER-Desktop----/memory/project_current_track.md`.
->
-> **메인**: `src/adapters/*_adapter.py` (22곳) → `src/core/event_bus` → `kream_collect_queue` → 알림.
-> **보조**: 역방향 hot 130건 60초 폴링 (`tier2_monitor.py` = 축 ②) — 폐기 X, 재포지셔닝.
-> **폐기 예정**: `continuous_scanner` (Tier 0 cold 47k 순환) · `tier1_scanner` 일부 · hot/warm/cold 큐 컬럼.
->
-> **방향 흔들리지 말 것**: "케찹은 못하고 우리만 하는" 분모 = 22 소싱처 카탈로그 합집합 ∩ 크림 47k.
-> 역방향 디테일·cold 큐·v2 스캐너 리팩터링 손대지 말 것 — 시간 낭비.
-> 아래 "v2 Architecture" 섹션은 **참조용 구조 설명**이지 현행 메인 아님.
+## 🔴 INVARIANT — 매 세션 맨 먼저 읽을 것 (변경 금지)
+
+**단일 source of truth**: `~/.claude/projects/-mnt-c-Users-USER-Desktop----/memory/project_current_track.md`
+과거 로그: `project_history_archive.md` (자동 로드 X, 수동 참조만).
+
+### 목표 ↔ 방법 (세션 표류 방지 핵심)
+- **목표**: 크림 47k DB **전체 상품 (전 카테고리, 거래량 0 포함)** 을 각 소싱처에서 찾아 수익 실현. **크림에 없는 건 무시.**
+- **방법**: **푸시** — 소싱처 카탈로그 전체 덤프 → 크림 DB 로컬 교집합 → 후보만 크림 sell_now → 수익 → 알림.
+- **왜 푸시**: 목표가 "역방향 맛"이어도 역방향 실행은 크림 캡 폭발. 푸시가 유일한 방법.
+
+### 🎯 타겟 범위 (축소 금지)
+- **47k 전부**: "hot 130건만", "거래량 ≥5만", "인기 카테고리만", "신발만" 축소 **전부 금지**
+- **거래량 0~3 포함**: 숨은 보석 = 거래량 낮은 상품의 가격 급등 마진이 가장 큼
+- **축 ② 예외**: `tier2_monitor` hot 폴링은 보조 감시. 메인 타겟 축소 아님.
+- **필터 vs 축소 구분**: 알림 하드 플로어(순수익/ROI/거래량)는 "거짓 알림 방지"지 "타겟 축소" 아님.
+
+### 🚨 다음 세션 금지 질문/제안
+- "역방향이 원래 의도 아니냐?" → **X.** 목표는 교집합, 방법은 푸시.
+- "hot/인기 카테고리 먼저 타겟팅할까요?" → **X.** 47k 전체 고정.
+- "거래량 낮은 건 빼도 되지 않나요?" → **X.** 숨은 보석 핵심 차별화.
+
+### 완성도 축 (우선순위 고정)
+1. **정확성** — 매칭 + 사이즈별 실재고. 거짓 알림 0 지향.
+2. **속도** — 소싱처 서칭 속도.
+3. **신경 X**: 알림 수량 · 무인 운영 · 상용화.
+
+### 단계 (순서 뒤집지 말 것)
+1. **현재 = 22 소싱처 안정화** (테스트 사이클 1h → 2h → 6h → 12h → 24h 점진)
+2. **안정화 확정 후 = 소싱처 대거 확장**
+
+### 🚫 금지 리스트
+- 역방향 스캐너 재설계·`continuous_scanner`·`tier1_scanner`·cold/warm 순환 (폐기 흐름)
+  - **예외**: `tier2_monitor.py` (축 ② 보조 감시) 는 역방향 hot 폴링이지만 **유지**. "역방향이니 끄자" 제안 금지 — 이미 판정 완료된 예외다.
+- 소싱처 신규 추가 (안정화 전까지)
+- 해외 스토어 (EU/US/JP) — 한국 공홈만
+- 매칭량 숫자 쫓기 — 헬스체크 4종 통과 전에는 매칭 작업 금지
+- 선택지 a/b/c 나열 — 필수 작업 1개만 제시 (사용자 배달일 중 원격 지시)
+- 라이브 관측 없이 수치 주장
+- 크림 시세/거래량 로컬 DB로 수익 계산 (반드시 실시간 sell_now)
+
+### ✅ 매 세션 시작 헬스체크 4종 (생략 금지)
+1. 봇 프로세스 살아있나 (`ps -ef | grep python.*main`)
+2. 마지막 알림 24h 내 (`alert_sent.fired_at`)
+3. 크림 일일 호출 10k 이하 (`kream_api_calls` 24h)
+4. 큐 최근 2h 내 갱신 (`kream_collect_queue.added_at`)
+
+**1개라도 FAIL → 매칭/신규 작업 착수 금지, 복구 먼저.**
+
+### 메인 아키텍처
+- `src/adapters/*_adapter.py` (22곳) → `src/core/event_bus` → `src/core/orchestrator` → `kream_collect_queue` → 알림
+- 축 ② 보조: `tier2_monitor.py` 역방향 hot 130건 60초 폴링 (폐기 X, 재포지셔닝)
+- 아래 "v2 Architecture" 섹션은 **참조용 구조 설명**이지 현행 메인 아님.
 
 ## Commands
 
@@ -24,48 +66,30 @@ ruff check src/ tests/           # 린트
 ruff format src/ tests/          # 포맷
 ```
 
-## v2 Architecture (참조용 — 현행 메인 아님)
-
-> ⚠️ 아래 Tier 0/1, hot/warm/cold 큐, 스캔 방향 표는 v2 시절 구조. 현재는 어댑터 푸시가 메인.
-> 역방향 hot(축 ②, `tier2_monitor`) 만 유지. 나머지는 폐기 흐름.
-
-### 핵심 파이프라인
+## 현행 아키텍처 (푸시 단일 트랙)
 
 ```
-크림 DB (47k) → 우선순위 큐 → 소싱처 22곳 병렬 검색 → 모델번호 매칭 → 수익 분석 → Discord 알림
+22 소싱처 어댑터 (src/adapters/*) → 카탈로그 덤프
+  → matcher (크림 DB 로컬 교집합)
+  → collect_queue (크림 후보)
+  → kream_delta_watcher + orchestrator (sell_now 조회)
+  → profit_calculator
+  → Discord 알림
 ```
 
-### 3티어 스캔 구조
+**축 ② 보조**: `tier2_monitor.py` — 크림 hot 거래량 ≥5 상품 60초 폴링. 유지 (폐기 X).
 
-| 티어 | 주기 | 역할 | 모듈 |
-|------|------|------|------|
-| **Tier 0** | 5분/20건 | 연속 배치 스캔 — 47k 전체 순환 | `src/continuous_scanner.py` |
-| **Tier 1** | 30분 | 긴급 스캔 — hot 50건 역방향 + 카테고리 신상품 | `src/tier1_scanner.py` |
-| **Tier 2** | 60초 | 실시간 폴링 — watchlist 크림 시세 감시 | `src/tier2_monitor.py` |
-
-### 스캔 방향
-
-- **역방향 (주력 70%)**: 크림 DB → 소싱처 검색. 수요 검증된 상품 소싱처 탐색
-- **정방향 (보조 30%)**: 무신사/29CM 카테고리 리스팅 → 크림 DB 매칭. 세일/신상품 포착
-
-### hot/warm/cold 우선순위 큐
-
-| 등급 | 조건 | 재스캔 주기 | 검색 소싱처 | 규모 |
-|------|------|-----------|-----------|------|
-| **hot** | 거래량 ≥ 5 | 2시간 | 22곳 전부 (역방향 v2 — 푸시 전환 후 폐기 예정) | ~130건 |
-| **warm** | 거래량 3~4 | 8시간 | 무신사+나이키+29CM+카시나+튠+살로몬+아크테릭스+W컨셉+웍스아웃 (9곳) | ~16건 |
-| **cold** | 거래량 < 3 | 48시간 | 무신사+나이키+그랜드스테이지+온더스팟 (4곳) | ~37,000건 |
-
-DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
+> **과거 v2 (Tier 0/1, hot/warm/cold 순환, 역방향 주력) 는 폐기 흐름**.
+> `continuous_scanner.py` · `tier1_scanner.py` · hot/warm/cold 큐 컬럼 · `next_scan_at` / `scan_priority` 는 **현행 아키텍처와 무관**.
+> 상세 v2 구조 필요 시 `project_history_archive.md` 참조 — 리팩터링/개선/재활용 제안 금지.
 
 ## Key Modules
 
-### 스캐너
-- `src/reverse_scanner.py` — 역방향 스캐너. 크림 hot → 소싱처 22곳 병렬 검색 → 사이즈 교차 매칭(sell_now>0 필수, in_stock 기본 False) → 수익 분석. BRAND_SOURCES 브랜드 필터(Nike/Jordan 등). 웍스아웃 등 모델번호 없는 소싱처는 이름 매칭(한→영 변환+키워드 교차+콜라보/서브타입 검증)
-- `src/scanner.py` — 카테고리 스캔, 키워드 스캔 오케스트레이터
-- `src/tier1_scanner.py` — 워치리스트 빌더. 역방향 + 카테고리 gap 스크리닝
-- `src/tier2_monitor.py` — watchlist 실시간 크림 시세 폴링. sell_now_price(즉시판매가) 기준 수익 계산, 5배 안전망(오매칭 방어)
-- `src/continuous_scanner.py` — next_scan_at 기반 47k 연속 배치 스캔
+### 스캐너 (현행)
+- `src/tier2_monitor.py` — **축 ② 유지**. watchlist 실시간 크림 시세 폴링. sell_now_price(즉시판매가) 기준 수익 계산, 5배 안전망(오매칭 방어)
+
+### 🗑 폐기 흐름 스캐너 (참조용, 손대지 말 것)
+- `src/reverse_scanner.py` · `src/scanner.py` · `src/tier1_scanner.py` · `src/continuous_scanner.py` — v2 시절 역방향/Tier 구조. 현행 푸시 트랙과 무관. 리팩터링·버그픽스·재활용 제안 금지.
 
 ### 크롤러 (22개 소싱처 — 2026-04-14 stussy 추가)
 - `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
@@ -140,11 +164,13 @@ DB 컬럼: `next_scan_at`, `scan_priority` (kream_products 테이블)
 검수비 0원
 ```
 
-### 시그널 기준
-- STRONG_BUY: 순수익 ≥ 30,000 AND 7일 거래량 ≥ 5
-- BUY: 순수익 ≥ 15,000 AND 7일 거래량 ≥ 5
-- WATCH: 순수익 ≥ 5,000 AND 7일 거래량 ≥ 3
-- NOT_RECOMMENDED: 그 외
+### 시그널 기준 (2026-04-15 숨은 보석 정책)
+- STRONG_BUY: 순수익 ≥ 30,000 AND 7일 거래량 ≥ **1**
+- BUY: 순수익 ≥ 15,000 AND 7일 거래량 ≥ **1**
+- WATCH: 순수익 ≥ 5,000 AND 7일 거래량 ≥ **1**
+- NOT_RECOMMENDED: 그 외 (거래량 0 = 대기 매수자 없음 → 판매 불가)
+
+**거래량 게이트 1 고정**. 저거래 상품(숨은 보석)이 핵심 차별화 — 낮추자 제안 금지. 거짓 알림 방어는 순수익/ROI 하드 플로어 담당.
 
 ### 알림 하드 플로어
 - 순수익 ≥ 10,000₩ AND ROI ≥ 5% AND 거래량 ≥ 1

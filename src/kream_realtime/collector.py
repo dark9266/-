@@ -121,13 +121,19 @@ class KreamCollector:
         stats = {}
         total_new = 0
 
-        for cat_name, cat_config in CATEGORIES.items():
-            cat_new = 0
-            for keyword in cat_config["keywords"]:
-                new = await self.collect_category(cat_name, keyword, max_pages_per_keyword)
-                cat_new += new
-            stats[cat_name] = cat_new
-            total_new += cat_new
+        # 크림 호출 원점 태그 — 일일 캡 분포를 루프별로 진단
+        from src.core.kream_budget import kream_purpose
+
+        with kream_purpose("collector"):
+            for cat_name, cat_config in CATEGORIES.items():
+                cat_new = 0
+                for keyword in cat_config["keywords"]:
+                    new = await self.collect_category(
+                        cat_name, keyword, max_pages_per_keyword
+                    )
+                    cat_new += new
+                stats[cat_name] = cat_new
+                total_new += cat_new
 
         elapsed = (datetime.now() - started).total_seconds()
         logger.info("수집 완료: 신규 %d건, %.0f초", total_new, elapsed)
@@ -169,53 +175,57 @@ class KreamCollector:
         checked = 0
         found = 0
         not_found = 0
-        for row in rows:
-            model_number = row[0] if not isinstance(row, dict) else row["model_number"]
-            checked += 1
-            target_key = _key(model_number)
-            await _random_delay()
+        # 큐 pending 처리 경로 크림 호출 원점 태그
+        from src.core.kream_budget import kream_purpose
 
-            url = (
-                f"{KREAM_BASE}/search?keyword={model_number}"
-                "&tab=products&sort=date&page=1"
-            )
-            html = await kream_crawler._request("GET", url, parse_json=False, max_retries=2)
-            matched_pid = ""
-            if html:
-                data = kream_crawler._extract_page_data(html)
-                if data:
-                    raw = kream_crawler._extract_listing_products(data)
-                    for p in raw:
-                        if _key(str(p.get("model_number", ""))) == target_key:
-                            enriched = self._enrich_listing_products([p], "신발")
-                            if enriched:
-                                await self.save_products(enriched)
-                                matched_pid = enriched[0]["product_id"]
-                                break
+        with kream_purpose("collect_pending"):
+            for row in rows:
+                model_number = row[0] if not isinstance(row, dict) else row["model_number"]
+                checked += 1
+                target_key = _key(model_number)
+                await _random_delay()
 
-            if matched_pid:
-                found += 1
-                await self.db.execute(
-                    """UPDATE kream_collect_queue
-                       SET status = 'found', found_product_id = ?,
-                           last_attempt_at = CURRENT_TIMESTAMP,
-                           attempts = attempts + 1
-                       WHERE model_number = ?""",
-                    (matched_pid, model_number),
+                url = (
+                    f"{KREAM_BASE}/search?keyword={model_number}"
+                    "&tab=products&sort=date&page=1"
                 )
-            else:
-                new_attempts = (row[3] if not isinstance(row, dict) else row["attempts"]) + 1
-                new_status = (
-                    "not_found" if new_attempts >= self.MAX_QUEUE_ATTEMPTS else "pending"
-                )
-                if new_status == "not_found":
-                    not_found += 1
-                await self.db.execute(
-                    """UPDATE kream_collect_queue
-                       SET status = ?, attempts = ?, last_attempt_at = CURRENT_TIMESTAMP
-                       WHERE model_number = ?""",
-                    (new_status, new_attempts, model_number),
-                )
+                html = await kream_crawler._request("GET", url, parse_json=False, max_retries=2)
+                matched_pid = ""
+                if html:
+                    data = kream_crawler._extract_page_data(html)
+                    if data:
+                        raw = kream_crawler._extract_listing_products(data)
+                        for p in raw:
+                            if _key(str(p.get("model_number", ""))) == target_key:
+                                enriched = self._enrich_listing_products([p], "신발")
+                                if enriched:
+                                    await self.save_products(enriched)
+                                    matched_pid = enriched[0]["product_id"]
+                                    break
+
+                if matched_pid:
+                    found += 1
+                    await self.db.execute(
+                        """UPDATE kream_collect_queue
+                           SET status = 'found', found_product_id = ?,
+                               last_attempt_at = CURRENT_TIMESTAMP,
+                               attempts = attempts + 1
+                           WHERE model_number = ?""",
+                        (matched_pid, model_number),
+                    )
+                else:
+                    new_attempts = (row[3] if not isinstance(row, dict) else row["attempts"]) + 1
+                    new_status = (
+                        "not_found" if new_attempts >= self.MAX_QUEUE_ATTEMPTS else "pending"
+                    )
+                    if new_status == "not_found":
+                        not_found += 1
+                    await self.db.execute(
+                        """UPDATE kream_collect_queue
+                           SET status = ?, attempts = ?, last_attempt_at = CURRENT_TIMESTAMP
+                           WHERE model_number = ?""",
+                        (new_status, new_attempts, model_number),
+                    )
 
         await self.db.commit()
         cursor = await self.db.execute(

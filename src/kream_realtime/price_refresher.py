@@ -9,6 +9,7 @@ from datetime import datetime
 
 import aiosqlite
 
+from src.core.kream_budget import kream_purpose
 from src.crawlers.kream import kream_crawler
 from src.config import settings
 from src.utils.logging import setup_logger
@@ -141,12 +142,15 @@ class KreamPriceRefresher:
         refreshed = 0
         failed = 0
 
-        for row in queue:
-            success = await self.refresh_product(row["product_id"])
-            if success:
-                refreshed += 1
-            else:
-                failed += 1
+        # 크림 호출 원점 태그 — kream_api_calls.purpose 컬럼에 기록되어
+        # 일일 캡 분포를 루프별로 쪼개 진단할 수 있다.
+        with kream_purpose("price_refresh"):
+            for row in queue:
+                success = await self.refresh_product(row["product_id"])
+                if success:
+                    refreshed += 1
+                else:
+                    failed += 1
 
         elapsed = (datetime.now() - started).total_seconds()
         logger.info("시세 갱신 완료: %d/%d 성공 (큐 %d, %.0f초)", refreshed, queue_size, queue_size, elapsed)

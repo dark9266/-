@@ -31,14 +31,19 @@ class KreamFees(BaseSettings):
 
 
 class SignalThresholds(BaseSettings):
-    """시그널 판정 기준."""
+    """시그널 판정 기준.
+
+    목표: 크림 47k 전체(거래량 0 포함 숨은 보석)를 전 소싱처에서 찾는 것.
+    거래량 게이트는 "실제로 팔 수 있는 최소 조건(대기 매수자 ≥1)" 만 남기고
+    나머지는 순수익/ROI 하드 플로어가 거짓 알림을 방어한다.
+    """
 
     strong_buy_profit: int = 30000  # 강력매수 순수익 기준
-    strong_buy_volume_7d: int = 5  # 강력매수 7일 거래량 기준
+    strong_buy_volume_7d: int = 1  # 거래량 1건 이상이면 강력매수 후보 (숨은 보석 허용)
     buy_profit: int = 15000  # 매수 순수익 기준
-    buy_volume_7d: int = 5  # 매수 7일 거래량 기준
+    buy_volume_7d: int = 1  # 거래량 1건 이상이면 매수 후보
     watch_profit: int = 5000  # 관망 순수익 기준
-    min_volume_7d: int = 3  # 최소 거래량 (미만이면 비추천)
+    min_volume_7d: int = 1  # 거래량 1건 이상이면 후보 (0건은 대기 매수자 없어 판매 불가)
 
 
 class Settings(BaseSettings):

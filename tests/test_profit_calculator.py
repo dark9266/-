@@ -109,9 +109,10 @@ class TestDetermineSignal:
     def test_not_recommended_low_profit(self):
         assert determine_signal(3_000, 10) == Signal.NOT_RECOMMENDED
 
-    def test_not_recommended_low_volume(self):
-        """거래량 부족이면 수익이 높아도 비추천."""
-        assert determine_signal(50_000, 2) == Signal.NOT_RECOMMENDED
+    def test_not_recommended_zero_volume(self):
+        """거래량 0 → 대기 매수자 없어 판매 불가 → 비추천.
+        (2026-04-15: 숨은 보석 정책 — vol ≥ 1 이면 후보 허용)"""
+        assert determine_signal(50_000, 0) == Signal.NOT_RECOMMENDED
 
     def test_boundary_strong_buy(self):
         """강력매수 경계값."""

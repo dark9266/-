@@ -56,6 +56,7 @@ from src.adapters.wconcept_adapter import WconceptAdapter
 from src.adapters.worksout_adapter import WorksoutAdapter
 from src.core.call_throttle import CallThrottle
 from src.core.checkpoint_store import CheckpointStore
+from src.core.kream_budget import KreamBudgetExceeded
 from src.core.event_bus import (
     CandidateMatched,
     CatalogDumped,
@@ -97,7 +98,11 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("arcteryx", ArcteryxAdapter),
     ("vans", VansAdapter),
     ("wconcept", WconceptAdapter),
-    ("worksout", WorksoutAdapter),
+    # ("worksout", WorksoutAdapter),
+    # 2026-04-15 비활성화: 이름 기반 매칭이 토큰 2개 교차만으로 성립하여
+    # 194→58 매칭 중 30%+가 거짓 (Nike Dunk ↔ Jordan Retro, Patagonia ↔ ON 등).
+    # CandidateMatched publish 시 orchestrator → 수익/알림 체인 진입 가능 →
+    # 정확성 축 ① 위반. 토큰 교차 임계 상향 + 브랜드 강제 일치 가드 도입 후 재활성화.
     ("adidas", AdidasAdapter),
     ("hoka", HokaAdapter),
     # ("beaker", BeakerAdapter),      # 46k dumps/0 match — 한국 에디토리얼 패션
@@ -270,12 +275,52 @@ class V3Runtime:
 
             try:
                 snapshot = await snapshot_fn(event.kream_product_id, event.size)
+            except KreamBudgetExceeded:
+                # 일일 캡 고갈은 예상된 상태 — traceback 스팸 금지.
+                # 캡 회복까지 모든 candidate 가 이 경로를 타므로 WARNING 도 과함.
+                logger.debug(
+                    "[v3] 크림 캡 고갈 — candidate drop: pid=%s",
+                    event.kream_product_id,
+                )
+                return None
             except Exception:
                 logger.exception("[v3] 크림 스냅샷 조회 실패: pid=%s", event.kream_product_id)
                 return None
 
             if not snapshot:
                 return None
+
+            # 소싱처 재고 사이즈와 크림 사이즈 교집합 가드.
+            # 어댑터가 available_sizes 를 비워두면(listing-only) 이 단계 건너뜀.
+            # 교집합 비어 있으면 = 소싱처가 크림에서 팔리는 사이즈를 하나도
+            # 안 가지고 있음 → 실제 차익거래 불가 → drop.
+            avail = tuple(getattr(event, "available_sizes", ()) or ())
+            if avail:
+                avail_norm = {str(s).strip() for s in avail if str(s).strip()}
+                raw_sizes = snapshot.get("size_prices") or []
+                filtered = [
+                    sp
+                    for sp in raw_sizes
+                    if str(sp.get("size") or "").strip() in avail_norm
+                ]
+                if not filtered:
+                    logger.info(
+                        "[v3] 사이즈 교집합 비어있음 — drop: pid=%s source=%s avail=%s",
+                        event.kream_product_id,
+                        event.source,
+                        sorted(avail_norm)[:8],
+                    )
+                    return None
+                # snapshot 복사본을 수정해 이후 로직(MIN 재산정)에 교집합 반영
+                prices = [
+                    int(sp["sell_now_price"])
+                    for sp in filtered
+                    if sp.get("sell_now_price")
+                ]
+                snapshot = dict(snapshot)
+                snapshot["size_prices"] = filtered
+                if prices:
+                    snapshot["sell_now_price"] = min(prices)
 
             try:
                 kream_sell_price = int(snapshot.get("sell_now_price") or 0)

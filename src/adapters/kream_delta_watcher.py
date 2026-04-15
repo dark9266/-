@@ -32,6 +32,7 @@ from typing import Any, Protocol
 
 from src.core.delta_engine import DeltaEngine
 from src.core.event_bus import CandidateMatched, EventBus
+from src.core.kream_budget import KreamBudgetExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,15 @@ class KreamDeltaWatcher:
     async def poll_once(self) -> DeltaPollStats:
         """감시 대상 로드 → light fetch → delta detect → detail fetch → publish."""
         await self._ensure_init()
+        # 크림 호출 원점 태그 — 일일 캡 분포를 루프별로 쪼개 진단.
+        # delta_light / delta_snapshot 은 이미 endpoint level purpose 가 걸려
+        # 있어 여기 태그는 혹시 태그 누락 경로(설정 조회 등)만 커버한다.
+        from src.core.kream_budget import kream_purpose
+
+        with kream_purpose("delta_watcher"):
+            return await self._poll_once_inner()
+
+    async def _poll_once_inner(self) -> DeltaPollStats:
         stats = DeltaPollStats()
 
         client = self._client
@@ -221,6 +231,11 @@ class KreamDeltaWatcher:
         try:
             light_rows = await self.fetch_light(target_ids)
             stats.light_fetch_calls += 1
+        except KreamBudgetExceeded:
+            # 캡 고갈은 예상된 정지 — traceback 스팸 없이 스킵
+            logger.debug("[kream_delta] 캡 고갈 — poll 스킵")
+            stats.finished_at = time.time()
+            return stats
         except Exception:
             logger.exception("[kream_delta] fetch_light 실패")
             stats.errors += 1
@@ -280,6 +295,9 @@ class KreamDeltaWatcher:
         try:
             snapshot = await client.get_snapshot(pid)
             stats.detail_fetch_calls += 1
+        except KreamBudgetExceeded:
+            logger.debug("[kream_delta] 캡 고갈 — snapshot 스킵: pid=%s", pid)
+            return
         except Exception:
             logger.exception("[kream_delta] get_snapshot 예외: pid=%s", pid)
             stats.errors += 1

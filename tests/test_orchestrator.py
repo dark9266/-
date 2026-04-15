@@ -167,8 +167,10 @@ async def test_candidate_dropped_when_throttle_exhausted(bus, store):
         await bus.publish(_sample_candidate("A-2"))
         await bus.publish(_sample_candidate("A-3"))
 
+        # acquire_wait(timeout=2.0): 3 candidates serially * 2s = ~6s worst case
         assert await _wait_until(
-            lambda: orch.stats()["candidate_dropped_throttle"] >= 2
+            lambda: orch.stats()["candidate_dropped_throttle"] >= 2,
+            timeout=8.0,
         )
 
         stats = orch.stats()
@@ -314,7 +316,8 @@ async def test_throttle_rejected_candidate_is_deferred(bus, store):
         await bus.publish(_sample_candidate("OK"))
         await bus.publish(_sample_candidate("DEFER"))
         assert await _wait_until(
-            lambda: orch.stats()["candidate_deferred"] >= 1
+            lambda: orch.stats()["candidate_deferred"] >= 1,
+            timeout=6.0,
         )
 
         # deferred 건은 pending() 에 status='deferred' 로 남아있어야 한다

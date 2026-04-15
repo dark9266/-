@@ -64,10 +64,14 @@ class Tier2Monitor:
             async with sem:
                 await self._check_one(item, result)
 
-        await asyncio.gather(
-            *[check_item(item) for item in items],
-            return_exceptions=True,
-        )
+        # 크림 호출 원점 태그 — 일일 캡 분포 진단
+        from src.core.kream_budget import kream_purpose
+
+        with kream_purpose("tier2_monitor"):
+            await asyncio.gather(
+                *[check_item(item) for item in items],
+                return_exceptions=True,
+            )
 
         result.finished_at = datetime.now()
         logger.info(

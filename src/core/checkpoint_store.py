@@ -268,7 +268,20 @@ class CheckpointStore:
                 continue
             try:
                 cls = _resolve_event_class(row["event_type"])
-                event = cls(**row["payload"])
+                payload = row["payload"]
+                # JSON 라운드트립은 tuple → list 로 되돌아오므로 dataclass
+                # 필드 정의와 일치하도록 tuple 기본값 필드를 복원한다.
+                # (e.g. CandidateMatched.available_sizes, ProfitFound.size_profits)
+                import dataclasses as _dc
+                if _dc.is_dataclass(cls):
+                    for f in _dc.fields(cls):
+                        if (
+                            f.name in payload
+                            and isinstance(payload[f.name], list)
+                            and isinstance(f.default, tuple)
+                        ):
+                            payload[f.name] = tuple(payload[f.name])
+                event = cls(**payload)
             except (ValueError, TypeError) as exc:
                 logger.warning(
                     "checkpoint replay 복원 실패 — failed 처리: id=%s type=%s err=%s",

@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from src.core.event_bus import CandidateMatched, EventBus
+from src.core.kream_budget import KreamBudgetExceeded, kream_purpose
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,10 @@ class KreamHotWatcher:
     # ------------------------------------------------------------------
     async def poll_once(self) -> PollStats:
         """hot 전체 1회 폴링."""
+        with kream_purpose("hot_watcher"):
+            return await self._poll_once_inner()
+
+    async def _poll_once_inner(self) -> PollStats:
         stats = PollStats()
         client = self._client
         if client is None:
@@ -241,6 +246,9 @@ class KreamHotWatcher:
 
         try:
             snapshot = await client.get_snapshot(product_id)
+        except KreamBudgetExceeded:
+            logger.debug("[kream_hot] 캡 고갈 — snapshot 스킵: pid=%s", product_id)
+            return
         except Exception:
             logger.exception(
                 "[kream_hot] 스냅샷 조회 예외: pid=%s", product_id

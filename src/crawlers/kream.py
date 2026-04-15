@@ -329,6 +329,17 @@ class KreamCrawler:
         # 그 값이 kream_api_calls.purpose 에 기록된다.
         if purpose == "manual":
             purpose = current_purpose()
+        # 태그 누락 감지: contextvar 조회 후에도 기본값이면 어느 경로인지
+        # 불명확한 호출 → stack 상위 프레임을 1회성 WARN 으로 남겨 진단.
+        # (2026-04-15 사고: manual 6k 건 폭주 주범 추적용)
+        if purpose == "manual":
+            import traceback
+            frames = traceback.extract_stack(limit=8)[:-1]
+            caller = " ← ".join(
+                f"{f.filename.split('/')[-1]}:{f.lineno}:{f.name}"
+                for f in frames[-4:]
+            )
+            logger.warning("[kream] 태그 누락 호출: %s %s | %s", method, url, caller)
 
         session = await self._get_session()
 
@@ -1345,13 +1356,13 @@ class KreamCrawler:
 
     @staticmethod
     def _estimate_volume(volume_7d: int, pinia_count: int) -> int:
-        """pinia 캡 도달 시 볼륨 추정.
+        """pinia 캡 도달 시 볼륨 — 추정 없이 원시값 그대로.
 
-        5건 모두 7일 내 → 최소 5건이지만 실제로는 더 많을 가능성 높음.
-        보수적으로 캡의 2배 추정 (hot tier 진입 가능하도록).
+        과거(~2026-04-15): pinia 5건 캡이 모두 7일 내면 ×2 추정 → 저거래 상품의
+        volume_7d 뻥튀기 → 하드 플로어 ≥1 무력화. 축 ① 정확성 위배.
+        현재: 추정 제거. 캡이 실제 거래량보다 낮아 hot tier 진입이 늦어질 수
+        있어도 거짓 알림보다는 안전한 손실.
         """
-        if volume_7d >= pinia_count >= 4:
-            return max(volume_7d, pinia_count * 2)
         return volume_7d
 
     async def _trades_from_screens_api(self, product_id: str) -> dict | None:
@@ -1391,21 +1402,12 @@ class KreamCrawler:
 
         result = self._calculate_trade_stats(trades_for_stats, product_id)
 
-        # bids/asks 수로 활성도 보강 — 5건 캡이라도 asks 5건이면 유동성 높음
+        # asks/bids 는 호가(매물/희망)이지 체결이 아니므로 volume_7d 에 합산 X.
+        # 과거(~2026-04-15): sales+asks+bids 합산 ×2/×3 → HQ4309-003 포함 저거래
+        # 상품의 volume_7d 가 최대 3배 뻥튀기 → 하드 플로어 ≥1 무력화 → 거짓 알림.
+        # 현재: 체결(sales) 원시 카운트만 사용. 관측용 로그에만 asks/bids 수 기재.
         asks_count = len(th.get("asks", {}).get("items", []))
         bids_count = len(th.get("bids", {}).get("items", []))
-        result["_screens_asks"] = asks_count
-        result["_screens_bids"] = bids_count
-
-        # 캡 감지: 5건 모두 7일 내이고 bids+asks 충분 → 볼륨 추정
-        if result["volume_7d"] >= len(trades_for_stats) and len(trades_for_stats) >= 4:
-            if asks_count + bids_count >= 6:
-                result["volume_7d"] = max(result["volume_7d"], len(trades_for_stats) * 3)
-            else:
-                result["volume_7d"] = max(result["volume_7d"], len(trades_for_stats) * 2)
-
-        result.pop("_screens_asks", None)
-        result.pop("_screens_bids", None)
 
         logger.info(
             "거래내역 (%s): [screens] 7일=%d, 30일=%d (sales=%d, asks=%d, bids=%d)",
@@ -1582,13 +1584,22 @@ class KreamCrawler:
 
     # ─── 전체 수집 ──────────────────────────────────────
 
-    async def get_full_product_info(self, product_id: str) -> KreamProduct | None:
+    async def get_full_product_info(
+        self,
+        product_id: str,
+        *,
+        include_buy_price: bool = True,
+    ) -> KreamProduct | None:
         """상품 전체 정보 수집 (상세 + 시세 + 거래내역).
 
         전략:
         1단계: HTML → __NUXT_DATA__ (pinia) 파싱으로 기본 정보 + 일부 가격
         2단계: 인증 API /api/p/options/display 로 전체 사이즈별 가격 보충
         3단계: 레거시 API 폴백 (비인증)
+
+        `include_buy_price=False` → options/display 의 buying (즉시구매가) 호출을
+        생략해 크림 API 호출 1건 절감. v3 델타 스냅샷 경로는 sell_now_price 만
+        필요하므로 이 플래그를 끈다. price_refresher 등 legacy 경로는 기본값 True.
         """
         # 1단계: HTML 한 번으로 모든 데이터 추출 시도
         url = f"{KREAM_BASE}/products/{product_id}"
@@ -1615,7 +1626,9 @@ class KreamCrawler:
                 return None
 
         # 2단계: options/display API로 전체 사이즈별 가격 보충
-        api_prices = await self._fetch_options_display(product_id)
+        api_prices = await self._fetch_options_display(
+            product_id, include_buy_price=include_buy_price
+        )
         if api_prices:
             # API 결과가 더 완전하면 교체, 아니면 병합
             if len(api_prices) > len(size_prices):
@@ -1676,25 +1689,31 @@ class KreamCrawler:
         )
         return product
 
-    async def _fetch_options_display(self, product_id: str) -> list[KreamSizePrice]:
+    async def _fetch_options_display(
+        self,
+        product_id: str,
+        *,
+        include_buy_price: bool = True,
+    ) -> list[KreamSizePrice]:
         """API /api/p/options/display 로 전체 사이즈별 가격 조회.
 
         buying + selling 양쪽을 호출하여 즉시구매가/즉시판매가를 모두 수집.
-        api.kream.co.kr 도메인 + X-KREAM 인증 헤더로 호출.
+        `include_buy_price=False` → selling 만 호출 (크림 호출 1건 절감).
+        v3 델타 스냅샷 경로 전용. api.kream.co.kr 도메인 + X-KREAM 인증 헤더.
         """
-        await _random_delay()
-
         size_map: dict[str, dict] = {}
 
-        # buying: 즉시구매가 (판매 입찰 = asks)
-        buy_data = await self._request(
-            "GET", "/api/p/options/display",
-            params={"product_id": product_id, "picker_type": "buying"},
-            max_retries=2,
-        )
-        if buy_data:
-            self._merge_options_into_map(buy_data, size_map, "buy")
-            logger.info("options/display (buying) 응답 수신 (%s)", product_id)
+        if include_buy_price:
+            await _random_delay()
+            # buying: 즉시구매가 (판매 입찰 = asks)
+            buy_data = await self._request(
+                "GET", "/api/p/options/display",
+                params={"product_id": product_id, "picker_type": "buying"},
+                max_retries=2,
+            )
+            if buy_data:
+                self._merge_options_into_map(buy_data, size_map, "buy")
+                logger.info("options/display (buying) 응답 수신 (%s)", product_id)
 
         await _random_delay()
 

@@ -341,6 +341,37 @@ class NikeAdapter:
             item.get("url") or "",
         )
 
+    async def _fetch_available_sizes(
+        self, product_code: str
+    ) -> tuple[str, ...]:
+        """PDP 에서 재고 있는 사이즈 목록 수집.
+
+        실패 / 빈 결과 → `()` 반환 → runtime 핸들러가 가드 미적용 (폴백).
+        `nike_crawler.get_product_detail` 가 이미 `available=True` 필터를 건
+        상태로 `RetailSizeInfo` 리스트를 돌려준다.
+        """
+        if not product_code:
+            return ()
+        try:
+            from src.crawlers.nike import nike_crawler  # lazy import (순환 방지)
+
+            product = await nike_crawler.get_product_detail(product_code)
+        except Exception as exc:  # noqa: BLE001 — 격리
+            logger.warning(
+                "[nike] PDP 사이즈 조회 실패 code=%s err=%s",
+                product_code,
+                exc,
+            )
+            return ()
+        if not product or not getattr(product, "sizes", None):
+            return ()
+        out: list[str] = []
+        for s in product.sizes:
+            sz = str(getattr(s, "size", "") or "").strip()
+            if sz:
+                out.append(sz)
+        return tuple(out)
+
     async def match_to_kream(
         self, products: list[dict]
     ) -> tuple[list[CandidateMatched], MatchStats]:
@@ -415,6 +446,13 @@ class NikeAdapter:
                 stats.skipped_guard += 1
                 continue
 
+            # 사이즈 교집합 가드용 — 나이키 실재고 사이즈 수집.
+            # Wall listing 에 사이즈 없음 → PDP 1건 추가 호출. 매칭된 후보만
+            # 대상이라 건당 10~30 수준. 실패 시 빈 튜플 → 가드 미적용 (폴백).
+            available_sizes: tuple[str, ...] = await self._fetch_available_sizes(
+                product_code
+            )
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
@@ -422,6 +460,7 @@ class NikeAdapter:
                 retail_price=price,
                 size="",  # 리스팅 단계엔 사이즈 정보 없음 — 수익 consumer 가 보강
                 url=url,
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

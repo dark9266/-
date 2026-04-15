@@ -314,7 +314,9 @@ class Orchestrator:
         self, event: CandidateMatched, ckpt_id: int | None
     ) -> None:
         # throttle 게이트 — ckpt 는 이미 record 된 상태에서 체크
-        allowed = await self._throttle.acquire()
+        # Stage 0 fix (2026-04-14): non-blocking acquire() 가 첫 버스트 후 전량
+        # deferred 락을 발생시켜 candidate 단계 영구 정지. 짧은 wait 로 스파이크 흡수.
+        allowed = await self._throttle.acquire_wait(timeout=2.0)
         if not allowed:
             self._stats["candidate_dropped_throttle"] += 1
             self._stats["candidate_deferred"] += 1

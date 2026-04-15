@@ -44,7 +44,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Protocol
 
-from src.core.kream_budget import KreamBudgetExceeded
+from src.core.kream_budget import KreamBudgetExceeded, kream_purpose
 from src.models.product import KreamProduct
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,9 @@ class _CrawlerLike(Protocol):
         purpose: str = ...,
     ) -> Any: ...
 
-    async def get_full_product_info(self, product_id: str) -> KreamProduct | None: ...
+    async def get_full_product_info(
+        self, product_id: str, *, include_buy_price: bool = ...
+    ) -> KreamProduct | None: ...
 
 
 DEFAULT_RATE_LIMIT_SEC: float = 1.5
@@ -144,7 +146,17 @@ class KreamDeltaClient:
         if self._snapshot_fn is not None:
             return await self._snapshot_fn(product_id)
         assert self._crawler is not None
-        return await self._crawler.get_full_product_info(product_id)
+        # 델타 스냅샷은 sell_now_price 만 필요 → buying 호출 생략 (호출 1건 절감).
+        # `get_full_product_info` 는 내부 _request 호출의 purpose 를 ambient
+        # contextvar 로 상속하므로 여기서 명시 태깅해야 캡 분포에 잡힌다.
+        with kream_purpose(DEFAULT_SNAPSHOT_PURPOSE):
+            try:
+                return await self._crawler.get_full_product_info(
+                    product_id, include_buy_price=False
+                )
+            except TypeError:
+                # 구형 crawler 호환 — include_buy_price kwarg 미지원 시 폴백
+                return await self._crawler.get_full_product_info(product_id)
 
     # ------------------------------------------------------------------
     # 프로토콜 메서드: fetch_light

@@ -14,23 +14,30 @@ from src.profit_calculator import calculate_kream_fees, determine_signal
 
 
 class TestSignalBoundary:
-    """determine_signal() 경계값 — config.py SignalThresholds 기준."""
+    """determine_signal() 경계값 — config.py SignalThresholds 기준.
 
-    # --- 거래량 게이트 (min_volume_7d = 3) ---
+    숨은 보석 정책 (2026-04-15): 거래량 게이트를 1로 낮춰 vol 1~4 저거래 상품도
+    알림 후보에 포함. vol 0 만 제외(대기 매수자 0 → 판매 불가). 거짓 알림 방어는
+    순수익/ROI 하드 플로어가 담당.
+    """
+
+    # --- 거래량 게이트 (min_volume_7d = 1) ---
 
     def test_volume_0_always_not_recommended(self):
-        """거래량 0 → 수익 무관 NOT_RECOMMENDED."""
+        """거래량 0 → 대기 매수자 없어 판매 불가 → NOT_RECOMMENDED."""
         assert determine_signal(50_000, 0) == Signal.NOT_RECOMMENDED
 
-    def test_volume_1_below_gate(self):
-        assert determine_signal(50_000, 1) == Signal.NOT_RECOMMENDED
+    def test_volume_1_strong_buy(self):
+        """거래량 1 + 수익 50k → STRONG_BUY (숨은 보석 허용)."""
+        assert determine_signal(50_000, 1) == Signal.STRONG_BUY
 
-    def test_volume_2_below_gate(self):
-        assert determine_signal(50_000, 2) == Signal.NOT_RECOMMENDED
+    def test_volume_2_buy(self):
+        """거래량 2 + 수익 20k → BUY."""
+        assert determine_signal(20_000, 2) == Signal.BUY
 
-    def test_volume_3_passes_gate(self):
-        """거래량 3 = 게이트 통과, vol < 5 이므로 BUY는 불가."""
-        assert determine_signal(50_000, 3) == Signal.WATCH
+    def test_volume_3_watch(self):
+        """거래량 3 + 수익 10k → WATCH (수익 < 15k)."""
+        assert determine_signal(10_000, 3) == Signal.WATCH
 
     # --- WATCH 경계 (watch_profit = 5,000) ---
 
@@ -38,49 +45,49 @@ class TestSignalBoundary:
         assert determine_signal(4_999, 5) == Signal.NOT_RECOMMENDED
 
     def test_profit_5000_watch(self):
-        """정확히 5,000₩ + vol 4 → WATCH (vol < 5이므로 BUY 불가)."""
-        assert determine_signal(5_000, 4) == Signal.WATCH
+        """정확히 5,000원 + vol 1 → WATCH."""
+        assert determine_signal(5_000, 1) == Signal.WATCH
 
     def test_profit_5001_watch(self):
-        assert determine_signal(5_001, 4) == Signal.WATCH
+        assert determine_signal(5_001, 2) == Signal.WATCH
 
-    # --- BUY 경계 (buy_profit = 15,000, buy_volume_7d = 5) ---
+    # --- BUY 경계 (buy_profit = 15,000, buy_volume_7d = 1) ---
 
     def test_profit_14999_watch(self):
-        """14,999₩ + vol 5 → WATCH (수익 부족)."""
+        """14,999원 → BUY 경계 1원 미달 → WATCH."""
         assert determine_signal(14_999, 5) == Signal.WATCH
 
-    def test_profit_15000_vol5_buy(self):
-        """정확히 경계: 15,000₩ + vol 5 → BUY."""
-        assert determine_signal(15_000, 5) == Signal.BUY
+    def test_profit_15000_vol1_buy(self):
+        """정확히 경계: 15,000원 + vol 1 → BUY (숨은 보석)."""
+        assert determine_signal(15_000, 1) == Signal.BUY
 
-    def test_profit_15001_vol5_buy(self):
-        assert determine_signal(15_001, 5) == Signal.BUY
+    def test_profit_15001_vol1_buy(self):
+        assert determine_signal(15_001, 1) == Signal.BUY
 
-    def test_profit_15000_vol4_watch(self):
-        """수익 충분하나 거래량 부족 → BUY 아닌 WATCH."""
-        assert determine_signal(15_000, 4) == Signal.WATCH
+    def test_profit_15000_vol0_not_recommended(self):
+        """거래량 0 → 수익 무관 NOT_RECOMMENDED."""
+        assert determine_signal(15_000, 0) == Signal.NOT_RECOMMENDED
 
-    # --- STRONG_BUY 경계 (strong_buy_profit = 30,000, volume = 10) ---
+    # --- STRONG_BUY 경계 (strong_buy_profit = 30,000, strong_buy_volume = 1) ---
 
     def test_profit_29999_buy(self):
-        """29,999₩ + vol 10 → BUY (수익 1원 부족)."""
+        """29,999원 → STRONG_BUY 경계 1원 미달 → BUY."""
         assert determine_signal(29_999, 10) == Signal.BUY
 
+    def test_profit_30000_vol1_strong_buy(self):
+        """정확히 경계: 30,000원 + vol 1 → STRONG_BUY (숨은 보석)."""
+        assert determine_signal(30_000, 1) == Signal.STRONG_BUY
+
+    def test_profit_30001_vol1_strong_buy(self):
+        assert determine_signal(30_001, 1) == Signal.STRONG_BUY
+
     def test_profit_30000_vol10_strong_buy(self):
-        """정확히 경계: 30,000₩ + vol 10 → STRONG_BUY."""
+        """거래량 많은 메이저 상품 그대로 STRONG_BUY."""
         assert determine_signal(30_000, 10) == Signal.STRONG_BUY
 
-    def test_profit_30001_vol10_strong_buy(self):
-        assert determine_signal(30_001, 10) == Signal.STRONG_BUY
-
-    def test_profit_30000_vol9_strong_buy(self):
-        """수익 충분 + 거래량 ≥ 5 → STRONG_BUY."""
-        assert determine_signal(30_000, 9) == Signal.STRONG_BUY
-
-    def test_profit_30000_vol4_watch(self):
-        """수익 충분하나 거래량 부족(< 5) → BUY 미달, WATCH."""
-        assert determine_signal(30_000, 4) == Signal.WATCH
+    def test_profit_30000_vol0_not_recommended(self):
+        """거래량 0 → 판매 불가 → NOT_RECOMMENDED."""
+        assert determine_signal(30_000, 0) == Signal.NOT_RECOMMENDED
 
 
 # === B. 수수료 계산 경계값 ===
