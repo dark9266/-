@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from src.adapters._collect_queue import enqueue_collect
+from src.adapters._collect_queue import aenqueue_collect
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -284,10 +284,10 @@ class AbcmartAdapter:
                 index[key] = dict(row)
         return index
 
-    def _enqueue_collect(self, item: dict, model_no: str, channel: str) -> bool:
+    async def _enqueue_collect(self, item: dict, model_no: str, channel: str) -> bool:
         """미등재 신상 → kream_collect_queue INSERT OR IGNORE."""
         prdt_no = item.get("PRDT_NO")
-        return enqueue_collect(
+        return await aenqueue_collect(
             self._db_path,
             model_number=normalize_model_number(model_no),
             brand_hint=item.get("BRAND_NAME") or "",
@@ -328,7 +328,7 @@ class AbcmartAdapter:
             kream_row = kream_index.get(key)
             channel = item.get("_channel") or ""
             if kream_row is None:
-                if self._enqueue_collect(item, model, channel):
+                if await self._enqueue_collect(item, model, channel):
                     stats.collected_to_queue += 1
                 continue
 

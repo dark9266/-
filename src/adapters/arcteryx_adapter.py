@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from src.adapters._collect_queue import enqueue_collect_batch
+from src.adapters._collect_queue import aenqueue_collect_batch
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -431,7 +431,7 @@ class ArcteryxAdapter:
         # 사이클 끝 — 미등재 신상을 한 번에 flush. DB 락 경합 최소화.
         if pending_collect:
             try:
-                inserted = enqueue_collect_batch(self._db_path, pending_collect)
+                inserted = await aenqueue_collect_batch(self._db_path, pending_collect)
                 stats.collected_to_queue += inserted
             except Exception:
                 logger.warning(
