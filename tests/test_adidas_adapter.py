@@ -73,15 +73,27 @@ def _count_queue(path: str) -> int:
 
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
 class _FakeAdidasHttp:
-    """`fetch_taxonomy_page(category, page_size, page_number)` mock.
+    """`fetch_taxonomy_page` + `get_product_detail` mock."""
 
-    카테고리별 전체 아이템 리스트를 보관하고 page_size 단위로 슬라이싱해
-    taxonomy 정규화 응답 구조 (`items`/`totalCount`) 를 반환한다.
-    """
-
-    def __init__(self, category_items: dict[str, list[dict]]):
+    def __init__(
+        self,
+        category_items: dict[str, list[dict]],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._category_items = category_items
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[dict] = []
 
     async def fetch_taxonomy_page(
@@ -102,6 +114,12 @@ class _FakeAdidasHttp:
         start = (page_number - 1) * page_size
         end = start + page_size
         return {"items": items_all[start:end], "totalCount": len(items_all)}
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 def _adidas_item(

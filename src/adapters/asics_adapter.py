@@ -368,14 +368,22 @@ class AsicsAdapter:
                 stats.skipped_guard += 1
                 continue
 
-            # 대표 사이즈 — 첫 available=True, 없으면 첫 사이즈, 없으면 빈 문자열
-            rep_size = ""
-            for s in item.get("sizes") or []:
-                if s.get("available"):
-                    rep_size = str(s.get("size") or "")
-                    break
-            if not rep_size and item.get("sizes"):
-                rep_size = str((item["sizes"][0] or {}).get("size") or "")
+            # 리스팅에 이미 sizes (available 포함) 노출 — 직접 추출
+            available_sizes: tuple[str, ...] = tuple(
+                str(s.get("size") or "").strip()
+                for s in (item.get("sizes") or [])
+                if isinstance(s, dict)
+                and s.get("available")
+                and (s.get("size") or "").strip()
+            )
+            if not available_sizes:
+                logger.info(
+                    "[asics] 재고 사이즈 없음 drop: sku=%s",
+                    raw_sku,
+                )
+                stats.soldout_dropped += 1
+                continue
+            rep_size = available_sizes[0]
 
             candidate = CandidateMatched(
                 source=self.source_name,
@@ -384,6 +392,7 @@ class AsicsAdapter:
                 retail_price=price,
                 size=rep_size,
                 url=url,
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

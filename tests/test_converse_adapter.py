@@ -73,12 +73,24 @@ def _count_queue(path: str) -> int:
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes: list[_FakeSize]):
+        self.sizes = sizes
+
+
 class _FakeConverseHttp:
     """sitemap + detail mock — 미리 등록한 매핑을 그대로 반환."""
 
     def __init__(self, sitemap_xml: str, detail_map: dict[str, str]):
         self._sitemap = sitemap_xml
         self._detail_map = detail_map
+        self._pdp: dict[str, list[str]] = {}
         self.sitemap_calls = 0
         self.detail_calls: list[str] = []
 
@@ -89,6 +101,12 @@ class _FakeConverseHttp:
     async def fetch_detail(self, url: str) -> str:
         self.detail_calls.append(url)
         return self._detail_map.get(url, "")
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 def _mk_sitemap(entries: list[tuple[str, str]]) -> str:

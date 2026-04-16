@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect
+from src.adapters._size_helpers import fetch_in_stock_sizes
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -215,6 +216,18 @@ class AbcmartAdapter:
         self._http = _ArtListingHttp()
         return self._http
 
+    def _get_channel_http(self, channel: str) -> Any | None:
+        """채널별 PDP 조회용 crawler 반환. 테스트 주입 시 self._http 그대로."""
+        if self._http is not None and not hasattr(self._http, "_routes"):
+            # 테스트 주입 fake — get_product_detail 자체 보유 가정
+            return self._http
+        if self._http is None:
+            self._get_http()
+        routes = getattr(self._http, "_routes", None)
+        if routes is None:
+            return self._http
+        return routes.get(channel)
+
     # ------------------------------------------------------------------
     # 1) 카탈로그 덤프 — 2채널 통합
     # ------------------------------------------------------------------
@@ -371,6 +384,19 @@ class AbcmartAdapter:
                 stats.skipped_guard += 1
                 continue
 
+            # PDP 실재고 사이즈 — 빈 결과 무조건 drop
+            channel_http = self._get_channel_http(channel)
+            available_sizes = await fetch_in_stock_sizes(
+                channel_http, str(prdt_no or ""), source_tag=f"abcmart:{channel}"
+            )
+            if not available_sizes:
+                logger.info(
+                    "[abcmart] PDP 재고 없음 drop: prdt_no=%s model=%s channel=%s",
+                    prdt_no, model, channel,
+                )
+                stats.soldout_dropped += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
@@ -378,6 +404,7 @@ class AbcmartAdapter:
                 retail_price=price,
                 size="",  # 리스팅 단계엔 사이즈 없음 — 수익 consumer 가 보강
                 url=url,
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

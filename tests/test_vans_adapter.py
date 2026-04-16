@@ -73,20 +73,39 @@ def _count_queue(path: str) -> int:
 
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
 class _FakeVansHttp:
-    """`search_products(keyword, limit)` 만 mock.
+    """`search_products` + `get_product_detail` mock."""
 
-    키워드 → 반스 검색 정규화 아이템 리스트 매핑. 키워드가 매핑에 없으면 빈 리스트.
-    """
-
-    def __init__(self, keyword_items: dict[str, list[dict]]):
+    def __init__(
+        self,
+        keyword_items: dict[str, list[dict]],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._keyword_items = keyword_items
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[dict] = []
 
     async def search_products(self, keyword: str, limit: int = 30) -> list[dict]:
         self.calls.append({"keyword": keyword, "limit": limit})
         items = list(self._keyword_items.get(keyword, []))
         return items[:limit]
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 # ─── fixtures ─────────────────────────────────────────────

@@ -378,6 +378,23 @@ class WorksoutAdapter:
             price = int(item.get("price") or 0)
             url = item.get("url") or f"{WEB_BASE}/product/{source_id}"
 
+            # 리스팅 단계에서 이미 sizes (in_stock) 노출 — 직접 추출
+            size_rows = item.get("sizes") or []
+            available_sizes: tuple[str, ...] = tuple(
+                str(s.get("size") or "").strip()
+                for s in size_rows
+                if isinstance(s, dict)
+                and s.get("in_stock", True)
+                and (s.get("size") or "").strip()
+            )
+            if not available_sizes:
+                logger.info(
+                    "[worksout] 재고 사이즈 없음 drop: source_id=%s",
+                    source_id,
+                )
+                stats.skipped_guard += 1
+                continue
+
             # 이름 매칭이므로 model_no 는 빈 문자열 — 수익 consumer 가
             # kream_product_id 기준으로 시세를 조회한다.
             candidate = CandidateMatched(
@@ -387,6 +404,7 @@ class WorksoutAdapter:
                 retail_price=price,
                 size="",
                 url=url,
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

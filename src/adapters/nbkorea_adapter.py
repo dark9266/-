@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect_batch
+from src.adapters._size_helpers import fetch_in_stock_sizes
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import extract_model_from_name, normalize_model_number
@@ -344,6 +345,25 @@ class NbkoreaAdapter:
                 stats.skipped_guard += 1
                 continue
 
+            # PDP 실재고 사이즈 — 빈 결과 무조건 drop
+            crawler = await self._get_http()
+            pid = str(item.get("product_id") or "")
+            if not pid:
+                # 검색 결과의 style_code/col_code 조합으로 product_id 재구성
+                style_code = str(item.get("style_code") or "")
+                col_code = str(item.get("col_code") or "")
+                pid = f"{style_code}_{col_code}" if style_code and col_code else ""
+            available_sizes = await fetch_in_stock_sizes(
+                crawler, pid, source_tag="nbkorea"
+            )
+            if not available_sizes:
+                logger.info(
+                    "[nbkorea] PDP 재고 없음 drop: pid=%s model=%s",
+                    pid, display,
+                )
+                stats.soldout_dropped += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
@@ -351,6 +371,7 @@ class NbkoreaAdapter:
                 retail_price=price,
                 size="",  # 리스팅 단계엔 단일 사이즈 없음 — 수익 consumer 가 보강
                 url=url,
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

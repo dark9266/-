@@ -74,18 +74,47 @@ def _count_queue(path: str) -> int:
 
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
-class _Fake29cmHttp:
-    """search_products 만 mock — 브랜드 키워드별 고정 응답."""
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
 
-    def __init__(self, listings: dict[str, list[dict]]):
+
+class _FakeProduct:
+    def __init__(self, sizes: list[_FakeSize]):
+        self.sizes = sizes
+
+
+class _Fake29cmHttp:
+    """search_products + get_product_detail mock.
+
+    `pdp_sizes` 맵: product_id → 재고 사이즈 리스트. 없으면 () 반환 (drop).
+    """
+
+    def __init__(
+        self,
+        listings: dict[str, list[dict]],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._listings = listings
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[tuple[str, int]] = []
+        # 디폴트: 모든 product_id 에 ("270",) 반환 (정상 케이스 회귀 호환)
+        self._default_sizes = ("270",)
 
     async def search_products(
         self, keyword: str, limit: int = 30
     ) -> list[dict]:
         self.calls.append((keyword, limit))
         return list(self._listings.get(keyword, []))
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id)
+        if sizes is None:
+            sizes = list(self._default_sizes)
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 def _product(

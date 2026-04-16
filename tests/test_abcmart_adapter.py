@@ -79,11 +79,27 @@ def _count_queue(path: str) -> int:
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
 
-class _FakeAbcmartHttp:
-    """`fetch_channel_listing(channel, max_pages, page_size)` 만 mock."""
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
 
-    def __init__(self, channel_items: dict[str, list[dict]]):
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
+class _FakeAbcmartHttp:
+    """`fetch_channel_listing` + `get_product_detail` mock."""
+
+    def __init__(
+        self,
+        channel_items: dict[str, list[dict]],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._channel_items = channel_items
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[dict] = []
 
     async def fetch_channel_listing(
@@ -93,6 +109,12 @@ class _FakeAbcmartHttp:
             {"channel": channel, "max_pages": max_pages, "page_size": page_size}
         )
         return list(self._channel_items.get(channel, []))
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 def _item(prdt_no: int, name: str, style: str, color: str = "",

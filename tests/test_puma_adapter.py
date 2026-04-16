@@ -83,15 +83,34 @@ def _count_queue(path: str) -> int:
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
 class _FakePumaHttp:
-    """fetch_category_grid(cgid, start, sz) 만 mock.
+    """fetch_category_grid + get_product_detail mock."""
 
-    pages[cgid] = [list_for_page0, list_for_page1, ...]
-    """
-
-    def __init__(self, pages: dict[str, list[list[dict]]]):
+    def __init__(
+        self,
+        pages: dict[str, list[list[dict]]],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._pages = pages
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[tuple[str, int, int]] = []
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
     async def fetch_category_grid(
         self, cgid: str, *, start: int = 0, sz: int = 48

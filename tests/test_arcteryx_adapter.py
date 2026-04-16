@@ -73,22 +73,37 @@ def _count_queue(path: str) -> int:
 
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
-class _FakeArcteryxHttp:
-    """`_list_raw(category, page_size, page_number)` + `_options_raw(product_id)`.
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
 
-    카테고리별 아이템 리스트를 보관해 페이지 슬라이스로 반환.
-    옵션 API 는 product_id → model_number 매핑을 돌려준다.
-    """
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
+class _FakeArcteryxHttp:
+    """`_list_raw` + `_options_raw` + `get_product_detail` mock."""
 
     def __init__(
         self,
         category_items: dict[str, list[dict]],
         options_by_id: dict[int | str, str] | None = None,
+        pdp_sizes: dict[str, list[str]] | None = None,
     ):
         self._category_items = category_items
         self._options_by_id = options_by_id or {}
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.list_calls: list[dict] = []
         self.options_calls: list[int | str] = []
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["L"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
     async def _list_raw(
         self,

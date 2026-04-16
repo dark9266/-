@@ -331,13 +331,21 @@ class StussyAdapter:
                 stats.ambiguous_unresolved += 1
                 continue
 
+            variant_size = (item.get("size") or "").strip()
+            available_sizes: tuple[str, ...] = (variant_size,) if variant_size else ()
+            if not available_sizes:
+                logger.info("[stussy] variant 사이즈 없음 drop: prefix=%s", prefix)
+                stats.ambiguous_unresolved += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
                 model_no=normalize_model_number(prefix),
                 retail_price=int(item.get("price") or 0),
-                size=item.get("size") or "",
+                size=variant_size,
                 url=_build_url(item.get("handle") or ""),
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

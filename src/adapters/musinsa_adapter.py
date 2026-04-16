@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect_batch
+from src.adapters._size_helpers import fetch_in_stock_sizes
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import extract_model_from_name, normalize_model_number
@@ -370,6 +371,20 @@ class MusinsaAdapter:
                 stats.skipped_guard += 1
                 continue
 
+            # PDP 실재고 사이즈 수집 — 빈 결과는 무조건 drop (HQ6893 회귀 방지).
+            http = await self._get_http()
+            available_sizes = await fetch_in_stock_sizes(
+                http, goods_no, source_tag="musinsa"
+            )
+            if not available_sizes:
+                logger.info(
+                    "[musinsa] PDP 재고 없음 drop: pid=%s model=%s",
+                    goods_no,
+                    model_from_name,
+                )
+                stats.soldout_dropped += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
@@ -377,6 +392,7 @@ class MusinsaAdapter:
                 retail_price=price,
                 size="",  # 리스팅 단계엔 사이즈 정보 없음 — 수익 consumer 가 보강
                 url=url,
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

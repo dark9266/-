@@ -73,11 +73,27 @@ def _count_queue(path: str) -> int:
 
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
-class _FakeMusinsaHttp:
-    """fetch_category_listing 만 mock — DEFAULT_CATEGORIES 첫 코드에 고정 응답."""
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
 
-    def __init__(self, listings: dict[str, list[dict]]):
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
+class _FakeMusinsaHttp:
+    """fetch_category_listing + get_product_detail mock."""
+
+    def __init__(
+        self,
+        listings: dict[str, list[dict]],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._listings = listings
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[tuple[str, int]] = []
 
     async def fetch_category_listing(
@@ -90,6 +106,13 @@ class _FakeMusinsaHttp:
     ) -> list[dict]:
         self.calls.append((category, max_pages))
         return list(self._listings.get(category, []))
+
+    async def get_product_detail(self, product_id: str):
+        # 디폴트: 모든 pid → ("270",) 정상 케이스
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 # ─── fixtures ─────────────────────────────────────────────

@@ -378,13 +378,24 @@ class TuneAdapter:
                 stats.skipped_guard += 1
                 continue
 
+            variant_size = (item.get("size") or "").strip()
+            available_sizes: tuple[str, ...] = (variant_size,) if variant_size else ()
+            if not available_sizes:
+                logger.info(
+                    "[tune] variant 사이즈 없음 drop: model=%s",
+                    match_model,
+                )
+                stats.soldout_dropped += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
                 model_no=normalize_model_number(match_model),
                 retail_price=price,
-                size=item.get("size") or "",
+                size=variant_size,
                 url=url,
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

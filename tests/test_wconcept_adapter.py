@@ -73,17 +73,34 @@ def _count_queue(path: str) -> int:
 
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
 class _FakeWconceptHttp:
-    """W컨셉 크롤러의 `search_products(keyword, limit, page_no)` 만 mock.
+    """W컨셉 크롤러의 `search_products` + `get_product_detail` mock."""
 
-    키워드별 전체 아이템 리스트를 보관하고 page_no*limit 슬라이싱으로
-    페이지네이션을 모사한다. 아이템 구조는 크롤러
-    `_parse_search_response` 반환과 동일.
-    """
-
-    def __init__(self, keyword_items: dict[str, list[dict]]):
+    def __init__(
+        self,
+        keyword_items: dict[str, list[dict]],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._keyword_items = keyword_items
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[dict] = []
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
     async def search_products(
         self,

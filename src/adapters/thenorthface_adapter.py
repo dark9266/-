@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect_batch
+from src.adapters._size_helpers import fetch_in_stock_sizes
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -282,13 +283,26 @@ class TheNorthFaceAdapter:
                 stats.skipped_guard += 1
                 continue
 
+            crawler = await self._get_http()
+            pid = str(item.get("product_id") or model_no or "")
+            available_sizes = await fetch_in_stock_sizes(
+                crawler, pid, source_tag="thenorthface"
+            )
+            if not available_sizes:
+                logger.info(
+                    "[thenorthface] PDP 재고 없음 drop: model=%s", model_no
+                )
+                stats.soldout_dropped += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
                 model_no=normalize_model_number(model_no),
                 retail_price=price,
-                size="",  # 리스팅 단계에서 사이즈 없음
+                size="",
                 url=item.get("url") or _build_url(model_no),
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

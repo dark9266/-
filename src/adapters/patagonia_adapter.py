@@ -238,13 +238,29 @@ class PatagoniaAdapter:
                 stats.skipped_guard += 1
                 continue
 
+            available_sizes: tuple[str, ...] = tuple(
+                str(s.get("size") or "").strip()
+                for s in (item.get("sizes") or [])
+                if isinstance(s, dict)
+                and s.get("in_stock")
+                and (s.get("size") or "").strip()
+            )
+            if not available_sizes:
+                logger.info(
+                    "[patagonia] 재고 사이즈 없음 drop: style=%s",
+                    style_code,
+                )
+                stats.soldout_dropped += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
                 model_no=normalize_model_number(style_code),
                 retail_price=price,
-                size="",  # 사이즈 분해는 하류 소비자가 item['sizes'] 로 수행
+                size="",
                 url=item.get("url") or "",
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

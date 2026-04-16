@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect_batch
+from src.adapters._size_helpers import fetch_in_stock_sizes
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -338,6 +339,20 @@ class PumaAdapter:
                 stats.skipped_guard += 1
                 continue
 
+            # PDP 실재고 사이즈 — 빈 결과 무조건 drop
+            http = await self._get_http()
+            pid = str(item.get("product_id") or model_no or "")
+            available_sizes = await fetch_in_stock_sizes(
+                http, pid, source_tag="puma"
+            )
+            if not available_sizes:
+                logger.info(
+                    "[puma] PDP 재고 없음 drop: pid=%s model=%s",
+                    pid, model_no,
+                )
+                stats.soldout_dropped += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
@@ -345,6 +360,7 @@ class PumaAdapter:
                 retail_price=price,
                 size="",  # 그리드 경로엔 사이즈별 재고 없음 — consumer 가 보강
                 url=url,
+                available_sizes=available_sizes,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

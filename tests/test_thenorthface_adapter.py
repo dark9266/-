@@ -75,6 +75,17 @@ def _count_queue(path: str) -> int:
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes: list[_FakeSize]):
+        self.sizes = sizes
+
+
 class _FakeTnfHttp:
     """``fetch_tiles_category(category, page)`` 제공.
 
@@ -83,6 +94,7 @@ class _FakeTnfHttp:
 
     def __init__(self, pages_by_category: dict[str, list[list[dict]]]):
         self._pages = pages_by_category
+        self._pdp: dict[str, list[str]] = {}
         self.calls: list[tuple[str, int]] = []
 
     async def fetch_tiles_category(self, category: str, page: int) -> list[dict]:
@@ -91,6 +103,12 @@ class _FakeTnfHttp:
         if page < 1 or page > len(pages):
             return []
         return list(pages[page - 1])
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["L"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 # ─── fixtures ─────────────────────────────────────────────

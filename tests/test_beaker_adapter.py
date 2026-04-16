@@ -73,21 +73,37 @@ def _count_queue(path: str) -> int:
 
 # ─── mock BEAKER 크롤러 ──────────────────────────────────
 
-class _FakeBeakerCrawler:
-    """BeakerCrawler.search_products(keyword, limit, page_no=?) mock.
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
 
-    카테고리 키워드 → 아이템 리스트 고정 매핑. page_no 로 slicing.
-    """
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
+class _FakeBeakerCrawler:
+    """BeakerCrawler.search_products + get_product_detail mock."""
 
     def __init__(
         self,
         keyword_items: dict[str, list[dict]],
         *,
         paginated: bool = True,
+        pdp_sizes: dict[str, list[str]] | None = None,
     ):
         self._keyword_items = keyword_items
         self._paginated = paginated
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[dict] = []
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
     async def search_products(
         self,

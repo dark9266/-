@@ -73,17 +73,37 @@ def _count_queue(path: str) -> int:
 
 # ─── mock EQL 크롤러 ──────────────────────────────────────
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
 class _FakeEqlCrawler:
-    """EQL 크롤러 `search_products(keyword, limit, page_no=?)` 만 mock.
+    """EQL 크롤러 `search_products` + `get_product_detail` mock."""
 
-    page_no 를 지원해 페이지네이션을 모사. page_size*N 슬라이싱.
-    아이템 구조는 실제 크롤러 `_parse_search_html` 반환과 동일.
-    """
-
-    def __init__(self, keyword_items: dict[str, list[dict]], *, paginated: bool = True):
+    def __init__(
+        self,
+        keyword_items: dict[str, list[dict]],
+        *,
+        paginated: bool = True,
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._keyword_items = keyword_items
         self._paginated = paginated
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[dict] = []
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
     async def search_products(
         self,
@@ -116,6 +136,9 @@ class _LegacyEqlCrawler:
     async def search_products(self, keyword: str, limit: int = 30) -> list[dict]:
         self.calls.append({"keyword": keyword, "limit": limit})
         return [dict(it) for it in self._keyword_items.get(keyword, [])[:limit]]
+
+    async def get_product_detail(self, product_id: str):
+        return _FakeProduct([_FakeSize("270", True)])
 
 
 def _eql_item(

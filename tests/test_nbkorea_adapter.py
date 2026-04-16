@@ -73,11 +73,27 @@ def _count_queue(path: str) -> int:
 
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
-class _FakeNbkoreaHttp:
-    """fetch_category_catalog 만 mock — 고정 응답."""
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
 
-    def __init__(self, catalog: list[dict]):
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
+class _FakeNbkoreaHttp:
+    """fetch_category_catalog + get_product_detail mock."""
+
+    def __init__(
+        self,
+        catalog: list[dict],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._catalog = catalog
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[tuple[dict[str, str], int]] = []
 
     async def fetch_category_catalog(
@@ -87,6 +103,12 @@ class _FakeNbkoreaHttp:
     ) -> list[dict]:
         self.calls.append((dict(categories), max_items_per_category))
         return [dict(x) for x in self._catalog]
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 # ─── fixtures ─────────────────────────────────────────────

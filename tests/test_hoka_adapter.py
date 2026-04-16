@@ -74,16 +74,34 @@ def _count_queue(path: str) -> int:
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes: list[_FakeSize]):
+        self.sizes = sizes
+
+
 class _FakeHokaHttp:
     """fetch_tiles_keyword(keyword) 만 mock."""
 
     def __init__(self, by_keyword: dict[str, list[dict]]):
         self._by_keyword = by_keyword
+        self._pdp: dict[str, list[str]] = {}
         self.calls: list[str] = []
 
     async def fetch_tiles_keyword(self, keyword: str) -> list[dict]:
         self.calls.append(keyword)
         return list(self._by_keyword.get(keyword, []))
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
 def _mk_tile(

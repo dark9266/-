@@ -31,6 +31,7 @@ from typing import Any
 import httpx
 
 from src.adapters._collect_queue import aenqueue_collect_batch
+from src.adapters._size_helpers import fetch_in_stock_sizes
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.matcher import normalize_model_number
 
@@ -416,6 +417,18 @@ class ConverseAdapter:
                 stats.ambiguous_unresolved += 1
                 continue
 
+            http = await self._get_http()
+            pid = str(item.get("product_no") or norm or "")
+            available_sizes = await fetch_in_stock_sizes(
+                http, pid, source_tag="converse"
+            )
+            if not available_sizes:
+                logger.info(
+                    "[converse] PDP 재고 없음 drop: model=%s", norm
+                )
+                stats.soldout_dropped += 1
+                continue
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
@@ -423,6 +436,7 @@ class ConverseAdapter:
                 retail_price=int(item.get("price") or 0),
                 size="",
                 url=item.get("url") or BASE_URL,
+                available_sizes=available_sizes,
             )
             try:
                 await self._bus.publish(candidate)

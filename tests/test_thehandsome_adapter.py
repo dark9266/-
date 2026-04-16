@@ -70,18 +70,37 @@ def _count_queue(path: str) -> int:
 
 # ─── mock thehandsome 크롤러 ──────────────────────────────
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
 class _FakeThehandsomeCrawler:
-    """`list_brands()` + `dump_brand_goods(brand_no, ...)` 만 mock."""
+    """`list_brands` + `dump_brand_goods` + `get_product_detail` mock."""
 
     def __init__(
         self,
         brands: list[dict],
         brand_items: dict[str, list[dict]],
+        pdp_sizes: dict[str, list[str]] | None = None,
     ):
         self._brands = brands
         self._brand_items = brand_items
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.brand_calls: int = 0
         self.dump_calls: list[dict] = []
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["FREE"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
     async def list_brands(self) -> list[dict]:
         self.brand_calls += 1

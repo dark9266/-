@@ -78,16 +78,34 @@ def _count_queue(path: str) -> int:
 
 # ─── mock HTTP 레이어 ─────────────────────────────────────
 
+class _FakeSize:
+    def __init__(self, size: str, in_stock: bool = True):
+        self.size = size
+        self.in_stock = in_stock
+
+
+class _FakeProduct:
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+
 class _FakeKasinaHttp:
-    """`_search_raw(brand_no, page_size, page_number)` 만 mock.
+    """`_search_raw(brand_no, page_size, page_number)` + `get_product_detail` mock."""
 
-    브랜드별 전체 아이템 리스트를 보관하고 page_size 단위로 슬라이싱해
-    shopby 원본 응답 구조(`items`/`totalCount`) 를 반환한다.
-    """
-
-    def __init__(self, brand_items: dict[int, list[dict]]):
+    def __init__(
+        self,
+        brand_items: dict[int, list[dict]],
+        pdp_sizes: dict[str, list[str]] | None = None,
+    ):
         self._brand_items = brand_items
+        self._pdp = pdp_sizes if pdp_sizes is not None else {}
         self.calls: list[dict] = []
+
+    async def get_product_detail(self, product_id: str):
+        sizes = self._pdp.get(product_id, ["270"])
+        if not sizes:
+            return None
+        return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
     async def _search_raw(
         self,
