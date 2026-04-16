@@ -89,6 +89,21 @@ class _FakeNikeHttp:
         return [dict(x) for x in self._listings.get(category, [])]
 
 
+def _stub_pdp_sizes(adapter, available: dict[str, tuple[str, ...]] | None = None) -> None:
+    """테스트에서 `_fetch_available_sizes` 를 실호출 없이 stub.
+
+    `available` 맵에 없는 코드는 `()` → drop 시뮬레이션.
+    맵이 None 이면 모든 코드에 `("270",)` 반환 (정상 케이스).
+    """
+
+    async def _fake(code: str, _map=available) -> tuple[str, ...]:
+        if _map is None:
+            return ("270",)
+        return _map.get(code, ())
+
+    adapter._fetch_available_sizes = _fake  # type: ignore[assignment]
+
+
 # ─── fixtures ─────────────────────────────────────────────
 
 @pytest.fixture
@@ -196,6 +211,7 @@ async def test_match_to_kream_classifies_items(bus, kream_db):
         http_client=fake_http,
         categories={"men-shoes": "남성 신발"},
     )
+    _stub_pdp_sizes(adapter)  # 모든 PDP → ("270",) (정상 재고)
 
     products = [
         # (1) 정상 매칭 — Nike AF1 일반
@@ -313,11 +329,85 @@ async def test_run_once_stats(bus, kream_db):
         http_client=fake_http,
         categories={"men-shoes": "남성 신발"},
     )
+    _stub_pdp_sizes(adapter)
     stats = await adapter.run_once()
     # LAUNCH 는 dump 단계에서 제외 → match 에 진입하지 않음
     assert stats["dumped"] == 2
     assert stats["matched"] == 1
     assert stats["soldout_dropped"] == 1
+
+
+# ─── (c2) PDP 빈 결과 → drop (HQ4307-001 LAUNCH 버그 회귀 방지) ─────
+
+async def test_match_drops_when_pdp_returns_empty(bus, kream_db):
+    """Wall listing 은 LIVE/재고있음으로 보이지만 PDP 가 LAUNCH/품절이면 drop.
+
+    2026-04-16 사고: HQ4307-001 (나이키 마인드 001) 이 LAUNCH 상품인데
+    wall listing 에는 LIVE 로 뜨고 isSoldOut=False. PDP 에서만 LAUNCH 판정
+    되어 `_fetch_available_sizes` 가 `()` 반환 → 과거 "listing-only 폴백"
+    정책이 통과시켜 강력매수 알림 8회 발사. 이 정책은 폐기됨 — 빈 결과 =
+    무조건 drop.
+    """
+    fake_http = _FakeNikeHttp(listings={})
+    adapter = NikeAdapter(
+        bus=bus,
+        db_path=kream_db,
+        http_client=fake_http,
+        categories={"men-shoes": "남성 신발"},
+    )
+    # CW2288-111 는 PDP 재고 있음, AQ4211-100 는 PDP 빈 결과 (LAUNCH 시뮬)
+    _stub_pdp_sizes(adapter, available={"CW2288-111": ("270", "280")})
+
+    products = [
+        {
+            "productCode": "CW2288-111",
+            "name": "Nike Air Force 1 Low / CW2288-111",
+            "price": 139000,
+            "url": "https://www.nike.com/kr/t/_/CW2288-111",
+            "isSoldOut": False,
+            "publishType": "LIVE",
+        },
+        # wall 에선 정상으로 보이지만 PDP 가 LAUNCH/품절
+        {
+            "productCode": "CW2288-111-FAKE",  # 크림에 없는 코드 → 미등재로 빠짐
+            "name": "Nike Fake / CW2288-111-FAKE",
+            "price": 100000,
+            "url": "https://www.nike.com/kr/t/_/CW2288-111-FAKE",
+            "isSoldOut": False,
+            "publishType": "LIVE",
+        },
+    ]
+
+    # HQ4307-001 시뮬: 크림 DB 에 추가, wall 엔 LIVE 지만 PDP 빈 결과
+    import sqlite3 as _sq
+    conn = _sq.connect(kream_db)
+    conn.execute(
+        "INSERT INTO kream_products(product_id, name, model_number, brand) "
+        "VALUES ('748804', '나이키 마인드 001 블랙 크롬', 'HQ4307-001', 'Nike')"
+    )
+    conn.commit()
+    conn.close()
+    products.append(
+        {
+            "productCode": "HQ4307-001",
+            "name": "나이키 마인드 001 / HQ4307-001",
+            "price": 119000,
+            "url": "https://www.nike.com/kr/t/_/HQ4307-001",
+            "isSoldOut": False,
+            "publishType": "LIVE",
+        }
+    )
+
+    matches, stats = await adapter.match_to_kream(products)
+
+    # CW2288-111 만 통과 (PDP 재고 있음). HQ4307-001 은 PDP 빈 → drop.
+    matched_models = [c.model_no for c in matches]
+    assert "CW2288-111" in matched_models
+    assert "HQ4307-001" not in matched_models, (
+        "HQ4307-001 LAUNCH 상품이 강력매수 알림으로 새면 안 됨 "
+        "— 2026-04-16 회귀 테스트"
+    )
+    assert stats.soldout_dropped >= 1
 
 
 # ─── (d) E2E: 어댑터 → 오케스트레이터 → AlertSent ─────────
@@ -344,6 +434,7 @@ async def test_end_to_end_through_orchestrator(bus, kream_db, tmp_path):
         http_client=fake_http,
         categories={"men-shoes": "남성 신발"},
     )
+    _stub_pdp_sizes(adapter)
 
     ckpt_path = tmp_path / "ckpt.db"
     store = CheckpointStore(str(ckpt_path))

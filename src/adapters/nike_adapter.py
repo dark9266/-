@@ -346,7 +346,10 @@ class NikeAdapter:
     ) -> tuple[str, ...]:
         """PDP 에서 재고 있는 사이즈 목록 수집.
 
-        실패 / 빈 결과 → `()` 반환 → runtime 핸들러가 가드 미적용 (폴백).
+        빈 튜플 = (1) PDP 호출 실패 (2) LAUNCH/비구매가능 (3) 전 사이즈 품절.
+        세 경우 모두 match_to_kream 에서 drop 한다 — 과거에는 "listing-only
+        폴백"으로 통과시켰으나, 이로 인해 HQ4307-001 같은 LAUNCH 상품이
+        강력매수 알림으로 샘 (2026-04-16 버그, alert_sent 8회 누적).
         `nike_crawler.get_product_detail` 가 이미 `available=True` 필터를 건
         상태로 `RetailSizeInfo` 리스트를 돌려준다.
         """
@@ -448,10 +451,20 @@ class NikeAdapter:
 
             # 사이즈 교집합 가드용 — 나이키 실재고 사이즈 수집.
             # Wall listing 에 사이즈 없음 → PDP 1건 추가 호출. 매칭된 후보만
-            # 대상이라 건당 10~30 수준. 실패 시 빈 튜플 → 가드 미적용 (폴백).
+            # 대상이라 건당 10~30 수준. PDP 빈 결과(LAUNCH/품절/실패) → drop.
+            # 과거 "listing-only 폴백" 정책이 HQ4307-001 LAUNCH 상품을 통과
+            # 시켜 허위 강력매수 알림이 8회 발사된 사고 (2026-04-16) 재발 방지.
             available_sizes: tuple[str, ...] = await self._fetch_available_sizes(
                 product_code
             )
+            if not available_sizes:
+                logger.info(
+                    "[nike] PDP 재고 없음/LAUNCH/실패 drop: code=%s model=%s",
+                    product_code,
+                    model_no,
+                )
+                stats.soldout_dropped += 1
+                continue
 
             candidate = CandidateMatched(
                 source=self.source_name,
