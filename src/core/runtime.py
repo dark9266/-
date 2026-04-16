@@ -298,10 +298,26 @@ class V3Runtime:
             if avail:
                 avail_norm = {str(s).strip() for s in avail if str(s).strip()}
                 raw_sizes = snapshot.get("size_prices") or []
+
+                _FREE_ALIASES = {"FREE", "F", "ONE SIZE", "ONESIZE", "OS"}
+                avail_upper = {s.upper() for s in avail_norm}
+
+                def _size_matches(kream_size: str) -> bool:
+                    s = kream_size.strip().upper()
+                    s_orig = kream_size.strip()
+                    if s_orig in avail_norm:
+                        return True
+                    # FREE ↔ ONE SIZE 등 원사이즈 동의어 (대소문자 무시)
+                    if s in _FREE_ALIASES and avail_upper & _FREE_ALIASES:
+                        return True
+                    # 크림 여성화/키즈: "240(US 5.5)" → "240"
+                    base = s_orig.split("(")[0].strip()
+                    return base != s_orig and base in avail_norm
+
                 filtered = [
                     sp
                     for sp in raw_sizes
-                    if str(sp.get("size") or "").strip() in avail_norm
+                    if _size_matches(str(sp.get("size") or ""))
                 ]
                 if not filtered:
                     logger.info(
