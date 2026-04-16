@@ -83,18 +83,18 @@ class _NoSleep:
 
 
 def _sdui_response(price: int, option_key: str = "260") -> dict:
-    """options/display SDUI 형식 mock 응답."""
+    """options/display mock 응답 — 레거시 sell_now_price 필드 사용.
+
+    SDUI parameters.price 는 구매입찰 추천 시작가이므로
+    _extract_best_sell_now 가 무시. 레거시 필드로 가격 전달.
+    """
     return {
         "sections": [
             {
                 "items": [
                     {
-                        "action": {
-                            "parameters": {
-                                "option_key": [option_key],
-                                "price": [price],
-                            }
-                        }
+                        "sell_now_price": price,
+                        "size": option_key,
                     }
                 ]
             }
@@ -291,7 +291,8 @@ def test_constructor_requires_crawler_or_fns() -> None:
         KreamDeltaClient()
 
 
-def test_extract_best_sell_now_sdui() -> None:
+def test_extract_best_sell_now_sdui_parameters_ignored() -> None:
+    """SDUI parameters.price 는 구매입찰 추천가이므로 무시해야 함."""
     data = {
         "items": [
             {"parameters": {"option_key": ["260"], "price": [100000]}},
@@ -299,7 +300,7 @@ def test_extract_best_sell_now_sdui() -> None:
             {"parameters": {"option_key": ["280"], "price": [120000]}},
         ]
     }
-    assert _extract_best_sell_now(data) == 150000
+    assert _extract_best_sell_now(data) is None
 
 
 def test_extract_best_sell_now_legacy_field() -> None:

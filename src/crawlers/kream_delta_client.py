@@ -283,24 +283,15 @@ class KreamDeltaClient:
 def _extract_best_sell_now(data: Any) -> int | None:
     """options/display 응답에서 최고 sell_now_price 추출.
 
-    KreamCrawler._merge_options_into_map 과 동일 원리로 SDUI
-    parameters.option_key/price 쌍을 수집하되, 의존성 최소화를 위해
-    이 모듈 내에서 단순 재귀 구현.
+    SDUI ``parameters.price`` 는 "구매입찰 추천 시작가"이므로 sell_now 로
+    사용하면 50-80% 부풀려짐. 레거시 필드(``sell_now_price``,
+    ``sellNowPrice``)만 신뢰한다.
     """
     best: int | None = None
 
     def _walk(obj: Any) -> None:
         nonlocal best
         if isinstance(obj, dict):
-            params = obj.get("parameters")
-            if isinstance(params, dict):
-                price = params.get("price")
-                if isinstance(price, list) and price:
-                    price = price[0]
-                p_int = _to_int(price)
-                if p_int and (best is None or p_int > best):
-                    best = p_int
-            # 레거시 필드도 스캔
             for key in ("sell_now_price", "sellNowPrice"):
                 v = obj.get(key)
                 v_int = _to_int(v)

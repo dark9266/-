@@ -1630,21 +1630,34 @@ class KreamCrawler:
             product_id, include_buy_price=include_buy_price
         )
         if api_prices:
-            # API 결과가 더 완전하면 교체, 아니면 병합
+            # SDUI action parameters.price 는 "구매입찰 추천 시작가"이지
+            # 실제 sell_now/buy_now 시세가 아님. pinia 가격을 항상 우선하고,
+            # SDUI 는 사이즈 목록 확장 용도로만 사용 (가격은 None 으로 클리어).
             if len(api_prices) > len(size_prices):
+                pinia_map = {p.size: p for p in size_prices}
                 api_map = {p.size: p for p in api_prices}
-                for p in size_prices:
-                    if p.size in api_map:
-                        ap = api_map[p.size]
-                        if not ap.last_sale_price and p.last_sale_price:
-                            ap.last_sale_price = p.last_sale_price
-                            ap.last_sale_date = p.last_sale_date
+                merged: list[KreamSizePrice] = []
+                for ap in api_prices:
+                    pp = pinia_map.get(ap.size)
+                    if pp:
+                        if not pp.last_sale_price and ap.last_sale_price:
+                            pp.last_sale_price = ap.last_sale_price
+                            pp.last_sale_date = ap.last_sale_date
+                        merged.append(pp)
                     else:
-                        api_prices.append(p)
-                api_prices.sort(key=lambda p: int(p.size) if p.size.isdigit() else 0)
-                size_prices = api_prices
+                        ap.sell_now_price = None
+                        ap.buy_now_price = None
+                        merged.append(ap)
+                for pp in size_prices:
+                    if pp.size not in api_map:
+                        merged.append(pp)
+                merged.sort(key=lambda p: int(p.size) if p.size.isdigit() else 0)
+                size_prices = merged
                 logger.info("사이즈별 시세 보충: %d건 (API+pinia 병합)", len(size_prices))
             elif not size_prices:
+                for ap in api_prices:
+                    ap.sell_now_price = None
+                    ap.buy_now_price = None
                 size_prices = api_prices
 
         # 거래내역 보강: pinia 캡 감지 시 screens API로 볼륨 추정
