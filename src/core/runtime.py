@@ -318,6 +318,7 @@ class V3Runtime:
                     sp
                     for sp in raw_sizes
                     if _size_matches(str(sp.get("size") or ""))
+                    and sp.get("sell_now_price")
                 ]
                 if not filtered:
                     logger.info(
@@ -327,16 +328,10 @@ class V3Runtime:
                         sorted(avail_norm)[:8],
                     )
                     return None
-                # snapshot 복사본을 수정해 이후 로직(MIN 재산정)에 교집합 반영
-                prices = [
-                    int(sp["sell_now_price"])
-                    for sp in filtered
-                    if sp.get("sell_now_price")
-                ]
+                prices = [int(sp["sell_now_price"]) for sp in filtered]
                 snapshot = dict(snapshot)
                 snapshot["size_prices"] = filtered
-                if prices:
-                    snapshot["sell_now_price"] = min(prices)
+                snapshot["sell_now_price"] = min(prices)
 
             try:
                 kream_sell_price = int(snapshot.get("sell_now_price") or 0)
