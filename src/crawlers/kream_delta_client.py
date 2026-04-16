@@ -429,12 +429,12 @@ def build_snapshot_fn(
     경량 경로 (2026-04-16):
         기존 ``get_snapshot`` → ``get_full_product_info`` (HTML+options/display+screens
         = 3~5 API/상품) 대신, ``get_snapshot_light`` (HTML pinia 1회) 로 교체.
-        수익 검증에 필요한 sell_now_price + volume_7d 를 API 1회에서 추출.
+        sell_now_price + volume_7d 모두 pinia 에서 추출. pinia 거래 내역은
+        최대 5건이라 volume 은 하한(floor)이지만 게이트(≥1) 판정에 충분.
 
     TTL 캐시 (30분):
         같은 product_id 를 30분 내 재조회하지 않음. 22개 어댑터에서 동일
         상품이 중복 후보로 올라와도 캐시 히트 → API 0회.
-        (2026-04-16 실측: 상품 137241번이 14회 중복 → 캐시로 13회 절감)
 
     - 사이즈가 size_prices 에 존재하면 해당 sell_now_price 사용 (정확도 우선)
     - 사이즈가 비거나 "ALL" 이면 size_prices 중 **MIN sell_now_price** 를 보수
@@ -517,6 +517,15 @@ def build_snapshot_fn(
                 }
         return None
 
+    def _has_cache(pid: int) -> bool:
+        """캐시에 유효한 스냅샷이 있는지 확인 (쓰로틀 스킵 판정용)."""
+        cached = _cache.get(pid)
+        if cached is None:
+            return False
+        _, ts = cached
+        return (time.monotonic() - ts) < cache_ttl_sec
+
+    _snapshot.has_cache = _has_cache  # type: ignore[attr-defined]
     return _snapshot
 
 

@@ -169,6 +169,7 @@ class Orchestrator:
         self._catalog_handler: CatalogHandler | None = None
         self._candidate_handler: CandidateHandler | None = None
         self._profit_handler: ProfitHandler | None = None
+        self._snapshot_fn: Any = None
 
         self._tasks: list[asyncio.Task[None]] = []
         self._running: bool = False
@@ -196,11 +197,14 @@ class Orchestrator:
             raise ValueError("on_catalog_dumped handler already registered")
         self._catalog_handler = fn
 
-    def on_candidate_matched(self, fn: CandidateHandler) -> None:
+    def on_candidate_matched(
+        self, fn: CandidateHandler, *, snapshot_fn: Any = None,
+    ) -> None:
         """CandidateMatched handler 등록. throttle 통과 필수."""
         if self._candidate_handler is not None:
             raise ValueError("on_candidate_matched handler already registered")
         self._candidate_handler = fn
+        self._snapshot_fn = snapshot_fn
 
     def on_profit_found(self, fn: ProfitHandler) -> None:
         """ProfitFound handler 등록."""
@@ -467,10 +471,20 @@ class Orchestrator:
     async def _process_candidate(
         self, event: CandidateMatched, ckpt_id: int | None
     ) -> None:
-        # throttle 게이트 — ckpt 는 이미 record 된 상태에서 체크
-        # Stage 0 fix (2026-04-14): non-blocking acquire() 가 첫 버스트 후 전량
-        # deferred 락을 발생시켜 candidate 단계 영구 정지. 짧은 wait 로 스파이크 흡수.
-        allowed = await self._throttle.acquire_wait(timeout=2.0)
+        # 캐시 히트면 API 호출 불필요 → 쓰로틀 토큰 소비 없이 바로 진행
+        cache_hit = False
+        sfn = self._snapshot_fn
+        if sfn is not None and hasattr(sfn, "has_cache"):
+            try:
+                cache_hit = sfn.has_cache(event.kream_product_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not cache_hit:
+            allowed = await self._throttle.acquire_wait(timeout=2.0)
+        else:
+            allowed = True
+
         if not allowed:
             logger.info(
                 "candidate throttle deferred: model_no=%s", event.model_no

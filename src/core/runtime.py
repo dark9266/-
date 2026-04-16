@@ -424,7 +424,10 @@ class V3Runtime:
             recover_candidate_cap=self._recover_candidate_cap,
         )
         self._orchestrator.on_catalog_dumped(self._build_catalog_handler())
-        self._orchestrator.on_candidate_matched(self._build_candidate_handler())
+        self._orchestrator.on_candidate_matched(
+            self._build_candidate_handler(),
+            snapshot_fn=self._kream_snapshot_fn,
+        )
 
         log_path = self._alert_log_path
         if log_path is None:
