@@ -80,6 +80,7 @@ class MusinsaHttpxCrawler:
         self._rate_limiter = AsyncRateLimiter(
             max_concurrent=10, min_interval=0.5,
         )
+        self._inventory_api_warned = False
 
     async def connect(self) -> httpx.AsyncClient:
         """httpx 클라이언트 생성 + 세션 쿠키 로드."""
@@ -331,6 +332,10 @@ class MusinsaHttpxCrawler:
             goods_data = await self._fetch_goods_detail_api(api_id)
 
             if goods_data:
+                # 전체 품절 상품 스킵 (재고 API 불능 시 유일한 품절 게이트)
+                if goods_data.get("isOutOfStock"):
+                    return None
+
                 name = goods_data.get("goodsNm") or ""
                 brand_info = goods_data.get("brandInfo")
                 brand = (
@@ -500,7 +505,9 @@ class MusinsaHttpxCrawler:
             except Exception:
                 continue
 
-        logger.debug("재고 API 실패: pid=%s", product_id)
+        if not self._inventory_api_warned:
+            logger.warning("재고 API 전면 불능 (400) — optionItems.activated 폴백")
+            self._inventory_api_warned = True
         return None
 
     # ─── HTML 파싱 헬퍼 ──────────────────────────────────

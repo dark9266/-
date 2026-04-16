@@ -33,6 +33,7 @@ from src.adapters._size_helpers import fetch_in_stock_sizes
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
+from src.models.product import RetailProduct, RetailSizeInfo
 from src.utils.rate_limiter import AsyncRateLimiter
 
 logger = logging.getLogger(__name__)
@@ -573,6 +574,57 @@ class _DefaultArcteryxHttp:
             return payload
         inner = payload.get("data") if isinstance(payload, dict) else None
         return inner if isinstance(inner, dict) else {}
+
+    async def get_product_detail(self, product_id: str) -> RetailProduct | None:
+        """PDP 사이즈 조회 — options API → 재고 있는 사이즈 RetailProduct 반환."""
+        data = await self._options_raw(product_id=product_id)
+        if not data:
+            return None
+        options = data.get("options") or []
+        model_number = ""
+        sizes: list[RetailSizeInfo] = []
+        seen_sizes: set[str] = set()
+        for option in options:
+            level = option.get("level")
+            if level == 1:
+                model_number = option.get("code") or ""
+                if not model_number:
+                    values = option.get("values") or []
+                    if values and isinstance(values[0], dict):
+                        model_number = str(values[0].get("value") or "")
+            elif level == 2:
+                for val in option.get("values") or []:
+                    if not isinstance(val, dict):
+                        continue
+                    size_val = str(val.get("value") or "").strip()
+                    if not size_val or size_val in seen_sizes:
+                        continue
+                    in_stock = (
+                        val.get("sale_state") == "ON"
+                        and bool(val.get("is_orderable", False))
+                        and int(val.get("stock") or 0) > 0
+                    )
+                    if not in_stock:
+                        continue
+                    sell_price = int(val.get("sell_price") or 0)
+                    seen_sizes.add(size_val)
+                    sizes.append(RetailSizeInfo(
+                        size=size_val,
+                        price=sell_price,
+                        original_price=sell_price,
+                        in_stock=True,
+                    ))
+        if not sizes:
+            return None
+        return RetailProduct(
+            source="arcteryx",
+            product_id=product_id,
+            name="",
+            model_number=model_number,
+            brand="Arc'teryx",
+            url=_build_url(product_id),
+            sizes=sizes,
+        )
 
 
 __all__ = [
