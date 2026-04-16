@@ -51,30 +51,46 @@ def _parse_price(price_str: str) -> int:
 def _parse_sku_data(html: str) -> list[dict]:
     """HTML에서 data-sku-data 속성의 JSON 배열 추출.
 
-    data-sku-data='[{...}, {...}]' 형태.
+    data-sku-data='[{...}]' 또는 data-sku-data="[{...}]" 형태.
+    멀티라인 + HTML entity(&quot; 등) 대응.
     """
-    match = re.search(r"data-sku-data='(\[.*?\])'", html)
+    import html as htmlmod
+
+    match = re.search(r"data-sku-data='(\[.*?\])'", html, re.DOTALL)
     if not match:
-        # 큰따옴표 버전도 시도
-        match = re.search(r'data-sku-data="(\[.*?\])"', html)
+        match = re.search(r'data-sku-data="(\[.*?\])"', html, re.DOTALL)
     if not match:
         return []
     try:
-        return json.loads(match.group(1))
+        raw = htmlmod.unescape(match.group(1))
+        return json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         logger.warning("data-sku-data JSON 파싱 실패")
         return []
 
 
 def _parse_size_options(html: str) -> dict[int, str]:
-    """HTML에서 사이즈 옵션 ID → mm 사이즈 매핑 추출.
+    """HTML에서 사이즈 옵션 ID → mm 사이즈 매핑 추출."""
+    import html as htmlmod
 
-    option value="1384" 같은 태그에서 사이즈 레이블 추출.
-    패턴: <option value="ID">사이즈</option> 또는
-          data-option-id="ID" ... >사이즈<
-    """
-    # select 태그 내 option 패턴
     options: dict[int, str] = {}
+
+    # 패턴 0 (최우선): data-product-options JSON 내 SIZE 타입
+    m0 = re.search(r'data-product-options="(\[.*?\])"', html, re.DOTALL)
+    if m0:
+        try:
+            raw = htmlmod.unescape(m0.group(1))
+            opts = json.loads(raw)
+            for opt in opts:
+                if opt.get("type") == "SIZE":
+                    values = opt.get("values") or {}
+                    if isinstance(values, dict):
+                        for k, v in values.items():
+                            options[int(k)] = str(v)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    if options:
+        return options
 
     # 패턴 1: <option value="215">220</option>
     for m in re.finditer(
@@ -84,7 +100,7 @@ def _parse_size_options(html: str) -> dict[int, str]:
         size_mm = m.group(2)
         options[opt_id] = size_mm
 
-    # 패턴 2: data-option-id="215" ... data-label="220" 또는 유사
+    # 패턴 2: data-option-id="215" ... data-label="220"
     if not options:
         for m in re.finditer(
             r'data-option-id="(\d+)"[^>]*data-label="(\d{3})"', html

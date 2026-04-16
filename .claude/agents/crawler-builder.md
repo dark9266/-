@@ -35,9 +35,17 @@ description: 새 소싱처 크롤러 구현 전담 에이전트. 최적 기법(h
    - 서킷브레이커 설정 (3회 실패 → 30분 비활성화)
    - Rate Limit 설정
 
-5. **단위 테스트**: `tests/test_{name}.py`
+5. **실 응답 fixture 캡처** (필수 — 생략 시 완료 불가):
+   - 실서버에서 상품 2건 이상 조회 (신발 1건 + 의류/액세서리 1건 등 품목 다양화)
+   - raw HTTP 응답(HTML/JSON)을 `tests/fixtures/live/{source}_*.json` 또는 `.html`로 저장
+   - 저장된 fixture에서 **크롤러 로직 우회해서** 사이즈/재고 직접 파싱 → 크롤러 결과와 교차검증
+   - 불일치 0건이어야 통과
 
-6. **검증**:
+6. **단위 테스트**: `tests/test_{name}.py`
+   - **fixture 기반 테스트 필수**: 5단계에서 캡처한 실 응답을 mock 대신 사용
+   - mock에 사람이 직접 `available: True` 같은 값 넣는 것 금지 — 실 응답 구조를 그대로 써야 함
+
+7. **검증**:
    - `PYTHONPATH=. python3 scripts/verify.py`
    - `python3 -m pytest tests/test_{name}.py -v`
    - AST 문법 검증

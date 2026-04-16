@@ -120,14 +120,15 @@ def _parse_options(data: dict) -> tuple[str, list[dict]]:
                     model_number = values[0].get("value") or ""
 
         elif level == 2:
-            # Size 레벨
+            # Size 레벨 — 멀티컬러 상품은 같은 사이즈가 여러 번 나옴
             values = option.get("values") or []
+            seen_sizes: set[str] = set()
             for val in values:
                 if not isinstance(val, dict):
                     continue
 
                 size_val = str(val.get("value") or "").strip()
-                if not size_val:
+                if not size_val or size_val in seen_sizes:
                     continue
 
                 val_sale_state = val.get("sale_state") or ""
@@ -139,6 +140,7 @@ def _parse_options(data: dict) -> tuple[str, list[dict]]:
                     val_sale_state == "ON" and is_orderable and stock > 0
                 )
 
+                seen_sizes.add(size_val)
                 sizes.append({
                     "size": size_val,
                     "price": sell_price,

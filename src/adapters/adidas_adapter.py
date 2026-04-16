@@ -43,12 +43,17 @@ from src.matcher import normalize_model_number
 logger = logging.getLogger(__name__)
 
 
-# ─── 덤프 기본 카테고리 — 크림 커버리지 우선순위 ───────────────
+# ─── 덤프 기본 카테고리 — 크림 47k 전체 커버 (전 카테고리) ──────
 # adidas.co.kr taxonomy 경로 slug. 값은 로그/알림 표시용.
 DEFAULT_CATEGORIES: dict[str, str] = {
     "men-shoes": "남성 신발",
     "women-shoes": "여성 신발",
     "kids-shoes": "키즈 신발",
+    "men-clothing": "남성 의류",
+    "women-clothing": "여성 의류",
+    "kids-clothing": "키즈 의류",
+    "men-accessories": "남성 액세서리",
+    "women-accessories": "여성 액세서리",
 }
 
 BASE_URL = "https://www.adidas.co.kr"

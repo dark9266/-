@@ -6,6 +6,8 @@ SKU = 크림 모델번호 (L + 8자리), 사이즈 mm 단위 (변환 불필요).
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime
 
 import httpx
@@ -207,24 +209,70 @@ class SalomonCrawler:
         logger.info("살로몬 검색 '%s': 1건", keyword)
         return [parsed]
 
+    def _parse_availability_from_html(self, html: str) -> dict[int, bool]:
+        """HTML 내 <script type="application/json">에서 variant available 추출."""
+        avail_map: dict[int, bool] = {}
+        for m in re.finditer(
+            r'<script[^>]*type="application/json"[^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        ):
+            blob = m.group(1)
+            if '"available"' not in blob or '"variants"' not in blob:
+                continue
+            try:
+                data = json.loads(blob)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            variants = None
+            if isinstance(data, dict):
+                variants = data.get("variants") or (
+                    data.get("product", {}).get("variants")
+                    if isinstance(data.get("product"), dict) else None
+                )
+            if not variants:
+                continue
+            for v in variants:
+                vid = v.get("id")
+                avail = v.get("available")
+                if vid is not None and avail is not None:
+                    avail_map[int(vid)] = bool(avail)
+            if avail_map:
+                break
+        return avail_map
+
     async def get_product_detail(
         self, product_id: str
     ) -> RetailProduct | None:
         """상품 상세 조회.
 
         product_id = handle (SKU 소문자).
-        /products/{handle}.json 호출.
+        HTML 페이지에서 available 정보 추출 후 .json API로 기본 정보 보강.
         """
         if not product_id:
             return None
 
         handle = product_id.lower()
-        url = f"{BASE_URL}/products/{handle}.json"
-
         client = await self._get_client()
+
+        # 1) HTML 페이지에서 available 정보 추출
+        html_url = f"{BASE_URL}/products/{handle}"
+        avail_map: dict[int, bool] = {}
         async with self._rate_limiter.acquire():
             try:
-                resp = await client.get(url)
+                resp_html = await client.get(
+                    html_url,
+                    headers={"Accept": "text/html"},
+                )
+                if resp_html.status_code == 200:
+                    avail_map = self._parse_availability_from_html(resp_html.text)
+            except httpx.HTTPError:
+                pass
+
+        # 2) JSON API로 기본 정보
+        json_url = f"{BASE_URL}/products/{handle}.json"
+        async with self._rate_limiter.acquire():
+            try:
+                resp = await client.get(json_url)
             except httpx.HTTPError as e:
                 logger.warning("살로몬 상세 HTTP 오류: %s (id=%s)", e, product_id)
                 return None
@@ -244,11 +292,17 @@ class SalomonCrawler:
         if not product:
             return None
 
+        # available 보강: HTML에서 가져온 avail_map 우선
+        if avail_map:
+            for v in product.get("variants", []):
+                vid = v.get("id")
+                if vid and vid in avail_map:
+                    v["available"] = avail_map[vid]
+
         parsed = _parse_product_json(product)
         if parsed is None:
             return None
 
-        # RetailSizeInfo 변환 (재고 있는 사이즈만)
         sizes: list[RetailSizeInfo] = []
         for s in parsed.get("sizes") or []:
             if not s["in_stock"]:

@@ -404,9 +404,13 @@ class TestGetProductDetail:
             }
         }
 
+        html_resp = AsyncMock()
+        html_resp.status_code = 200
+        html_resp.text = "<html><body>no availability data</body></html>"
+
         with patch.object(crawler, "_get_client") as gc:
             client = AsyncMock()
-            client.get.return_value = _make_mock_resp(payload)
+            client.get.side_effect = [html_resp, _make_mock_resp(payload)]
             gc.return_value = client
             product = await crawler.get_product_detail("l47988000")
 
@@ -434,9 +438,13 @@ class TestGetProductDetail:
         crawler._rate_limiter = AsyncMock()
         crawler._rate_limiter.acquire = _noop_acquire
 
+        html_resp = AsyncMock()
+        html_resp.status_code = 200
+        html_resp.text = "<html></html>"
+
         with patch.object(crawler, "_get_client") as gc:
             client = AsyncMock()
-            client.get.return_value = _make_mock_resp({}, status=500)
+            client.get.side_effect = [html_resp, _make_mock_resp({}, status=500)]
             gc.return_value = client
             product = await crawler.get_product_detail("l47988000")
 
@@ -448,9 +456,13 @@ class TestGetProductDetail:
         crawler._rate_limiter = AsyncMock()
         crawler._rate_limiter.acquire = _noop_acquire
 
+        html_resp = AsyncMock()
+        html_resp.status_code = 200
+        html_resp.text = "<html></html>"
+
         with patch.object(crawler, "_get_client") as gc:
             client = AsyncMock()
-            client.get.return_value = _make_mock_resp({"errors": "Not found"})
+            client.get.side_effect = [html_resp, _make_mock_resp({"errors": "Not found"})]
             gc.return_value = client
             product = await crawler.get_product_detail("nonexistent")
 
@@ -495,9 +507,13 @@ class TestGetProductDetail:
             }
         }
 
+        html_resp = AsyncMock()
+        html_resp.status_code = 200
+        html_resp.text = "<html></html>"
+
         with patch.object(crawler, "_get_client") as gc:
             client = AsyncMock()
-            client.get.return_value = _make_mock_resp(payload)
+            client.get.side_effect = [html_resp, _make_mock_resp(payload)]
             gc.return_value = client
             product = await crawler.get_product_detail("l47200100")
 

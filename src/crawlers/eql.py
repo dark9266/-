@@ -72,7 +72,7 @@ _DETAIL_BRAND_RE = re.compile(r'id="brndNm"\s+value="([^"]*)"')
 
 # 사이즈 파싱: sizeItmNo (onlineUsefulInvQty) + sizeItmNm (value) 쌍
 _SIZE_PAIR_RE = re.compile(
-    r'name="sizeItmNo"[^>]*onlineUsefulInvQty="(\d+)"[^>]*/>\s*'
+    r'name="sizeItmNo"[^>]*onlineUsefulInvQty="(\d+)"[^>]*>\s*'
     r'<input\s[^>]*name="sizeItmNm"[^>]*value="([^"]*)"',
     re.DOTALL,
 )
