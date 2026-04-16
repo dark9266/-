@@ -177,30 +177,25 @@ ruff format src/ tests/          # 포맷
 
 ## 개발 자동화
 
-### 서브에이전트 (`.claude/agents/`)
+### 서브에이전트 (`.claude/agents/`) — 의무 투입 규칙
 
-| 에이전트 | 역할 | 권한 |
-|---------|------|------|
-| `security-guard` | 🛡 시크릿 노출 차단, 크림 호출 캡 가드, POST 차단 레이어, 실계정 이상 탐지 | Read + Bash(SELECT/GET) + Edit(.env/config) |
-| `source-analyzer` | 소싱처 종합 분석 — 덤프/재고/매칭/기법 판별 | Read + Bash(GET) |
-| `api-prober` | 소싱처 API 탐색 + 최적 기법 판별 (httpx/curl_cffi/Playwright) | Read + Bash(GET) |
-| `crawler-builder` | 소싱처별 최적 기법으로 크롤러 풀사이클 구현 | Edit/Write |
-| `catalog-dumper` | 카탈로그 전체 덤프 + 크림 DB 매칭 엔진 구현 (푸시 방식) | Edit/Write |
-| `delta-engine-builder` | 변경 감지 엔진 — 해시 diff + 신상 감시 + 델타 이벤트 발행 | Edit/Write |
-| `pipeline-builder` | 이벤트 드리븐 런타임 코어 — 버스/오케스트레이터/체크포인트 | Edit/Write |
-| `runtime-sentinel` | 24시간 무인 운영 감시·보증 — 체크포인트/복구/P50 레이턴시/일일 리포트 | Edit/Write |
-| `verify-agent` | verify.py + pytest, 실패 시 자동 수정 (3회) | Edit/Write |
-| `code-reviewer` | 보안/성능/품질 코드 리뷰 | Read only |
-| `live-tester` | 크롤러 실서버 end-to-end 검증 (검색→상세→매칭) | Read + Bash(GET) |
-| `profit-analyzer` | 수익 계산 검증, 수수료/임계값 최적화 | Read + Bash(SELECT) |
-| `kream-monitor` | 크림 DB 거래량/시세 모니터링 + 이상 탐지 | Read + Bash(SELECT) |
-| `coverage-analyzer` | 크림 DB 대비 소싱처별 커버율/갭 분석 | Read + Bash(SELECT) |
-| `queue-inspector` | 이벤트 버스 큐·파이프라인 대기열 진단, 적체/병목 분석 | Read + Bash(SELECT) |
-| `scan-debugger` | 상품별 스캔 파이프라인 추적 + 역방향 가격 조회 디버그 (reverse-scanner 흡수) | Read + Bash(GET+SELECT) |
+**원칙**: 능동/자율 투입 아님. 트리거 조건 충족 시 **의무** 투입.
 
-**JIT 생성 예정 (Phase 진입 시)**:
-- `signal-scorer` — 축 7 지능 필터 전담 (유동성/변동성/거래속도 스코어링). Phase 4 진입 시 생성
-- `alert-outcome-tracker` — 축 8 피드백 루프 전담 (알림→체결 추적→자동 튜닝). **케찹이 원리적으로 못 하는 해자**. Phase 4 진입 시 생성
+| 에이전트 | 역할 | 의무 투입 트리거 |
+|---------|------|-----------------|
+| `crawler-builder` | 소싱처 크롤러 풀사이클 구현 | 새 소싱처 추가 시 **필수** |
+| `code-reviewer` | 보안/성능/품질 코드 리뷰 | 코어 모듈 수정 완료 시 (kream.py, runtime.py, profit_calculator.py, orchestrator.py) |
+| `scan-debugger` | 상품별 파이프라인 전 구간 추적 | "왜 안 잡혀?", "왜 알림 안 와?" 류 디버깅 |
+| `live-tester` | 크롤러 실서버 e2e 검증 | 크롤러/어댑터 수정 후 실동작 검증 |
+| `profit-analyzer` | 수익 계산/수수료 검증 | 수수료·시그널·하드플로어 변경 시 **필수** |
+
+**JIT 대기 (소싱처 확장 단계 활성화)**:
+| 에이전트 | 역할 |
+|---------|------|
+| `api-prober` | 소싱처 API 탐색 + 최적 기법 판별 |
+| `source-analyzer` | 소싱처 종합 분석 — 덤프/재고/매칭 방식 판별 |
+
+**폐기 (2026-04-16)**: security-guard, catalog-dumper, delta-engine-builder, pipeline-builder, runtime-sentinel, verify-agent, kream-monitor, coverage-analyzer, queue-inspector — 직접 실행이 더 빠른 단순 작업이거나 사용 단계 미도달.
 
 ### 슬래시 명령 (`.claude/commands/`)
 
