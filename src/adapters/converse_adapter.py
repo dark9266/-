@@ -482,6 +482,54 @@ class ConverseAdapter:
             return ConverseMatchStats().as_dict()
 
 
+_JSONLD_RE = re.compile(
+    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', re.S
+)
+_SIZE_TAIL_RE = re.compile(r"\s+(\d{2,3}(?:\.\d)?)$")
+
+
+@dataclass
+class _ConverseSizeInfo:
+    size: str
+    in_stock: bool
+
+
+@dataclass
+class _ConverseProductDetail:
+    model_number: str
+    name: str
+    price: int
+    sizes: list[_ConverseSizeInfo]
+
+
+def _parse_converse_pdp_sizes(html_text: str) -> list[_ConverseSizeInfo]:
+    """Cafe24 JSON-LD offers에서 사이즈별 재고 파싱."""
+    import json as _json
+
+    sizes: list[_ConverseSizeInfo] = []
+    seen: set[str] = set()
+    for m in _JSONLD_RE.finditer(html_text):
+        try:
+            data = _json.loads(m.group(1))
+        except (ValueError, _json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or data.get("@type") != "Product":
+            continue
+        for offer in data.get("offers") or []:
+            name = offer.get("name") or ""
+            avail = offer.get("availability") or ""
+            sz_m = _SIZE_TAIL_RE.search(name)
+            if not sz_m:
+                continue
+            sz = sz_m.group(1)
+            if sz in seen:
+                continue
+            seen.add(sz)
+            in_stock = "InStock" in avail
+            sizes.append(_ConverseSizeInfo(size=sz, in_stock=in_stock))
+    return sizes
+
+
 class _DefaultConverseHttp:
     """기본 HTTP 레이어 — sitemap.xml + detail HTML GET."""
 
@@ -529,6 +577,22 @@ class _DefaultConverseHttp:
         if resp.status_code != 200:
             return ""
         return resp.text
+
+    async def get_product_detail(self, product_id: str) -> _ConverseProductDetail | None:
+        """PDP HTML에서 JSON-LD offers 기반 사이즈 파싱."""
+        url = f"{BASE_URL}/product/detail.html?product_no={product_id}"
+        html_text = await self.fetch_detail(url)
+        if not html_text:
+            return None
+        sizes = _parse_converse_pdp_sizes(html_text)
+        if not sizes:
+            return None
+        model = _extract_model_number(html_text)
+        title = _extract_title(html_text)
+        price = _extract_price(html_text)
+        return _ConverseProductDetail(
+            model_number=model, name=title, price=price, sizes=sizes
+        )
 
 
 __all__ = ["ConverseAdapter", "ConverseMatchStats", "BASE_URL", "SITEMAP_URL"]

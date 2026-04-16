@@ -25,7 +25,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect_batch
-from src.adapters._size_helpers import fetch_in_stock_sizes
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -295,18 +294,9 @@ class HokaAdapter:
                 stats.skipped_guard += 1
                 continue
 
-            crawler = await self._get_http()
-            pid = str(item.get("product_id") or sku or "")
-            available_sizes = await fetch_in_stock_sizes(
-                crawler, pid, source_tag="hoka"
-            )
-            if not available_sizes:
-                logger.info(
-                    "[hoka] PDP 재고 없음 drop: sku=%s", sku
-                )
-                stats.soldout_dropped += 1
-                continue
-
+            # Hoka: PDP/재고 API 공개 차단 — 사이즈별 재고 미확보.
+            # 검색 노출 = 일부 사이즈 재고 있음 간주. available_sizes 빈 튜플
+            # → runtime 사이즈 교집합 가드 스킵 (listing-only).
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
@@ -314,7 +304,7 @@ class HokaAdapter:
                 retail_price=price_krw,
                 size="",
                 url=item.get("url") or "",
-                available_sizes=available_sizes,
+                available_sizes=(),
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

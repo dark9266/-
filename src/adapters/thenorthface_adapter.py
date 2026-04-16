@@ -345,6 +345,9 @@ class _DefaultTnfHttp:
         tiles = await self._crawler.fetch_category_page(category, page=page)
         return [t.as_dict() for t in tiles]
 
+    async def get_product_detail(self, product_id: str):
+        return await self._crawler.get_product_detail(product_id)
+
 
 __all__ = [
     "DEFAULT_CATEGORIES",

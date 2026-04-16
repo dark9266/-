@@ -42,6 +42,7 @@ Topick Commerce (반스와 동일). 다만 노스페이스 한국은 JSON 검색
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import dataclass
 
@@ -136,6 +137,20 @@ class TnfTile:
         }
 
 
+@dataclass
+class TnfSizeInfo:
+    size: str
+    in_stock: bool
+
+
+@dataclass
+class TnfProductDetail:
+    model_number: str
+    name: str
+    price: int
+    sizes: list[TnfSizeInfo]
+
+
 # ─── 순수 파싱 함수 ──────────────────────────────────────
 
 
@@ -227,6 +242,53 @@ def parse_listing_html(html_text: str) -> list[TnfTile]:
         )
 
     return list(tiles.values())
+
+
+_SKU_DATA_RE = re.compile(r'data-sku-data="(\[.*?\])"', re.S)
+_PRODUCT_OPTIONS_RE = re.compile(r'data-product-options="(\[.*?\])"', re.S)
+_OG_TITLE_RE = re.compile(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', re.I)
+
+
+def _parse_pdp_sizes(html_text: str) -> list[TnfSizeInfo]:
+    """PDP HTML에서 사이즈별 재고를 파싱."""
+    opts_m = _PRODUCT_OPTIONS_RE.search(html_text)
+    if not opts_m:
+        return []
+    try:
+        options = json.loads(opts_m.group(1).replace("&quot;", '"').replace("&amp;", "&"))
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    size_map: dict[int, str] = {}
+    for opt in options:
+        if opt.get("type") == "SIZE":
+            for k, v in (opt.get("values") or {}).items():
+                try:
+                    size_map[int(k)] = str(v)
+                except (TypeError, ValueError):
+                    pass
+    if not size_map:
+        return []
+
+    sku_m = _SKU_DATA_RE.search(html_text)
+    if not sku_m:
+        return []
+    try:
+        skus = json.loads(sku_m.group(1).replace("&quot;", '"').replace("&amp;", "&"))
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    seen: set[str] = set()
+    sizes: list[TnfSizeInfo] = []
+    for sku in skus:
+        sold = sku.get("isSoldOut", False)
+        qty = sku.get("quantity", 0)
+        for opt_id in sku.get("selectedOptions") or []:
+            label = size_map.get(opt_id)
+            if label and label not in seen:
+                seen.add(label)
+                sizes.append(TnfSizeInfo(size=label, in_stock=not sold and qty > 0))
+    return sizes
 
 
 # ─── 크롤러 클래스 ───────────────────────────────────────
@@ -341,6 +403,32 @@ class TheNorthFaceCrawler:
             len(dedup),
         )
         return list(dedup.values())
+
+    async def _ensure_session(self) -> None:
+        """PDP 접근 전 세션 쿠키 확보 — 카테고리 방문으로 워밍업."""
+        if getattr(self, "_session_warm", False):
+            return
+        await self._fetch_html("/category/n/shoes", params={"page": "1"})
+        self._session_warm = True
+
+    async def get_product_detail(self, model_number: str) -> TnfProductDetail | None:
+        """PDP HTML에서 사이즈별 재고 파싱."""
+        model_number = (model_number or "").strip().upper()
+        if not model_number:
+            return None
+        await self._ensure_session()
+        html_text = await self._fetch_html(f"/product/{model_number}")
+        if not html_text or len(html_text) < 5000:
+            return None
+        sizes = _parse_pdp_sizes(html_text)
+        if not sizes:
+            return None
+        title_m = _OG_TITLE_RE.search(html_text)
+        name = title_m.group(1) if title_m else ""
+        price = _parse_price(html_text)
+        return TnfProductDetail(
+            model_number=model_number, name=name, price=price, sizes=sizes
+        )
 
     async def disconnect(self) -> None:
         if self._client and not self._client.is_closed:
