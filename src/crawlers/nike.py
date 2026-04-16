@@ -182,7 +182,8 @@ class NikeCrawler:
             release_type = selected.get("consumerReleaseType", "")
             status_modifier = selected.get("statusModifier", "")
             if release_type == "LAUNCH" or status_modifier in (
-                "BUYABLE_LINE", "NOT_BUYABLE", "HOLD", "UNAVAILABLE"
+                "BUYABLE_LINE", "NOT_BUYABLE", "HOLD", "UNAVAILABLE",
+                "OUT_OF_STOCK_SEARCHABLE", "OUT_OF_STOCK",
             ):
                 logger.info(
                     "Nike LAUNCH/비구매가능 상품 스킵: %s (%s/%s)",

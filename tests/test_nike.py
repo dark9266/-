@@ -195,6 +195,20 @@ class TestLaunchProductSkipped:
         assert product is None
 
     @pytest.mark.asyncio
+    async def test_out_of_stock_searchable_skipped(self):
+        """statusModifier=OUT_OF_STOCK_SEARCHABLE → None (회귀: HM4740-001).
+
+        나이키가 sizes[].status=ACTIVE 를 반환하면서도 상품 레벨에서
+        OUT_OF_STOCK_SEARCHABLE 인 경우 — sizes 배열을 믿으면 안 됨.
+        """
+        html = self.NORMAL_PDP_HTML.replace(
+            '"statusModifier":"BUYABLE_BUY"',
+            '"statusModifier":"OUT_OF_STOCK_SEARCHABLE"',
+        )
+        product = await self._run(NikeCrawler(), html)
+        assert product is None
+
+    @pytest.mark.asyncio
     async def test_normal_release_returns_product(self):
         """RELEASE + BUYABLE_BUY 상품은 정상 처리."""
         product = await self._run(NikeCrawler(), self.NORMAL_PDP_HTML)
