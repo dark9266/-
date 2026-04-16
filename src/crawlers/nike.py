@@ -21,6 +21,11 @@ logger = setup_logger("nike_crawler")
 SEARCH_URL = "https://www.nike.com/kr/w?q={query}"
 PRODUCT_URL = "https://www.nike.com/kr/t/{slug}/{style_color}"
 PDP_URL = "https://www.nike.com/kr/t/_/{style_color}"
+AVAIL_API = (
+    "https://api.nike.com/discover/product_details_availability/v1"
+    "/marketplace/KR/language/ko"
+    "/consumerChannelId/{channel_id}/groupKey/{group_key}"
+)
 
 USER_AGENTS = [
     (
@@ -155,6 +160,39 @@ class NikeCrawler:
             logger.error("Nike 검색 에러 (%s): %s", keyword, e)
             return []
 
+    async def _fetch_real_availability(
+        self, client: httpx.AsyncClient, group_key: str, channel_id: str, style_color: str,
+    ) -> dict[str, dict] | None:
+        """product_details_availability API로 사이즈별 실재고 조회.
+
+        Returns: {size_label: {"available": bool, "level": str}} or None on failure.
+        """
+        url = AVAIL_API.format(channel_id=channel_id, group_key=group_key)
+        try:
+            async with self._rate_limiter.acquire():
+                resp = await client.get(url, headers={
+                    "User-Agent": _random_ua(),
+                    "Origin": "https://www.nike.com",
+                    "Referer": "https://www.nike.com/",
+                })
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            result: dict[str, dict] = {}
+            for sz in data.get("sizes", []):
+                if sz.get("productCode") != style_color:
+                    continue
+                label = sz.get("localizedLabel", "") or sz.get("label", "")
+                avail = sz.get("availability", {})
+                if label:
+                    result[label] = {
+                        "available": avail.get("isAvailable", False),
+                        "level": avail.get("ship", ""),
+                    }
+            return result if result else None
+        except Exception:
+            return None
+
     async def get_product_detail(self, product_id: str) -> RetailProduct | None:
         """상품 상세 페이지에서 사이즈별 가격/재고 수집."""
         client = await self._get_client()
@@ -170,15 +208,12 @@ class NikeCrawler:
             html = resp.text
             next_data = _extract_next_data(html)
 
-            # 기본 정보 (2024+ 구조: pageProps.selectedProduct)
             selected = (
                 next_data.get("props", {})
                 .get("pageProps", {})
                 .get("selectedProduct", {})
             )
 
-            # LAUNCH / 비구매가능 상품 제외 — 차익거래 대상 부적합
-            # (SNKRS 큐 방식: 재고 있어도 구매 불가, SSR에 per-size 재고 정보 없음)
             release_type = selected.get("consumerReleaseType", "")
             status_modifier = selected.get("statusModifier", "")
             if release_type == "LAUNCH" or status_modifier in (
@@ -197,20 +232,43 @@ class NikeCrawler:
             current_price = prices.get("currentPrice", 0)
             full_price = prices.get("initialPrice", 0)
 
-            # 사이즈 파싱
+            # 실재고 API 호출 (groupKey + consumerChannelId 필요)
+            group_key = selected.get("groupKey") or selected.get("piid", "")
+            channel_id = (
+                next_data.get("props", {})
+                .get("pageProps", {})
+                .get("consumerChannelId", "d9a5bc42-4b9c-4976-858a-f159cf99c647")
+            )
+
+            real_stock: dict[str, dict] | None = None
+            if group_key:
+                real_stock = await self._fetch_real_availability(
+                    client, group_key, channel_id, product_id,
+                )
+
+            # 사이즈 파싱: 실재고 API 우선, fallback은 __NEXT_DATA__
             size_data = _parse_sizes_from_pdp(html)
 
             sizes = []
             for s in size_data:
-                if not s.get("available", False):
+                size_label = s.get("size", "")
+                if not size_label:
                     continue
+
+                if real_stock is not None:
+                    stock_info = real_stock.get(size_label, {})
+                    if not stock_info.get("available", False):
+                        continue
+                else:
+                    if not s.get("available", False):
+                        continue
 
                 discount_rate = 0.0
                 if full_price and current_price and full_price > current_price:
                     discount_rate = round(1 - current_price / full_price, 3)
 
                 sizes.append(RetailSizeInfo(
-                    size=s["size"],
+                    size=size_label,
                     price=current_price,
                     original_price=full_price or current_price,
                     in_stock=True,
@@ -218,6 +276,7 @@ class NikeCrawler:
                     discount_rate=discount_rate,
                 ))
 
+            stock_source = "availability_api" if real_stock else "ssr_fallback"
             product = RetailProduct(
                 source="nike",
                 product_id=product_id,
@@ -231,10 +290,10 @@ class NikeCrawler:
             )
 
             logger.info(
-                "Nike 상품: %s | 모델: %s | 가격: %s원 | 사이즈: %d개",
+                "Nike 상품: %s | 모델: %s | 가격: %s원 | 사이즈: %d개 [%s]",
                 title, product_id,
                 f"{current_price:,}" if current_price else "?",
-                len(sizes),
+                len(sizes), stock_source,
             )
             return product
 
