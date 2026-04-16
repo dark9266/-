@@ -393,6 +393,42 @@ async def test_build_snapshot_fn_all_size_uses_min() -> None:
     assert out_empty["volume_7d"] == 12
 
 
+async def test_build_snapshot_fn_cache_hit_no_extra_call() -> None:
+    """동일 product_id 재조회 시 캐시 히트 → snapshot 호출 0."""
+    product = _sample_product("111")
+    snapshot = _FakeSnapshotFn({"111": product})
+    client = KreamDeltaClient(
+        request_fn=_FakeRequestFn([]),
+        snapshot_fn=snapshot,
+        sleep_fn=_NoSleep(),
+    )
+    fn = build_snapshot_fn(client, cache_ttl_sec=60.0)
+
+    out1 = await fn(111, "260")
+    assert out1["sell_now_price"] == 450000
+    assert len(snapshot.calls) == 1
+
+    out2 = await fn(111, "270")
+    assert out2["sell_now_price"] == 500000
+    assert len(snapshot.calls) == 1  # 캐시 히트 — 추가 호출 없음
+
+
+async def test_build_snapshot_fn_cache_different_pid() -> None:
+    """다른 product_id 는 캐시 미스 → 별도 호출."""
+    product = _sample_product("111")
+    snapshot = _FakeSnapshotFn({"111": product, "222": product})
+    client = KreamDeltaClient(
+        request_fn=_FakeRequestFn([]),
+        snapshot_fn=snapshot,
+        sleep_fn=_NoSleep(),
+    )
+    fn = build_snapshot_fn(client, cache_ttl_sec=60.0)
+
+    await fn(111, "260")
+    await fn(222, "260")
+    assert len(snapshot.calls) == 2  # 각각 1회씩
+
+
 def test_pick_best_sell_all_none() -> None:
     product = KreamProduct(
         product_id="1",

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable, Protocol
 
 from src.core.kream_budget import KreamBudgetExceeded, kream_purpose
@@ -220,7 +221,7 @@ class KreamDeltaClient:
         return results
 
     # ------------------------------------------------------------------
-    # 프로토콜 메서드: get_snapshot
+    # 프로토콜 메서드: get_snapshot (풀 — 델타워처 변경분용)
     # ------------------------------------------------------------------
     async def get_snapshot(self, product_id: int) -> dict[str, Any]:
         """상세 스냅샷 — 델타 변경분 검증/알림 준비용.
@@ -251,30 +252,100 @@ class KreamDeltaClient:
         if product is None:
             return {}
 
-        # 사이즈별 sell_now 최고가를 대표 sell_now 로
-        best_size, best_price = _pick_best_sell(product)
+        return _product_to_dict(product, pid_int)
 
-        sizes_out: list[dict[str, Any]] = []
-        for sp in getattr(product, "size_prices", []) or []:
-            sizes_out.append(
-                {
-                    "size": getattr(sp, "size", ""),
-                    "sell_now_price": getattr(sp, "sell_now_price", None),
-                    "buy_now_price": getattr(sp, "buy_now_price", None),
-                }
+    # ------------------------------------------------------------------
+    # 경량 스냅샷: HTML pinia 1회 (API 3~5 → 1 절감)
+    # ------------------------------------------------------------------
+    async def get_snapshot_light(self, product_id: int) -> dict[str, Any]:
+        """경량 스냅샷 — HTML pinia 파싱 1회로 sell_now + volume 추출.
+
+        get_full_product_info (HTML+options/display+screens = 3~5 API) 대신
+        HTML 1회에서 __NUXT_DATA__ pinia 로 사이즈별 sell_now + 거래량 추출.
+        수익 검증에 필요한 최소 데이터만 반환.
+
+        crawler 미주입(테스트) 시 get_snapshot 으로 폴백.
+        """
+        try:
+            pid_int = int(product_id)
+        except (TypeError, ValueError):
+            logger.warning("[kream_delta_client] 비정수 snapshot_light pid=%r", product_id)
+            return {}
+
+        crawler = self._crawler
+        if crawler is None:
+            return await self.get_snapshot(pid_int)
+
+        try:
+            with kream_purpose(DEFAULT_SNAPSHOT_PURPOSE):
+                html = await crawler._request(
+                    "GET",
+                    f"/products/{pid_int}",
+                    parse_json=False,
+                    purpose=DEFAULT_SNAPSHOT_PURPOSE,
+                )
+        except KreamBudgetExceeded:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[kream_delta_client] snapshot_light HTML 실패 pid=%s err=%s",
+                pid_int, exc,
             )
+            return {}
 
-        return {
-            "product_id": pid_int,
-            "model_number": getattr(product, "model_number", "") or "",
-            "brand": getattr(product, "brand", "") or "",
-            "name": getattr(product, "name", "") or "",
-            "sell_now_price": best_price,
-            "top_size": best_size or "ALL",
-            "volume_7d": int(getattr(product, "volume_7d", 0) or 0),
-            "volume_30d": int(getattr(product, "volume_30d", 0) or 0),
-            "size_prices": sizes_out,
-        }
+        if not html:
+            return {}
+
+        try:
+            data = crawler._extract_page_data(html)
+            if not data:
+                return {}
+            product = crawler._find_product_in_data(data, str(pid_int))
+            if not product:
+                product = crawler._parse_product_from_meta(html, str(pid_int))
+            if not product:
+                return {}
+            size_prices = crawler._find_prices_in_data(data, str(pid_int))
+            product.size_prices = size_prices
+            trade_result = crawler._find_trades_in_data(data, str(pid_int))
+            if trade_result:
+                product.volume_7d = trade_result.get("volume_7d", 0)
+                product.volume_30d = trade_result.get("volume_30d", 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[kream_delta_client] snapshot_light 파싱 실패 pid=%s err=%s",
+                pid_int, exc,
+            )
+            return {}
+
+        return _product_to_dict(product, pid_int)
+
+
+# ─── 공통 변환 helper ────────────────────────────────────
+
+
+def _product_to_dict(product: KreamProduct, pid_int: int) -> dict[str, Any]:
+    best_size, best_price = _pick_best_sell(product)
+    sizes_out: list[dict[str, Any]] = []
+    for sp in getattr(product, "size_prices", []) or []:
+        sizes_out.append(
+            {
+                "size": getattr(sp, "size", ""),
+                "sell_now_price": getattr(sp, "sell_now_price", None),
+                "buy_now_price": getattr(sp, "buy_now_price", None),
+            }
+        )
+    return {
+        "product_id": pid_int,
+        "model_number": getattr(product, "model_number", "") or "",
+        "brand": getattr(product, "brand", "") or "",
+        "name": getattr(product, "name", "") or "",
+        "sell_now_price": best_price,
+        "top_size": best_size or "ALL",
+        "volume_7d": int(getattr(product, "volume_7d", 0) or 0),
+        "volume_30d": int(getattr(product, "volume_30d", 0) or 0),
+        "size_prices": sizes_out,
+    }
 
 
 # ─── 순수 파싱 helper ────────────────────────────────────
@@ -345,10 +416,25 @@ def _to_int(value: Any) -> int | None:
     return None
 
 
+SNAPSHOT_CACHE_TTL_SEC: float = 1800.0  # 30분
+
+
 def build_snapshot_fn(
     client: KreamDeltaClient,
+    *,
+    cache_ttl_sec: float = SNAPSHOT_CACHE_TTL_SEC,
 ) -> Callable[[int, str], Awaitable[dict[str, Any] | None]]:
     """V3Runtime `kream_snapshot_fn` (pid, size) → {sell_now_price, volume_7d} 어댑터.
+
+    경량 경로 (2026-04-16):
+        기존 ``get_snapshot`` → ``get_full_product_info`` (HTML+options/display+screens
+        = 3~5 API/상품) 대신, ``get_snapshot_light`` (HTML pinia 1회) 로 교체.
+        수익 검증에 필요한 sell_now_price + volume_7d 를 API 1회에서 추출.
+
+    TTL 캐시 (30분):
+        같은 product_id 를 30분 내 재조회하지 않음. 22개 어댑터에서 동일
+        상품이 중복 후보로 올라와도 캐시 히트 → API 0회.
+        (2026-04-16 실측: 상품 137241번이 14회 중복 → 캐시로 13회 절감)
 
     - 사이즈가 size_prices 에 존재하면 해당 sell_now_price 사용 (정확도 우선)
     - 사이즈가 비거나 "ALL" 이면 size_prices 중 **MIN sell_now_price** 를 보수
@@ -357,11 +443,29 @@ def build_snapshot_fn(
     - 매치 실패 시 None → candidate drop
     - KreamBudgetExceeded 는 그대로 전파
     """
+    _cache: dict[int, tuple[dict[str, Any], float]] = {}
+
+    async def _get_cached_snapshot(pid: int) -> dict[str, Any] | None:
+        now = time.monotonic()
+        cached = _cache.get(pid)
+        if cached is not None:
+            snap, ts = cached
+            if now - ts < cache_ttl_sec:
+                return snap
+            del _cache[pid]
+
+        if hasattr(client, "get_snapshot_light"):
+            snap = await client.get_snapshot_light(pid)
+        else:
+            snap = await client.get_snapshot(pid)
+        if snap:
+            _cache[pid] = (snap, now)
+        return snap
 
     async def _snapshot(
         kream_product_id: int, size: str
     ) -> dict[str, Any] | None:
-        snap = await client.get_snapshot(kream_product_id)
+        snap = await _get_cached_snapshot(kream_product_id)
         if not snap:
             return None
         volume_7d = int(snap.get("volume_7d") or 0)
@@ -420,6 +524,7 @@ __all__ = [
     "DEFAULT_LIGHT_PURPOSE",
     "DEFAULT_RATE_LIMIT_SEC",
     "DEFAULT_SNAPSHOT_PURPOSE",
+    "SNAPSHOT_CACHE_TTL_SEC",
     "KreamDeltaClient",
     "build_snapshot_fn",
 ]
