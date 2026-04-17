@@ -174,6 +174,7 @@ class NikeCrawler:
                     "User-Agent": _random_ua(),
                     "Origin": "https://www.nike.com",
                     "Referer": "https://www.nike.com/",
+                    "nike-api-caller-id": "nike:dotcom:pdp:web",
                 })
             if resp.status_code != 200:
                 return None
