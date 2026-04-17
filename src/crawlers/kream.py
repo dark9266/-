@@ -73,7 +73,10 @@ _PAGE_HEADERS = {
         "text/html,application/xhtml+xml,application/xml;"
         "q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
-    "Upgrade-Insecure-Requests": "1",
+    # Upgrade-Insecure-Requests 제거 (2026-04-17):
+    # iOS Safari UA 와 이 헤더의 조합이 크림 WAF 의 봇 판정 룰을 트리거해
+    # 10s 타임아웃 후 500 응답을 유발함. scan-debugger v4 로 결정적 재현 확인.
+    # 실측: delta_snapshot 500 비율 39.6% → 0.0% (10분 관측 161/161 OK).
 }
 
 
