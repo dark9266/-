@@ -31,6 +31,7 @@ from typing import Any
 
 import aiosqlite
 
+from src.core.alert_outcome import record_alert
 from src.core.call_throttle import CallThrottle
 from src.core.checkpoint_store import (
     MAX_REPLAY_ATTEMPTS,
@@ -591,6 +592,22 @@ class Orchestrator:
                 # 예약된 행에 실제 alert_id 기록 (없어도 동작은 무방)
                 await self._finalize_alert_row(ckpt_id, result)
                 alert_emitted = True
+                # Phase 4 피드백 루프: alert_followup 행 INSERT (sweep 가 24h 후 체결 검증)
+                try:
+                    await record_alert(
+                        self._checkpoints.db_path,
+                        alert_id=result.alert_id,
+                        kream_product_id=event.kream_product_id,
+                        size=event.size,
+                        retail_price=event.retail_price,
+                        kream_sell_price_at_fire=event.kream_sell_price,
+                        fired_at=result.fired_at,
+                    )
+                except Exception:
+                    logger.exception(
+                        "alert_followup 기록 실패 (알림 자체는 정상): alert_id=%s",
+                        result.alert_id,
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:

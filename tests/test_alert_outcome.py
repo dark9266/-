@@ -333,3 +333,111 @@ async def test_sweep_concurrent_safe(db: str):
     )
     # 둘 합쳐서 정확히 6 행 처리 (pending 6, 일부는 두 번째 sweep 에서 0)
     assert r1["scanned"] + r2["scanned"] >= 6
+
+
+# ─── alert_outcome_sweeper.make_check_fn ──────────────────
+
+
+async def test_check_fn_compares_size_last_sale(db: str):
+    """make_check_fn: 사이즈별 last_sale_price ≥ sell_at_fire 면 sold=True."""
+    from dataclasses import dataclass
+
+    from src.core.alert_outcome_sweeper import make_check_fn
+
+    @dataclass
+    class _SP:
+        size: str
+        last_sale_price: int | None
+
+    @dataclass
+    class _Product:
+        size_prices: list
+
+    class _Crawler:
+        def __init__(self, prod):
+            self.prod = prod
+            self.calls = 0
+
+        async def get_product_detail(self, pid):
+            self.calls += 1
+            return self.prod
+
+    prod = _Product(size_prices=[
+        _SP(size="270", last_sale_price=185_000),
+        _SP(size="280", last_sale_price=160_000),
+    ])
+    crawler = _Crawler(prod)
+    check = make_check_fn(crawler=crawler)
+
+    # 270: last 185k ≥ fire 180k → sold
+    fid_a = await record_alert(
+        db, alert_id=1, kream_product_id="999",
+        size="270", retail_price=120_000, kream_sell_price_at_fire=180_000,
+    )
+    rec_a = await get_followup(db, fid_a)
+    sold_a, price_a = await check(rec_a)
+    assert sold_a is True and price_a == 185_000
+
+    # 280: last 160k < fire 200k → not sold
+    fid_b = await record_alert(
+        db, alert_id=2, kream_product_id="999",
+        size="280", retail_price=120_000, kream_sell_price_at_fire=200_000,
+    )
+    rec_b = await get_followup(db, fid_b)
+    sold_b, price_b = await check(rec_b)
+    assert sold_b is False and price_b == 160_000
+
+    # 같은 product_id 두 번 — fetch 1회만 (in-memory cache)
+    assert crawler.calls == 1
+
+
+async def test_check_fn_handles_empty_size_uses_max_last_sale(db: str):
+    """size='' (MIN 대표가 알림) 케이스: 전 사이즈 중 max(last_sale) 사용."""
+    from dataclasses import dataclass
+
+    from src.core.alert_outcome_sweeper import make_check_fn
+
+    @dataclass
+    class _SP:
+        size: str
+        last_sale_price: int | None
+
+    @dataclass
+    class _Product:
+        size_prices: list
+
+    class _Crawler:
+        async def get_product_detail(self, pid):
+            return _Product(size_prices=[
+                _SP(size="270", last_sale_price=150_000),
+                _SP(size="280", last_sale_price=180_000),  # max
+                _SP(size="290", last_sale_price=None),
+            ])
+
+    check = make_check_fn(crawler=_Crawler())
+    fid = await record_alert(
+        db, alert_id=10, kream_product_id="555",
+        size="", retail_price=100_000, kream_sell_price_at_fire=170_000,
+    )
+    rec = await get_followup(db, fid)
+    sold, price = await check(rec)
+    # max(150k, 180k) = 180k ≥ 170k → sold
+    assert sold is True and price == 180_000
+
+
+async def test_check_fn_returns_false_when_no_data(db: str):
+    """크롤러가 None 반환 또는 size_prices 비어있으면 not sold."""
+    from src.core.alert_outcome_sweeper import make_check_fn
+
+    class _NoneCrawler:
+        async def get_product_detail(self, pid):
+            return None
+
+    check = make_check_fn(crawler=_NoneCrawler())
+    fid = await record_alert(
+        db, alert_id=20, kream_product_id="777",
+        size="270", retail_price=100_000, kream_sell_price_at_fire=150_000,
+    )
+    rec = await get_followup(db, fid)
+    sold, price = await check(rec)
+    assert sold is False and price is None

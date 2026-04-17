@@ -702,3 +702,64 @@ def format_help() -> discord.Embed:
     embed.set_footer(text="크림 리셀 수익 모니터링 봇")
 
     return embed
+
+
+def format_followup_report(summary: dict) -> discord.Embed:
+    """알림 정답률 리포트 (Phase 4 피드백 루프).
+
+    summary: hit_rate_summary() 반환값
+        {window_hours, total, checked, sold, hit_rate_pct, avg_realized_gap_pct}
+    """
+    hours = int(summary.get("window_hours") or 0)
+    days = hours // 24 if hours >= 24 else 0
+    period = f"최근 {days}일" if days else f"최근 {hours}시간"
+
+    total = int(summary.get("total") or 0)
+    checked = int(summary.get("checked") or 0)
+    sold = int(summary.get("sold") or 0)
+    hit = summary.get("hit_rate_pct")
+    gap = summary.get("avg_realized_gap_pct")
+    pending = max(total - checked, 0)
+
+    if hit is None:
+        hit_str = "측정 불가 (체크 데이터 없음)"
+        color = 0x808080
+    else:
+        hit_pct = float(hit)
+        hit_str = f"{hit_pct:.1f}%"
+        if hit_pct >= 70:
+            color = 0x2ECC71
+        elif hit_pct >= 50:
+            color = 0xF1C40F
+        else:
+            color = 0xE74C3C
+
+    embed = discord.Embed(
+        title=f"📊 알림 정답률 리포트 — {period}",
+        color=color,
+        timestamp=datetime.now(),
+    )
+
+    embed.add_field(
+        name="요약",
+        value=(
+            f"**총 알림:** {total}건\n"
+            f"**체크 완료:** {checked}건 (대기 {pending}건)\n"
+            f"**실제 체결:** {sold}건\n"
+            f"**적중률:** {hit_str}"
+        ),
+        inline=False,
+    )
+
+    if gap is not None:
+        gap_pct = float(gap)
+        sign = "+" if gap_pct >= 0 else ""
+        embed.add_field(
+            name="평균 실현 갭",
+            value=f"{sign}{gap_pct:.1f}% (체결가 vs 알림 시점 sell_now)",
+            inline=False,
+        )
+
+    embed.set_footer(text="Phase 4 피드백 루프 · 24h 후 sweep 결과")
+
+    return embed

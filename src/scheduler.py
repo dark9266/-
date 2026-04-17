@@ -51,6 +51,10 @@ class Scheduler:
             self.daily_report.start()
         if not self.collect_loop.is_running():
             self.collect_loop.start()
+        if not self.followup_sweep_loop.is_running():
+            self.followup_sweep_loop.start()
+        if not self.followup_report_loop.is_running():
+            self.followup_report_loop.start()
         if settings.v2_reverse_disabled:
             logger.warning(
                 "[v2] price_refresher/spike_detector 비활성 "
@@ -78,6 +82,8 @@ class Scheduler:
         self.refresh_loop.cancel()
         self.spike_loop.cancel()
         self.continuous_loop.cancel()
+        self.followup_sweep_loop.cancel()
+        self.followup_report_loop.cancel()
         logger.info("스케줄러 중지")
 
     def start_auto_scan(self) -> None:
@@ -404,3 +410,63 @@ class Scheduler:
     async def before_continuous(self) -> None:
         await self.bot.wait_until_ready()
         await asyncio.sleep(180)
+
+    # ─── Phase 4: 알림 정답률 sweep (6시간 주기) ────────────
+
+    @tasks.loop(hours=6)
+    async def followup_sweep_loop(self) -> None:
+        """알림 발사 후 24h 이상 지난 followup 의 실제 체결 여부 검증."""
+        try:
+            from src.core.alert_outcome import sweep_pending
+            from src.core.alert_outcome_sweeper import make_check_fn
+
+            check_fn = make_check_fn()  # 기본: 글로벌 kream_crawler 싱글톤
+            stats = await sweep_pending(
+                self.bot.db.db_path,
+                check_fn,
+                older_than_sec=86400,  # 24h 후 체결 가능성 안정
+                limit=200,
+            )
+            logger.info(
+                "[followup_sweep] scanned=%d sold=%d not_sold=%d errors=%d",
+                stats["scanned"], stats["sold"],
+                stats["not_sold"], stats["errors"],
+            )
+        except Exception as e:
+            error_aggregator.add("followup_sweep_loop", e)
+            logger.error("followup sweep 실패: %s", e)
+
+    @followup_sweep_loop.before_loop
+    async def before_followup_sweep(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(3600)  # 기동 1h 후 첫 실행 (다른 루프와 겹침 방지)
+
+    # ─── Phase 4: 알림 정답률 일일 리포트 (00:30) ──────────
+
+    @tasks.loop(time=time(hour=0, minute=30))
+    async def followup_report_loop(self) -> None:
+        """7일 윈도우 적중률 → 로그 채널에 발송."""
+        try:
+            from src.core.alert_outcome import hit_rate_summary
+            from src.discord_bot.formatter import format_followup_report
+
+            summary = await hit_rate_summary(self.bot.db.db_path, hours=168)
+            embed = format_followup_report(summary)
+
+            channel_id = settings.channel_log or settings.channel_daily_report
+            if channel_id:
+                channel = self.bot.get_channel(channel_id)
+                if channel:
+                    await channel.send(embed=embed)
+            logger.info(
+                "[followup_report] total=%d checked=%d sold=%d hit=%s",
+                summary["total"], summary["checked"],
+                summary["sold"], summary["hit_rate_pct"],
+            )
+        except Exception as e:
+            error_aggregator.add("followup_report_loop", e)
+            logger.error("followup 리포트 실패: %s", e)
+
+    @followup_report_loop.before_loop
+    async def before_followup_report(self) -> None:
+        await self.bot.wait_until_ready()
