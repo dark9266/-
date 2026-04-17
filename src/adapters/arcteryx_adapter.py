@@ -507,6 +507,19 @@ class ArcteryxAdapter:
                 stats.no_model_number += 1
                 continue
 
+            # 덤프 ledger — 매칭 전 전수 기록 (오프라인 분석용)
+            try:
+                from src.core.dump_ledger import record_dump_item
+                await record_dump_item(
+                    self._db_path,
+                    source=self.source_name,
+                    model_no=model_no,
+                    name=item.get("name") or "",
+                    url=item.get("url") or "",
+                )
+            except Exception:
+                logger.debug("[arcteryx] dump_ledger 실패 (비치명)")
+
             # 1차: stripped key 직접 매칭 (크림이 ERP SKU 를 그대로 쓰는 극소수
             # 경우 대비). 2차: 트레일링 style number 역참조 — 크림 Arc'teryx
             # 엔트리의 슬래시 조합과 exact intersect.

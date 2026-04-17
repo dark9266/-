@@ -199,6 +199,19 @@ class PatagoniaAdapter:
                 continue
             seen_styles.add(style_code)
 
+            # 덤프 ledger — 매칭 전 전수 기록 (오프라인 분석용)
+            try:
+                from src.core.dump_ledger import record_dump_item
+                await record_dump_item(
+                    self._db_path,
+                    source=self.source_name,
+                    model_no=style_code,
+                    name=item.get("name") or item.get("name_kr") or "",
+                    url=item.get("url") or "",
+                )
+            except Exception:
+                logger.debug("[patagonia] dump_ledger 실패 (비치명)")
+
             kream_row = kream_index.get(style_code)
             if kream_row is None:
                 pending_collect.append(self._build_collect_row(item, style_code))
