@@ -551,3 +551,95 @@ async def test_delta_watcher_path_replaces_hot(tmp_path):
     assert runtime.stats()["adapter_tasks"] == 2
 
     await runtime.stop()
+
+
+# ─── (g) 사이즈 교집합 가드 회귀 ─────────────────────────
+# GY7396 토바코 팬톤 메사 허위 알림 (2026-04-16 22:19 / 04-17 05:36).
+# 무신사 재고 API GET 400 폴백이 전 사이즈 in_stock=True 로 내보내 교집합 가드를
+# 우회한 사고. POST 전환(commit 59d5fc4)으로 라이브는 고쳐졌지만 회귀 방어선 부재.
+
+async def test_candidate_handler_drops_when_intersection_empty(tmp_path):
+    """무신사 in-stock=(220,225,230) 인데 크림 sell_now 는 270/280 에만 있을 때 drop."""
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+
+    async def snap_fn(pid: int, size: str) -> dict | None:
+        return {
+            "sell_now_price": 176_000,  # MIN(270=201000, 280=176000)
+            "volume_7d": 5,
+            "size_prices": [
+                {"size": "220", "sell_now_price": None},
+                {"size": "225", "sell_now_price": None},
+                {"size": "235", "sell_now_price": None},
+                {"size": "270", "sell_now_price": 201_000},
+                {"size": "280", "sell_now_price": 176_000},
+            ],
+        }
+
+    runtime = V3Runtime(
+        db_path=db,
+        enabled=True,
+        alert_log_path=str(tmp_path / "v3_alerts.jsonl"),
+        kream_snapshot_fn=snap_fn,
+        musinsa_adapter=_NoopMusinsaAdapter(),  # type: ignore[arg-type]
+        hot_watcher=_NoopHotWatcher(),  # type: ignore[arg-type]
+    )
+    await runtime.start()
+    handler = runtime._build_candidate_handler()
+
+    cand = CandidateMatched(
+        source="musinsa",
+        kream_product_id=101,
+        model_no="GY7396",
+        retail_price=68_990,
+        size="",
+        url="https://www.musinsa.com/products/3913010",
+        available_sizes=("220", "225", "230"),
+    )
+    result = await handler(cand)
+    assert result is None, "교집합 비어있으면 drop"
+
+    await runtime.stop()
+
+
+async def test_candidate_handler_filters_to_intersection_when_partial(tmp_path):
+    """양성 — 교집합 사이즈만 통과 + MIN 대표가 재계산."""
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+
+    async def snap_fn(pid: int, size: str) -> dict | None:
+        return {
+            "sell_now_price": 150_000,
+            "volume_7d": 10,
+            "size_prices": [
+                {"size": "270", "sell_now_price": 150_000},  # 교집합 ✗
+                {"size": "280", "sell_now_price": 200_000},  # 교집합 ✓
+            ],
+        }
+
+    runtime = V3Runtime(
+        db_path=db,
+        enabled=True,
+        alert_log_path=str(tmp_path / "v3_alerts.jsonl"),
+        kream_snapshot_fn=snap_fn,
+        musinsa_adapter=_NoopMusinsaAdapter(),  # type: ignore[arg-type]
+        hot_watcher=_NoopHotWatcher(),  # type: ignore[arg-type]
+    )
+    await runtime.start()
+    handler = runtime._build_candidate_handler()
+
+    cand = CandidateMatched(
+        source="musinsa",
+        kream_product_id=101,
+        model_no="CW2288-111",
+        retail_price=70_000,
+        size="",
+        url="https://example.com",
+        available_sizes=("280",),
+    )
+    result = await handler(cand)
+    assert result is not None
+    # 280 만 필터 통과 → MIN 대표가 = 200_000
+    assert result.kream_sell_price == 200_000
+
+    await runtime.stop()

@@ -12,3 +12,17 @@ log.txt
 test_log.txt
 .ruff_cache/
 .pytest_cache/
+
+# DB 파일 (data/는 위에서 막혔지만 루트나 다른 경로 누수 방지)
+*.db
+*.db-shm
+*.db-wal
+
+# 한글 메모/스크래치 (PRD/HANDOFF 같은 영구 문서는 명시 화이트리스트로 별도 관리)
+크림봇 프로젝트 현황*.txt
+참고자료*.txt
+*.scratch.txt
+
+# scan-debugger 등 임시 probe 스크립트
+scripts/probe_*.py
+scripts/test_available_sizes.py
