@@ -184,6 +184,45 @@ def _match_color_to_kream(
     return best_id if best_overlap >= 1 else None
 
 
+def _pick_kream_by_color(
+    arc_color_name: str, kream_candidates: list[dict],
+) -> dict | None:
+    """크림 후보 리스트에서 아크테릭스 색상과 가장 잘 매칭되는 크림 상품 선택.
+
+    arc_color_name: 아크테릭스 상품명 (색상 포함)
+    kream_candidates: 같은 style number 를 공유하는 크림 상품 리스트
+
+    각 크림 상품명에서 색상 토큰을 추출하고, 아크테릭스 상품명 색상 토큰과
+    교집합이 가장 큰 것을 반환. 동점 시 토큰 수가 적은(더 구체적인) 것 우선.
+    1개면 그대로 반환. 매칭 실패 시 None.
+    """
+    if not kream_candidates:
+        return None
+    if len(kream_candidates) == 1:
+        return kream_candidates[0]
+
+    arc_tokens = set(re.split(r"[\s/]+", arc_color_name.lower())) - {""}
+    # 비색상 토큰 제거
+    non_lower = {t.lower() for t in _NON_COLOR_TOKENS}
+    arc_tokens -= non_lower
+
+    best: dict | None = None
+    best_overlap = 0
+    best_kream_len = 999
+    for kream_row in kream_candidates:
+        kream_name = kream_row.get("name") or ""
+        kream_tokens = _extract_color_tokens(kream_name)
+        overlap = len(arc_tokens & kream_tokens)
+        if overlap > best_overlap or (
+            overlap == best_overlap and overlap > 0
+            and len(kream_tokens) < best_kream_len
+        ):
+            best_overlap = overlap
+            best = kream_row
+            best_kream_len = len(kream_tokens)
+    return best if best_overlap >= 1 else kream_candidates[0]
+
+
 def _extract_model_from_options(data: dict) -> str:
     """옵션 API 응답 → 모델번호(Colour level 의 `code`).
 
@@ -357,13 +396,16 @@ class ArcteryxAdapter:
                 index[key] = dict(row)
         return index
 
-    def _load_kream_style_index(self) -> dict[str, dict]:
+    def _load_kream_style_index(self) -> dict[str, list[dict]]:
         """크림 Arc'teryx 엔트리의 슬래시/쉼표 분리 style number 인덱스.
 
         크림 DB 는 Arc'teryx 상품의 model_number 를 style number 들을
         슬래시로 잇는 조합(예: ``28412/6057/9829/10358/10403``) 으로 저장한다.
         각 청크는 아크테릭스 ERP SKU 뒤 5자리와 일치하므로(`ABQSU10358` →
         `10358`), style 단위 인덱스를 만들어 SKU 기반 역참조에 쓴다.
+
+        1:N 매핑: 같은 style number 가 여러 크림 상품(색상별)에 포함되므로
+        리스트로 저장하고 매칭 시 색상으로 최적 후보를 선택한다.
         """
         conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
@@ -375,13 +417,13 @@ class ArcteryxAdapter:
             ).fetchall()
         finally:
             conn.close()
-        style_index: dict[str, dict] = {}
+        style_index: dict[str, list[dict]] = {}
         for row in rows:
             mn = row["model_number"] or ""
             for chunk in re.split(r"[/,;]", mn):
                 chunk = chunk.strip()
                 if chunk.isdigit():
-                    style_index.setdefault(chunk, dict(row))
+                    style_index.setdefault(chunk, []).append(dict(row))
         return style_index
 
     @staticmethod
@@ -468,7 +510,10 @@ class ArcteryxAdapter:
             if kream_row is None:
                 style_no = self._extract_style_from_sku(model_no)
                 if style_no:
-                    kream_row = kream_style_index.get(style_no)
+                    candidates = kream_style_index.get(style_no, [])
+                    if candidates:
+                        arc_name = item.get("product_name") or ""
+                        kream_row = _pick_kream_by_color(arc_name, candidates)
             if kream_row is None:
                 # 미등재 신상 → 배치 버퍼에 쌓고 사이클 끝에서 한 번에 flush.
                 # 행 단위 INSERT 가 19개 어댑터 동시 쓰기에서 DB 락을 유발하는

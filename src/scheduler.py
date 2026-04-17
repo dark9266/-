@@ -295,6 +295,23 @@ class Scheduler:
             error_aggregator.add("collect_loop", e)
             logger.error("신규 수집 실패: %s", e)
 
+        # 미등재 큐(kream_collect_queue) pending 항목 처리
+        try:
+            pending = await self.bot._kream_collector.collect_pending(batch_size=20)
+            if pending["found"] > 0:
+                await self.bot.progress_to_channel(
+                    f"🔍 큐 처리: {pending['found']}건 발견 "
+                    f"(잔여 {pending['remaining']}건)"
+                )
+            logger.info(
+                "큐 처리: 체크 %d, 발견 %d, 미발견 %d, 잔여 %d",
+                pending["checked"], pending["found"],
+                pending["not_found"], pending["remaining"],
+            )
+        except Exception as e:
+            error_aggregator.add("collect_pending", e)
+            logger.error("큐 처리 실패: %s", e)
+
     @collect_loop.before_loop
     async def before_collect(self) -> None:
         await self.bot.wait_until_ready()

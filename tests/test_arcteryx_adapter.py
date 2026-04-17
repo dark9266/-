@@ -523,3 +523,80 @@ async def test_end_to_end_through_orchestrator(bus, kream_db, tmp_path):
     finally:
         await orch.stop()
         await store.close()
+
+
+# ─── (g) style_index 1:N — 같은 style, 다른 색상 크림 상품 ──
+
+async def test_style_index_1n_color_matching(bus, tmp_path):
+    """같은 style number를 공유하는 크림 상품 2개 중 색상이 맞는 것 선택."""
+    db_path = tmp_path / "kream_1n.db"
+    _init_kream_db(
+        str(db_path),
+        rows=[
+            # 같은 style 10358 포함, 블랙
+            {
+                "product_id": "801",
+                "name": "아크테릭스 베타 자켓 블랙",
+                "model_number": "28412/6057/9829/10358/10403",
+                "brand": "Arc'teryx",
+            },
+            # 같은 style 10358 포함, 보이드(파란계열)
+            {
+                "product_id": "802",
+                "name": "아크테릭스 베타 자켓 보이드",
+                "model_number": "7584/7507/31461/10358/8584",
+                "brand": "Arc'teryx",
+            },
+        ],
+    )
+
+    fake_http = _FakeArcteryxHttp(
+        category_items={},
+        options_by_id={
+            8001: "ABQSU10358",  # style=10358 → 크림 801,802 둘 다 후보
+        },
+    )
+    adapter = ArcteryxAdapter(
+        bus=bus,
+        db_path=str(db_path),
+        http_client=fake_http,
+    )
+
+    # 소싱처 상품명에 "Black" → 크림 "블랙" 상품 801 선택되어야 함
+    products_black = [
+        {
+            "product_id": 8001,
+            "product_name": "Beta Jacket Black",
+            "sell_price": 890000,
+            "sale_state": "ON",
+            "_category": "mens-jackets",
+        },
+    ]
+    matches, stats = await adapter.match_to_kream(products_black)
+    assert stats.matched == 1
+    assert matches[0].kream_product_id == 801
+
+    # 소싱처 상품명에 "Void" → 크림 "보이드" 상품 802 선택되어야 함
+    fake_http2 = _FakeArcteryxHttp(
+        category_items={},
+        options_by_id={
+            8002: "ABQSU10358",
+        },
+    )
+    adapter2 = ArcteryxAdapter(
+        bus=bus,
+        db_path=str(db_path),
+        http_client=fake_http2,
+    )
+    products_void = [
+        {
+            "product_id": 8002,
+            "product_name": "Beta Jacket Void",
+            "sell_price": 890000,
+            "sale_state": "ON",
+            "_category": "mens-jackets",
+        },
+    ]
+    matches2, stats2 = await adapter2.match_to_kream(products_void)
+    assert stats2.matched == 1
+    assert matches2[0].kream_product_id == 802
