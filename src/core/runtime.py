@@ -104,7 +104,13 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     # CandidateMatched publish 시 orchestrator → 수익/알림 체인 진입 가능 →
     # 정확성 축 ① 위반. 토큰 교차 임계 상향 + 브랜드 강제 일치 가드 도입 후 재활성화.
     ("adidas", AdidasAdapter),
-    ("hoka", HokaAdapter),
+    # ("hoka", HokaAdapter),
+    # 2026-04-17 비활성화: 호카는 한국 직판 없음. 현 어댑터가 `www.hoka.com/en/us/...`
+    # US 스토어 URL 을 알림에 내보냄 → ① CLAUDE.md "한국 공홈만" 규칙 위반
+    # ② DataDome geo-block 으로 한국에서 406/403 → 유저가 링크 접속 불가
+    # ③ 가격 USD×1400 환산 — KRW 정합성 어긋남.
+    # 한국 공식 채널은 `brand.naver.com/hoka` (네이버 브랜드스토어). 별도 크롤러
+    # 구축 후 재활성화. carhartt 선례(위) 와 동일 판정.
     # ("beaker", BeakerAdapter),      # 46k dumps/0 match — 한국 에디토리얼 패션
     # ("thehandsome", ThehandsomeAdapter),  # 36k dumps/0 match — 한섬 ERP 코드, 크림 풀 불일치
     # 브랜드 필터 인프라 도입 후 재활성화. (2026-04-13 실측 근거)

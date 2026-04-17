@@ -62,7 +62,8 @@ def _keyword_set(text: str) -> set[str]:
 
 
 def _build_url(product_no: int | str) -> str:
-    return f"https://www.kasina.co.kr/products/{product_no}"
+    # 2026-04-17: `/products/{id}` 404 — 실제 라우트 `/product-detail/{id}`.
+    return f"https://www.kasina.co.kr/product-detail/{product_no}"
 
 
 @dataclass

@@ -30,7 +30,7 @@ class TestParseSearchItem:
         assert row["model_number"] == "HF3704-003"
         assert row["price"] == 149000
         assert row["brand"] == "NIKE"
-        assert row["url"].endswith("/products/133292773")
+        assert row["url"].endswith("/product-detail/133292773")
 
     def test_no_product_no(self):
         row = _parse_search_item({"productNo": None, "productName": "x"})

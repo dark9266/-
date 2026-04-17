@@ -79,7 +79,11 @@ def _keyword_set(text: str) -> set[str]:
 
 
 def _build_url(product_id: int | str) -> str:
-    return f"{WEB_BASE}/products/detail/{product_id}"
+    # 2026-04-17: `/products/detail/{id}` 는 not-found 반환 — 실제 라우트는
+    # `/products/view/{id}` (Next.js 청크 `8411-*.js` 에서 확인). 라이브 검증:
+    # `/products/detail/683028` → 404 (not-found), `/products/view/683028` → 200
+    # (신솔로 햇 AENSUX5435 정상 렌더).
+    return f"{WEB_BASE}/products/view/{product_id}"
 
 
 # 한글 색상 → 영문 매핑 (크림 상품명에서 색상 추출용)

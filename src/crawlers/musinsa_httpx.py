@@ -386,13 +386,14 @@ class MusinsaHttpxCrawler:
             # Phase B: options API → 사이즈 데이터
             options_data = await self._fetch_options_api(api_id)
 
-            # Phase C: inventory API → 품절 필터
+            # Phase C: inventory API → 품절 필터 (POST + 전 optionValue NO)
             inventory_data = None
             if options_data:
-                color_values = self._get_color_option_values(options_data)
-                inventory_data = await self._fetch_inventories_api(
-                    api_id, color_values if color_values else None,
-                )
+                all_value_nos = self._get_all_option_value_nos(options_data)
+                if all_value_nos:
+                    inventory_data = await self._fetch_inventories_api(
+                        api_id, all_value_nos,
+                    )
 
             # 사이즈 파싱
             sizes: list[RetailSizeInfo] = []
@@ -472,41 +473,51 @@ class MusinsaHttpxCrawler:
     async def _fetch_inventories_api(
         self,
         product_id: str,
-        selected_option_values: list[int] | None = None,
+        option_value_nos: list[int] | None = None,
     ) -> list | None:
-        """재고 API 직접 호출."""
+        """재고 API 호출 (POST).
+
+        2026-04-17: GET `selectedOptionValueNos=...` 는 전 상품 400 반환 — 실제
+        브라우저는 **POST** `options/v2/prioritized-inventories` + JSON body
+        `{"optionValueNos":[...]}` 로 호출 (Playwright 캡처 확인). 기존 GET 경로는
+        상시 400 → `inventory_data=None` → `_parse_sizes_from_api` 폴백이
+        `isDeleted=False` 만 확인하고 전 사이즈 in_stock=True 로 처리.
+        결과: 전체 품절 상품에도 허위 알림 (삼바 JR2660 pid=4375143 실측).
+        """
+        if not option_value_nos:
+            return None
+
         client = await self.connect()
-        base_urls = [
-            f"{GOODS_DETAIL_BASE}/api2/goods/{product_id}/options/v2/prioritized-inventories",
-            f"{GOODS_DETAIL_BASE}/api2/goods/{product_id}/prioritized-inventories",
-        ]
+        api_url = f"{GOODS_DETAIL_BASE}/api2/goods/{product_id}/options/v2/prioritized-inventories"
+        headers = dict(_API_HEADERS)
+        headers["Content-Type"] = "application/json"
 
-        params = {}
-        if selected_option_values:
-            # httpx는 동일 키 다중값을 리스트로 전달
-            params = {"selectedOptionValueNos": selected_option_values}
-
-        for api_url in base_urls:
-            try:
-                async with self._rate_limiter.acquire():
-                    resp = await client.get(
-                        api_url, params=params, headers=_API_HEADERS,
-                    )
-                if resp.status_code != 200:
-                    continue
-                body = resp.json()
-                if isinstance(body, dict):
-                    inv = body.get("data", [])
-                    if isinstance(inv, list):
-                        logger.debug("재고 API 성공: pid=%s %d건", product_id, len(inv))
-                        return inv
-                elif isinstance(body, list):
-                    return body
-            except Exception:
-                continue
+        try:
+            async with self._rate_limiter.acquire():
+                resp = await client.post(
+                    api_url,
+                    json={"optionValueNos": list(option_value_nos)},
+                    headers=headers,
+                )
+            if resp.status_code != 200:
+                logger.debug(
+                    "재고 API 실패: pid=%s status=%d body=%s",
+                    product_id, resp.status_code, resp.text[:200],
+                )
+                return None
+            body = resp.json()
+            if isinstance(body, dict):
+                inv = body.get("data", [])
+                if isinstance(inv, list):
+                    logger.debug("재고 API 성공: pid=%s %d건", product_id, len(inv))
+                    return inv
+            elif isinstance(body, list):
+                return body
+        except Exception as e:
+            logger.debug("재고 API 예외: pid=%s %s", product_id, e)
 
         if not self._inventory_api_warned:
-            logger.warning("재고 API 전면 불능 (400) — optionItems.activated 폴백")
+            logger.warning("재고 API 불능 — optionItems.activated 폴백 (품절 감지 불가)")
             self._inventory_api_warned = True
         return None
 
@@ -829,7 +840,11 @@ class MusinsaHttpxCrawler:
             elif inventory_data is not None:
                 in_stock = False
             else:
-                in_stock = not ov.get("isDeleted", False)
+                # 2026-04-17: 재고 API 실패 시 "isDeleted=False → 재고 있음" 폴백은
+                # 전체 품절 상품까지 in_stock=True 로 처리 → 허위 알림 (JR2660 실측).
+                # 거짓 알림 0 지향 원칙 (CLAUDE.md 축 ①) 에 따라 "미확인 → 품절"
+                # 보수적으로 처리한다. isDeleted=True 는 명시적 삭제이므로 유지.
+                in_stock = False
 
             if ov.get("isRestock") or "재입고" in size_name:
                 in_stock = False
@@ -847,6 +862,25 @@ class MusinsaHttpxCrawler:
             ))
 
         return sizes
+
+    def _get_all_option_value_nos(self, options_data: dict | None) -> list[int]:
+        """옵션 API 응답에서 **모든** optionValue NO 수집 (POST 재고 API 용)."""
+        if not options_data or not isinstance(options_data, dict):
+            return []
+        data = options_data.get("data")
+        if not isinstance(data, dict):
+            return []
+        basics = data.get("basic", [])
+        if not isinstance(basics, list):
+            return []
+        nos: list[int] = []
+        for opt in basics:
+            if not isinstance(opt, dict):
+                continue
+            for v in opt.get("optionValues", []):
+                if isinstance(v, dict) and isinstance(v.get("no"), int):
+                    nos.append(v["no"])
+        return nos
 
     def _get_color_option_values(self, options_data: dict | None) -> list[int]:
         """다중 옵션 상품에서 컬러 옵션 값 추출."""

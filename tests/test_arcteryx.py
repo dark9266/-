@@ -41,7 +41,7 @@ class TestParseSearchItem:
         assert result["brand"] == "Arc'teryx"
         assert result["price"] == 1112000
         assert result["original_price"] == 1390000
-        assert result["url"] == "https://arcteryx.co.kr/products/685124"
+        assert result["url"] == "https://arcteryx.co.kr/products/view/685124"
         assert result["image_url"] == "https://product.arcteryx.co.kr/img/685124.jpg"
         assert result["is_sold_out"] is False
         assert result["model_number"] == ""

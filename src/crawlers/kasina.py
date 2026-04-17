@@ -68,7 +68,10 @@ def _normalize_token(t: str) -> str:
 
 
 def _build_url(product_no: int | str) -> str:
-    return f"{WEB_BASE}/products/{product_no}"
+    # 2026-04-17: `/products/{id}` 는 HTTP 404 (SPA shell 반환). 실제 라우트는
+    # `/product-detail/{id}`. 라이브 검증: `/products/114225599` → 404,
+    # `/product-detail/114225599` → 200 + "뉴발란스 U574RG2 그린 NBP7DB114J".
+    return f"{WEB_BASE}/product-detail/{product_no}"
 
 
 def _parse_search_item(it: dict) -> dict:
