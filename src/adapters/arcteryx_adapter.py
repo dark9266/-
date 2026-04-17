@@ -88,7 +88,72 @@ _KR_COLOR_MAP: dict[str, str] = {
     "그린": "green", "네이비": "navy", "그레이": "grey", "베이지": "beige",
     "브라운": "brown", "옐로": "yellow", "핑크": "pink", "퍼플": "purple",
     "오렌지": "orange", "카키": "khaki", "아이보리": "ivory",
+    "보이드": "void", "일렉트라": "electra", "다이너스티": "dynasty",
+    "솔리튜드": "solitude", "소울소닉": "soulsonic", "블레이즈": "blaze",
+    "모스": "moss", "문스톤": "moonstone", "캔버스": "canvas",
+    "레벨": "revel", "루미나": "lumina", "메스머": "mesmer",
+    "바이탈리티": "vitality", "스트라터스": "stratus", "아트모스": "atmos",
+    "솔라라이즈": "solarize", "솔레스": "solace", "유콘": "yukon",
+    "포리지": "forage", "세쿼이아": "sequoia", "에덴": "eden",
+    "타츠": "tatsu", "위커": "wicker", "데이즈": "daze",
+    "데이브레이크": "daybreak", "헤드워터스": "headwaters",
+    "스포트라이트": "spotlight", "알펜글로우": "alpenglow",
+    "포스포레센트": "phosphorescent", "로데스타": "lodestar",
 }
+
+# 아크테릭스 제품명에서 색상 부분을 추출할 때 제거할 비색상 토큰
+_NON_COLOR_TOKENS: set[str] = {
+    "아크테릭스", "arcteryx", "arc'teryx", "베타", "beta", "알파", "alpha",
+    "감마", "gamma", "아톰", "atom", "세륨", "cerium", "솔라노", "solano",
+    "자켓", "jacket", "재킷", "후디", "hoody", "hoodie", "팬츠", "pants",
+    "쇼츠", "shorts", "조끼", "vest", "티셔츠", "tee", "shirt",
+    "남성", "여성", "men", "women", "남자", "여자", "sl", "sv", "ar", "lt",
+    "인센도", "incendo", "크래그", "crag", "맨티스", "mantis",
+    "코튼", "cotton", "로고", "logo", "ss", "ls", "에어쉘", "airshell",
+    "ePE", "epe", "x", "빔즈", "beams", "버드", "bird", "워드", "word",
+    "9인치", "코어", "core", "pro", "프로", "인치", "inch",
+    "w", "m", "배색", "반팔", "긴팔", "SL", "SV", "AR", "LT",
+}
+
+
+# 복합 한글 색상 → 영문 매핑 (2단어 이상, 단일보다 먼저 매칭)
+_KR_COMPOUND_COLOR_MAP: dict[str, tuple[str, ...]] = {
+    "블랙 사파이어": ("black", "sapphire"),
+    "알파인 블루": ("alpine", "blue"),
+    "알파인 로즈": ("alpine", "rose"),
+    "다크 신차": ("dk", "shincha"),
+    "핑크 글로우": ("pink", "glow"),
+    "포리지 타츠": ("forage", "tatsu"),
+    "캔버스 포리지": ("canvas", "forage"),
+}
+
+
+def _extract_color_tokens(kream_name: str) -> set[str]:
+    """크림 상품명에서 색상 관련 토큰만 추출.
+
+    1차: 복합 한글 색상(2단어+) 우선 매칭 → 영문 변환
+    2차: 단일 한글 색상 → 영문 변환
+    3차: 영문 토큰 중 비색상 토큰 제거
+    """
+    name_lower = kream_name.lower()
+    tokens: set[str] = set()
+    consumed: set[str] = set()
+    # 복합 색상 우선
+    for kr, en_tuple in _KR_COMPOUND_COLOR_MAP.items():
+        if kr in name_lower:
+            tokens.update(en_tuple)
+            # 복합 색상의 개별 한글 파트를 consumed 처리하여 단일 매칭 방지
+            for part in kr.split():
+                consumed.add(part)
+    # 단일 색상
+    for kr, en in _KR_COLOR_MAP.items():
+        if kr in name_lower and kr not in consumed:
+            tokens.add(en)
+    # 영문 토큰 추가 (비색상 필터)
+    raw = set(re.findall(r"[a-z]+", name_lower))
+    non_lower = {t.lower() for t in _NON_COLOR_TOKENS}
+    tokens.update(raw - non_lower)
+    return tokens
 
 
 def _match_color_to_kream(
@@ -97,25 +162,25 @@ def _match_color_to_kream(
     """크림 상품명에서 색상 토큰을 추출하고 arcteryx 색상과 매칭.
 
     Returns 매칭된 color value 의 id, 없으면 None.
+    동점 시 토큰 수가 적은(더 구체적인) 색상 우선.
     """
-    name_lower = kream_name.lower()
-    kream_tokens: set[str] = set()
-    for kr, en in _KR_COLOR_MAP.items():
-        if kr in name_lower:
-            kream_tokens.add(en)
-    kream_tokens.update(re.findall(r"[a-z0-9]+", name_lower))
+    kream_tokens = _extract_color_tokens(kream_name)
 
     best_id: int | None = None
     best_overlap = 0
+    best_arc_len = 999  # 동점 시 토큰 수 적은 것 우선
     for cv in color_values:
         if not isinstance(cv, dict):
             continue
         arc_color = str(cv.get("value") or "").lower()
         arc_tokens = set(re.split(r"[\s/]+", arc_color)) - {""}
         overlap = len(kream_tokens & arc_tokens)
-        if overlap > best_overlap:
+        if overlap > best_overlap or (
+            overlap == best_overlap and overlap > 0 and len(arc_tokens) < best_arc_len
+        ):
             best_overlap = overlap
             best_id = cv.get("id")
+            best_arc_len = len(arc_tokens)
     return best_id if best_overlap >= 1 else None
 
 
