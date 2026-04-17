@@ -170,6 +170,11 @@ REASON_HANDLER_MISSING = "handler_missing"
 REASON_HANDLER_EXCEPTION = "handler_exception"
 REASON_DEDUP_CHECKPOINT = "dedup_checkpoint"
 REASON_DEDUP_RECENT = "dedup_recent"
+REASON_PREFILTER_UNPROFITABLE = "prefilter_unprofitable"
+
+# Pre-filter KREAM 가격 상승 여유 — 마지막 관측 sell_now_price 가 이만큼
+# 상승해도 min_profit 미달이면 차단. 일반 변동성(±20%) 고려.
+PREFILTER_UPSIDE_BUFFER_RATIO = 0.20
 
 
 class Orchestrator:
@@ -210,6 +215,7 @@ class Orchestrator:
             "candidate_dropped_throttle": 0,  # 하위 호환 (deferred 카운트와 동치)
             "candidate_deferred": 0,
             "candidate_dedup_skipped": 0,
+            "candidate_prefilter_blocked": 0,
             "profit_processed": 0,
             "profit_failed": 0,
             "alert_duplicated": 0,
@@ -321,6 +327,53 @@ class Orchestrator:
                 kream_product_id,
             )
             return False
+
+    async def _prefilter_blocks(
+        self, event: CandidateMatched
+    ) -> tuple[bool, int]:
+        """로컬 kream_price_history 로 tentative profit 산정, 손실이면 True.
+
+        throttle/snapshot 이전에 실행 → API 호출 0. KREAM 가격 상승 여유
+        (PREFILTER_UPSIDE_BUFFER_RATIO) 를 더해도 min_profit 미달이면 차단.
+
+        fail-open: 데이터 없거나 테이블 누락/DB 장애 시 (False, 0) —
+        기존 파이프라인 유지.
+
+        Returns:
+            (block, tentative_net_profit)
+        """
+        if event.retail_price <= 0:
+            return False, 0
+        try:
+            db = self._checkpoints._require_db()  # noqa: SLF001
+            async with db.execute(
+                "SELECT sell_now_price FROM kream_price_history "
+                "WHERE product_id = ? AND sell_now_price > 0 "
+                "ORDER BY fetched_at DESC LIMIT 1",
+                (str(event.kream_product_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        except aiosqlite.Error:
+            return False, 0
+        if not row:
+            return False, 0
+        try:
+            last_sell = int(row[0] or 0)
+        except (TypeError, ValueError):
+            return False, 0
+        if last_sell <= 0:
+            return False, 0
+
+        from src.config import settings
+        from src.profit_calculator import calculate_kream_fees
+
+        fees = calculate_kream_fees(last_sell)
+        tentative = last_sell - event.retail_price - fees["total_fees"]
+        upside = int(last_sell * PREFILTER_UPSIDE_BUFFER_RATIO)
+        min_profit = getattr(settings, "alert_min_profit", 10_000)
+        if tentative + upside < min_profit:
+            return True, tentative
+        return False, tentative
 
     async def _record_dedup(
         self, event: CandidateMatched, outcome: str
@@ -577,6 +630,24 @@ class Orchestrator:
                 source=event.source,
                 kream_product_id=event.kream_product_id,
                 model_no=event.model_no,
+            )
+            await self._mark(ckpt_id)
+            return
+
+        # pre-filter 게이트 — 로컬 kream_price_history 로 tentative profit
+        # 계산. 명백한 손실(+20% 상승 여유에도 min_profit 미달)이면
+        # API 호출 이전에 차단. 실측: 4,320/일 throttle 예산으로 10건/일
+        # profit 발견(hit rate 0.23%) → 4,310 token 이 무수익 후보에 낭비.
+        # fail-open: 데이터 없으면 기존 파이프라인 유지.
+        block, tentative = await self._prefilter_blocks(event)
+        if block:
+            self._stats["candidate_prefilter_blocked"] += 1
+            await self.log_decision(
+                "candidate", DECISION_BLOCK, REASON_PREFILTER_UNPROFITABLE,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+                extra=f"tentative={tentative}",
             )
             await self._mark(ckpt_id)
             return
