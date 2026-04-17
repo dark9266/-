@@ -126,13 +126,49 @@ class _FakeArcteryxHttp:
 
     async def _options_raw(self, *, product_id: int | str) -> dict:
         self.options_calls.append(product_id)
-        code = self._options_by_id.get(product_id, "")
-        # 아크테릭스 실제 응답 구조 모사
+        # int/str 양쪽 키 조회 — adapter 가 int 로도 str 로도 호출
+        code = self._options_by_id.get(product_id)
+        if code is None:
+            try:
+                code = self._options_by_id.get(int(product_id), "")
+            except (TypeError, ValueError):
+                code = ""
+        # 색상 인식 응답 구조 — _fetch_color_aware_sizes 가 Level 1 color +
+        # Level 2 size(parent_ids) 를 읽으므로 완전한 구조 필요.
+        # code 가 빈 문자열이면 모델번호 추출 실패를 의미 → 빈 옵션
+        if not code:
+            return {
+                "options": [
+                    {"level": 1, "code": "", "values": []},
+                    {"level": 2, "values": []},
+                ],
+            }
+        color_id = int(product_id) * 10 + 1  # 결정적 color id
+        sizes_for_pid = self._pdp.get(str(product_id), ["L"])
         return {
             "options": [
-                {"level": 1, "code": code, "values": []},
-                {"level": 2, "values": []},
-            ]
+                {
+                    "level": 1,
+                    "code": code,
+                    "values": [
+                        {"id": color_id, "value": "Black", "sale_state": "ON"},
+                    ],
+                },
+                {
+                    "level": 2,
+                    "values": [
+                        {
+                            "value": s,
+                            "parent_ids": [color_id],
+                            "sale_state": "ON",
+                            "is_orderable": True,
+                            "stock": 5,
+                            "sell_price": 890000,
+                        }
+                        for s in sizes_for_pid
+                    ],
+                },
+            ],
         }
 
 
@@ -321,7 +357,10 @@ async def test_match_three_cases(bus, kream_db):
 # ─── (c) 사전 field 로 옵션 호출 생략 ─────────────────────
 
 async def test_prefilled_model_number_skips_options_call(bus, kream_db):
-    fake_http = _FakeArcteryxHttp(category_items={}, options_by_id={})
+    fake_http = _FakeArcteryxHttp(
+        category_items={},
+        options_by_id={7001: "X000007301"},
+    )
     adapter = ArcteryxAdapter(
         bus=bus,
         db_path=kream_db,
@@ -342,8 +381,8 @@ async def test_prefilled_model_number_skips_options_call(bus, kream_db):
     matches, stats = await adapter.match_to_kream(products)
     assert stats.matched == 1
     assert len(matches) == 1
-    # 옵션 API 호출이 한 번도 발생하지 않아야 함
-    assert fake_http.options_calls == []
+    # 모델번호 resolve 용 옵션 호출 생략 — 사이즈 조회용 1회만 발생 (str 변환)
+    assert fake_http.options_calls == ["7001"]
 
 
 # ─── (d) run_once 통계 정확성 ─────────────────────────────

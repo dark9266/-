@@ -79,7 +79,44 @@ def _keyword_set(text: str) -> set[str]:
 
 
 def _build_url(product_id: int | str) -> str:
-    return f"{WEB_BASE}/products/{product_id}"
+    return f"{WEB_BASE}/products/detail/{product_id}"
+
+
+# 한글 색상 → 영문 매핑 (크림 상품명에서 색상 추출용)
+_KR_COLOR_MAP: dict[str, str] = {
+    "블랙": "black", "화이트": "white", "블루": "blue", "레드": "red",
+    "그린": "green", "네이비": "navy", "그레이": "grey", "베이지": "beige",
+    "브라운": "brown", "옐로": "yellow", "핑크": "pink", "퍼플": "purple",
+    "오렌지": "orange", "카키": "khaki", "아이보리": "ivory",
+}
+
+
+def _match_color_to_kream(
+    kream_name: str, color_values: list[dict],
+) -> int | None:
+    """크림 상품명에서 색상 토큰을 추출하고 arcteryx 색상과 매칭.
+
+    Returns 매칭된 color value 의 id, 없으면 None.
+    """
+    name_lower = kream_name.lower()
+    kream_tokens: set[str] = set()
+    for kr, en in _KR_COLOR_MAP.items():
+        if kr in name_lower:
+            kream_tokens.add(en)
+    kream_tokens.update(re.findall(r"[a-z0-9]+", name_lower))
+
+    best_id: int | None = None
+    best_overlap = 0
+    for cv in color_values:
+        if not isinstance(cv, dict):
+            continue
+        arc_color = str(cv.get("value") or "").lower()
+        arc_tokens = set(re.split(r"[\s/]+", arc_color)) - {""}
+        overlap = len(kream_tokens & arc_tokens)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_id = cv.get("id")
+    return best_id if best_overlap >= 1 else None
 
 
 def _extract_model_from_options(data: dict) -> str:
@@ -418,10 +455,10 @@ class ArcteryxAdapter:
                 stats.skipped_guard += 1
                 continue
 
-            # PDP 실재고 사이즈 — 빈 결과 무조건 drop
+            # PDP 실재고 사이즈 — 색상별 필터 (크로스컬러 거짓양성 방지)
             http = await self._get_http()
-            available_sizes = await fetch_in_stock_sizes(
-                http, str(pid or ""), source_tag="arcteryx"
+            available_sizes = await self._fetch_color_aware_sizes(
+                http, str(pid or ""), kream_name,
             )
             if not available_sizes:
                 logger.info(
@@ -457,6 +494,80 @@ class ArcteryxAdapter:
 
         logger.info("[arcteryx] 매칭 완료: %s", stats.as_dict())
         return matched, stats
+
+    async def _fetch_color_aware_sizes(
+        self,
+        http: Any,
+        product_id: str,
+        kream_name: str,
+    ) -> tuple[str, ...]:
+        """색상 인식 사이즈 조회 — 크림 상품명의 색상과 매칭되는 arcteryx 색상만.
+
+        크로스컬러 거짓양성 방지: arcteryx 1개 상품 = 크림 N개 색상별 상품.
+        크림 "24K 블랙"에 SOULSONIC 색상의 재고가 섞이는 것을 차단.
+        """
+        if not product_id:
+            return ()
+        try:
+            data = await http._options_raw(product_id=product_id)
+        except Exception as exc:
+            logger.warning("[arcteryx] 옵션 조회 실패 pid=%s: %s", product_id, exc)
+            return ()
+        if not data:
+            return ()
+
+        options = data.get("options") or []
+
+        # Level 1: 색상 목록 + 크림 이름 매칭
+        color_values: list[dict] = []
+        for opt in options:
+            if opt.get("level") == 1:
+                color_values = opt.get("values") or []
+                break
+
+        target_color_id: int | None = None
+        if color_values:
+            target_color_id = _match_color_to_kream(kream_name, color_values)
+            if target_color_id is not None:
+                # 매칭된 색상이 SOLDOUT 이면 → 전체 drop
+                for cv in color_values:
+                    if cv.get("id") == target_color_id:
+                        if cv.get("sale_state") != "ON":
+                            logger.info(
+                                "[arcteryx] 색상 SOLDOUT drop: pid=%s color=%s kream=%s",
+                                product_id, cv.get("value"), kream_name[:30],
+                            )
+                            return ()
+                        break
+
+        # Level 2: 타겟 색상의 사이즈만 수집
+        sizes: list[str] = []
+        seen: set[str] = set()
+        for opt in options:
+            if opt.get("level") != 2:
+                continue
+            for val in opt.get("values") or []:
+                if not isinstance(val, dict):
+                    continue
+                size_val = str(val.get("value") or "").strip()
+                if not size_val or size_val in seen:
+                    continue
+                # 색상 필터: target_color_id 가 있으면 해당 색상만
+                if target_color_id is not None:
+                    pids = val.get("parent_ids") or []
+                    if target_color_id not in pids:
+                        continue
+                in_stock = (
+                    val.get("sale_state") == "ON"
+                    and bool(val.get("is_orderable", False))
+                    and int(val.get("stock") or 0) > 0
+                )
+                if not in_stock:
+                    continue
+                seen.add(size_val)
+                sizes.append(size_val)
+
+        return tuple(sizes)
 
     # ------------------------------------------------------------------
     # 3) 단발 사이클 — dump → match
@@ -576,44 +687,64 @@ class _DefaultArcteryxHttp:
         return inner if isinstance(inner, dict) else {}
 
     async def get_product_detail(self, product_id: str) -> RetailProduct | None:
-        """PDP 사이즈 조회 — options API → 재고 있는 사이즈 RetailProduct 반환."""
+        """PDP 사이즈 조회 — options API → 재고 있는 사이즈 RetailProduct 반환.
+
+        멀티컬러 상품에서 SOLDOUT 색상의 사이즈를 제외한다.
+        Level 1 color 의 sale_state=ON 인 색상 ID 만 허용하고,
+        Level 2 size 의 parent_ids 가 허용 색상을 포함할 때만 재고로 인정.
+        """
         data = await self._options_raw(product_id=product_id)
         if not data:
             return None
         options = data.get("options") or []
         model_number = ""
-        sizes: list[RetailSizeInfo] = []
-        seen_sizes: set[str] = set()
+        # Level 1: 판매 중인 색상 ID 수집
+        active_color_ids: set[int] = set()
         for option in options:
-            level = option.get("level")
-            if level == 1:
+            if option.get("level") == 1:
                 model_number = option.get("code") or ""
                 if not model_number:
                     values = option.get("values") or []
                     if values and isinstance(values[0], dict):
                         model_number = str(values[0].get("value") or "")
-            elif level == 2:
                 for val in option.get("values") or []:
-                    if not isinstance(val, dict):
-                        continue
-                    size_val = str(val.get("value") or "").strip()
-                    if not size_val or size_val in seen_sizes:
-                        continue
-                    in_stock = (
-                        val.get("sale_state") == "ON"
-                        and bool(val.get("is_orderable", False))
-                        and int(val.get("stock") or 0) > 0
-                    )
-                    if not in_stock:
-                        continue
-                    sell_price = int(val.get("sell_price") or 0)
-                    seen_sizes.add(size_val)
-                    sizes.append(RetailSizeInfo(
-                        size=size_val,
-                        price=sell_price,
-                        original_price=sell_price,
-                        in_stock=True,
-                    ))
+                    if isinstance(val, dict) and val.get("sale_state") == "ON":
+                        cid = val.get("id")
+                        if cid is not None:
+                            active_color_ids.add(int(cid))
+        # Level 2: 활성 색상에 속한 재고 사이즈만 수집
+        sizes: list[RetailSizeInfo] = []
+        seen_sizes: set[str] = set()
+        for option in options:
+            if option.get("level") != 2:
+                continue
+            for val in option.get("values") or []:
+                if not isinstance(val, dict):
+                    continue
+                size_val = str(val.get("value") or "").strip()
+                if not size_val or size_val in seen_sizes:
+                    continue
+                # parent_ids 로 색상 필터 — 활성 색상에 속하지 않으면 스킵
+                pids = val.get("parent_ids") or []
+                if active_color_ids and not any(
+                    pid in active_color_ids for pid in pids
+                ):
+                    continue
+                in_stock = (
+                    val.get("sale_state") == "ON"
+                    and bool(val.get("is_orderable", False))
+                    and int(val.get("stock") or 0) > 0
+                )
+                if not in_stock:
+                    continue
+                sell_price = int(val.get("sell_price") or 0)
+                seen_sizes.add(size_val)
+                sizes.append(RetailSizeInfo(
+                    size=size_val,
+                    price=sell_price,
+                    original_price=sell_price,
+                    in_stock=True,
+                ))
         if not sizes:
             return None
         return RetailProduct(
