@@ -66,6 +66,14 @@ RECOVER_CANDIDATE_CAP = 50
 # 시그널 업그레이드(예: 매수→강력매수) 는 escape 허용.
 ALERT_COOLDOWN_SECONDS = 6 * 3600
 
+# Candidate dedup 윈도우 — 동일 (kream_product_id, retail_price) 조합이
+# 이 창 안에서 이미 handler 를 성공적으로 거쳤다면 재진입 차단.
+# 실측: 15,582 block / 3,226 unique pid = 4.83x 재처리 (동일 카탈로그에서
+# 같은 상품이 어댑터 사이클마다 반복 통과). 6h 는 ALERT_COOLDOWN 과
+# 정렬 — 가격 변동(retail_price 차이) 시에는 composite key 가 달라
+# 자연스럽게 재평가된다.
+DEDUP_WINDOW_SECONDS = 6 * 3600
+
 # 시그널 rank — 업그레이드 비교용. 값이 클수록 강함.
 _SIGNAL_RANK: dict[str, int] = {
     "비추천": 0,
@@ -125,6 +133,22 @@ CREATE INDEX IF NOT EXISTS idx_decision_log_pid ON decision_log(kream_product_id
 CREATE INDEX IF NOT EXISTS idx_decision_log_reason ON decision_log(reason);
 """
 
+# Candidate dedup — 같은 (pid, retail_price) 가 DEDUP_WINDOW_SECONDS 내
+# 이미 handler 를 성공적으로 통과했는지 판정. composite PK 로 가격 변동
+# 시에는 자연 재평가.
+_CANDIDATE_DEDUP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS kream_candidate_dedup (
+    kream_product_id INTEGER NOT NULL,
+    retail_price INTEGER NOT NULL,
+    last_processed_at REAL NOT NULL,
+    last_outcome TEXT NOT NULL,
+    last_source TEXT DEFAULT '',
+    PRIMARY KEY (kream_product_id, retail_price)
+);
+CREATE INDEX IF NOT EXISTS idx_kream_candidate_dedup_time
+    ON kream_candidate_dedup(last_processed_at);
+"""
+
 # 허용된 decision 값 — 상수로 못 박아 오타/자유문 삽입 방지.
 DECISION_PASS = "pass"
 DECISION_BLOCK = "block"
@@ -145,6 +169,7 @@ REASON_THROTTLE = "throttle_exhausted"
 REASON_HANDLER_MISSING = "handler_missing"
 REASON_HANDLER_EXCEPTION = "handler_exception"
 REASON_DEDUP_CHECKPOINT = "dedup_checkpoint"
+REASON_DEDUP_RECENT = "dedup_recent"
 
 
 class Orchestrator:
@@ -184,6 +209,7 @@ class Orchestrator:
             "candidate_failed": 0,
             "candidate_dropped_throttle": 0,  # 하위 호환 (deferred 카운트와 동치)
             "candidate_deferred": 0,
+            "candidate_dedup_skipped": 0,
             "profit_processed": 0,
             "profit_failed": 0,
             "alert_duplicated": 0,
@@ -223,6 +249,7 @@ class Orchestrator:
         await db.executescript(_ALERT_SENT_SCHEMA)
         await db.executescript(_RETAIL_PRODUCTS_SCHEMA)
         await db.executescript(_DECISION_LOG_SCHEMA)
+        await db.executescript(_CANDIDATE_DEDUP_SCHEMA)
         await db.commit()
         self._alert_schema_ready = True
 
@@ -266,6 +293,64 @@ class Orchestrator:
                 "decision_log 쓰기 실패 (비치명): stage=%s reason=%s",
                 stage,
                 reason,
+            )
+
+    async def _is_dedup_recent(
+        self, kream_product_id: int, retail_price: int
+    ) -> bool:
+        """(pid, retail_price) 가 DEDUP_WINDOW_SECONDS 내 이미 처리됐는지.
+
+        DB 장애 시 False 반환 (fail-open) — dedup 은 보조 게이트이므로
+        장애로 파이프라인 전체가 멈추면 안 된다.
+        """
+        try:
+            import time as _time
+            db = self._checkpoints._require_db()  # noqa: SLF001
+            cutoff = _time.time() - DEDUP_WINDOW_SECONDS
+            async with db.execute(
+                "SELECT 1 FROM kream_candidate_dedup "
+                "WHERE kream_product_id = ? AND retail_price = ? "
+                "AND last_processed_at >= ? LIMIT 1",
+                (kream_product_id, retail_price, cutoff),
+            ) as cur:
+                row = await cur.fetchone()
+            return row is not None
+        except aiosqlite.Error:
+            logger.debug(
+                "candidate_dedup 조회 실패 (비치명) — fail-open: pid=%s",
+                kream_product_id,
+            )
+            return False
+
+    async def _record_dedup(
+        self, event: CandidateMatched, outcome: str
+    ) -> None:
+        """Handler 성공 시 dedup 기록. 예외/deferred 경로에서는 호출 X."""
+        try:
+            import time as _time
+            db = self._checkpoints._require_db()  # noqa: SLF001
+            await db.execute(
+                """INSERT INTO kream_candidate_dedup
+                    (kream_product_id, retail_price, last_processed_at,
+                     last_outcome, last_source)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(kream_product_id, retail_price) DO UPDATE SET
+                    last_processed_at = excluded.last_processed_at,
+                    last_outcome = excluded.last_outcome,
+                    last_source = excluded.last_source""",
+                (
+                    int(event.kream_product_id),
+                    int(event.retail_price),
+                    _time.time(),
+                    outcome,
+                    event.source or "",
+                ),
+            )
+            await db.commit()
+        except aiosqlite.Error:
+            logger.debug(
+                "candidate_dedup 기록 실패 (비치명): pid=%s",
+                event.kream_product_id,
             )
 
     async def _persist_retail_product(self, event: CandidateMatched) -> None:
@@ -478,6 +563,24 @@ class Orchestrator:
             await _bump_heartbeat(self._checkpoints.db_path, event.source)
         except Exception:
             logger.exception("[heartbeat] bump 실패")
+
+        # dedup 게이트 — 동일 (pid, retail_price) 가 DEDUP_WINDOW 내 이미
+        # handler 를 성공적으로 통과했다면 재진입 차단. 4.83x 재처리 패턴
+        # 원인이 여기. snapshot/throttle/handler 모두 우회. retail_price 가
+        # 바뀌면 composite key 가 달라져 자연 재평가.
+        if await self._is_dedup_recent(
+            event.kream_product_id, event.retail_price
+        ):
+            self._stats["candidate_dedup_skipped"] += 1
+            await self.log_decision(
+                "candidate", DECISION_BLOCK, REASON_DEDUP_RECENT,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
+            await self._mark(ckpt_id)
+            return
+
         # 캐시 히트면 API 호출 불필요 → 쓰로틀 토큰 소비 없이 바로 진행
         cache_hit = False
         sfn = self._snapshot_fn
@@ -543,6 +646,10 @@ class Orchestrator:
             )
             await self._mark(ckpt_id)
             return
+        # handler 성공 — dedup 기록 (예외/deferred 경로는 미기록 → replay 허용)
+        await self._record_dedup(
+            event, "profit" if result is not None else "no_profit"
+        )
         await self._mark(ckpt_id)
         if result is not None:
             await self.log_decision(

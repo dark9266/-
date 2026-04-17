@@ -397,7 +397,26 @@ async def test_end_to_end_through_orchestrator(bus, kream_db, tmp_path):
         {"kream_product_id": 202, "sell_now_price": 150_000, "volume_7d": 7, "sold_count": 2},
         {"kream_product_id": 404, "sell_now_price": 300_000, "volume_7d": 5, "sold_count": 1},
     ]
-    client = _FakeDeltaClient(
+    # 오케스트레이터에 (pid, retail_price) 6h dedup 이 걸려있으므로, 같은
+    # pid 를 연속 publish 해도 retail_price 가 동일하면 두 번째 후보는
+    # dedup 에서 차단된다. 실제 delta 시나리오(KREAM 가격 변동)를 반영해
+    # 첫 호출과 두 번째 호출이 서로 다른 sell_now_price 를 내도록 구성.
+    _snap_call_seq: dict[int, int] = {}
+
+    class _DynamicFake(_FakeDeltaClient):
+        async def get_snapshot(self, product_id: int) -> dict | None:  # type: ignore[override]
+            self.detail_calls.append(product_id)
+            base = self._details.get(product_id)
+            if base is None:
+                return None
+            idx = _snap_call_seq.get(product_id, 0)
+            _snap_call_seq[product_id] = idx + 1
+            if product_id == 101:
+                # 첫 호출 230k, 두 번째 250k (delta 재발행 시나리오)
+                return {**base, "sell_now_price": 230_000 if idx == 0 else 250_000}
+            return base
+
+    client = _DynamicFake(
         light_sequence=[light_poll1, light_poll2],
         detail_snapshots={
             101: {"sell_now_price": 230_000, "volume_7d": 10, "top_size": "270"},

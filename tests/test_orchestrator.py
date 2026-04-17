@@ -45,24 +45,44 @@ def _sample_catalog() -> CatalogDumped:
     return CatalogDumped(source="musinsa", product_count=1, dumped_at=123.0)
 
 
-def _sample_candidate(model_no: str = "CW2288-111") -> CandidateMatched:
+def _pid_for(model_no: str) -> int:
+    """model_no → 고유 pid (deterministic). 6h dedup 게이트가 model_no
+    별로 다른 pid 를 보도록 하여 서로 다른 후보들이 서로 간섭 없이
+    체인을 완주하게 한다."""
+    import zlib
+    return (zlib.crc32(model_no.encode()) & 0x7FFFFFFF) + 1
+
+
+def _sample_candidate(
+    model_no: str = "CW2288-111",
+    *,
+    kream_pid: int | None = None,
+    retail_price: int = 100000,
+) -> CandidateMatched:
+    pid = kream_pid if kream_pid is not None else _pid_for(model_no)
     return CandidateMatched(
         source="musinsa",
-        kream_product_id=1,
+        kream_product_id=pid,
         model_no=model_no,
-        retail_price=100000,
+        retail_price=retail_price,
         size="270",
         url="https://example.com/p/1",
     )
 
 
-def _sample_profit(model_no: str = "CW2288-111") -> ProfitFound:
+def _sample_profit(
+    model_no: str = "CW2288-111",
+    *,
+    kream_pid: int | None = None,
+    retail_price: int = 100000,
+) -> ProfitFound:
+    pid = kream_pid if kream_pid is not None else _pid_for(model_no)
     return ProfitFound(
         source="musinsa",
-        kream_product_id=1,
+        kream_product_id=pid,
         model_no=model_no,
         size="270",
-        retail_price=100000,
+        retail_price=retail_price,
         kream_sell_price=150000,
         net_profit=40000,
         roi=0.4,
@@ -216,7 +236,17 @@ async def test_handler_exception_does_not_break_chain(bus, store, caplog):
         await bus.publish(_sample_candidate("BOOM"))
         await bus.publish(_sample_candidate("OK"))
 
-        assert await _wait_until(lambda: "OK" in processed)
+        # 파이프라인 완주 — mark_consumed 까지 커밋된 상태를 기다린다.
+        # ("OK in processed" 시점은 handler 직후라 mark 이전이므로 race.)
+        assert await _wait_until(
+            lambda: orch.stats()["candidate_processed"] >= 1
+            and orch.stats()["candidate_failed"] >= 1
+        )
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while asyncio.get_running_loop().time() < deadline:
+            if (await store.pending()) == []:
+                break
+            await asyncio.sleep(0.01)
 
         stats = orch.stats()
         assert stats["candidate_failed"] == 1
@@ -271,7 +301,7 @@ async def test_recover_replays_pending_events(bus, store):
 
         # recover 가 끝나면 체인이 완주한 상태
         assert len(alerts) == 1
-        assert alerts[0].kream_product_id == 1
+        assert alerts[0].kream_product_id == _pid_for("LEFT-1")
 
         # 원본 leftover ckpt 는 consumed 처리되어 pending 에서 빠져야 한다
         pending = await store.pending()
@@ -838,8 +868,11 @@ async def test_decision_log_cooldown_block(bus, store):
         if False:
             yield  # pragma: no cover
 
+    # candidate dedup 은 (pid, retail_price) 키. profit cooldown 은
+    # (pid, signal) 키. 두 번째 후보를 '같은 pid · 다른 retail_price' 로
+    # 보내면 candidate dedup 을 통과하고 profit cooldown 에 도달한다.
     async def candidate_handler(event):
-        return _sample_profit()
+        return _sample_profit(kream_pid=event.kream_product_id)
 
     async def profit_handler(event):
         fire_count["n"] += 1
@@ -857,12 +890,13 @@ async def test_decision_log_cooldown_block(bus, store):
     await orch.start()
     try:
         # 첫 번째 — 통과
-        cand1 = _sample_candidate()
+        cand1 = _sample_candidate(kream_pid=1, retail_price=100000)
         ckpt1 = await store.record(cand1, consumer="candidate")
         await orch._process_candidate(cand1, ckpt1)
 
-        # 두 번째 (다른 ckpt) — 쿨다운에 걸려야 함
-        cand2 = _sample_candidate()
+        # 두 번째 — 같은 pid, 다른 retail_price (flash sale 시나리오).
+        # candidate dedup 통과 → profit cooldown 에 걸려야 함.
+        cand2 = _sample_candidate(kream_pid=1, retail_price=90000)
         ckpt2 = await store.record(cand2, consumer="candidate")
         await orch._process_candidate(cand2, ckpt2)
 
