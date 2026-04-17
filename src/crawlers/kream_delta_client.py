@@ -416,7 +416,7 @@ def _to_int(value: Any) -> int | None:
     return None
 
 
-SNAPSHOT_CACHE_TTL_SEC: float = 1800.0  # 30분
+SNAPSHOT_CACHE_TTL_SEC: float = 3600.0  # 60분
 
 
 def build_snapshot_fn(

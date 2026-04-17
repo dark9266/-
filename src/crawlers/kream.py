@@ -89,7 +89,7 @@ async def _random_delay() -> None:
 # max_retries*3 만큼 cap 을 낭비하는 현상 방지.
 # threshold 회 이상 500 관측되면 TTL 동안 즉시 None 반환 (재시도 X).
 _500_FAILURE_THRESHOLD: int = 3
-_500_BLACKLIST_TTL_SEC: int = 600  # 10 분
+_500_BLACKLIST_TTL_SEC: int = 3600  # 60 분
 _500_failures: dict[str, list[float]] = {}  # endpoint → [ts, ts, ...]
 
 
