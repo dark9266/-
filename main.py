@@ -94,7 +94,10 @@ def _register_v3_runtime_hook() -> None:
     else:
         _throttle_rate = settings.v3_throttle_rate_per_min
         _throttle_burst = settings.v3_throttle_burst
-        _recover_cap = 50
+        # 50 → 200: 24h 실측 574건/일이 recover_cap 으로 영구 손실 (tune/patagonia/
+        # musinsa/29cm 집중). 각 replay 는 throttle.acquire_wait 거치므로 KREAM
+        # 일일 캡(4,320) 은 그대로 보호 — cap 은 cycle-level bound 일 뿐.
+        _recover_cap = 200
 
     # v3 수익 알림 → 기존 CHANNEL_PROFIT_ALERT 채널로 직접 send.
     # 새 webhook URL 필요 없음 — 기존 discord.py bot 핸들을 DI 로 재사용.
