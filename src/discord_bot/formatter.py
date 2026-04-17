@@ -763,3 +763,115 @@ def format_followup_report(summary: dict) -> discord.Embed:
     embed.set_footer(text="Phase 4 피드백 루프 · 24h 후 sweep 결과")
 
     return embed
+
+
+def format_adapter_health(
+    silent: list,
+    *,
+    expected_count: int,
+    threshold_hours: float,
+) -> discord.Embed:
+    """어댑터 silent failure 리포트.
+
+    silent: list[SilentAdapter] — adapter_heartbeat.silent_adapters() 반환값
+    """
+    days = int(threshold_hours // 24) if threshold_hours >= 24 else 0
+    period = f"{days}일" if days else f"{int(threshold_hours)}시간"
+
+    if not silent:
+        embed = discord.Embed(
+            title="✅ 어댑터 헬스 체크",
+            description=(
+                f"전체 어댑터 **{expected_count}개** — 최근 {period} 내 모두 candidate emit 기록 있음."
+            ),
+            color=0x2ECC71,
+            timestamp=datetime.now(),
+        )
+        embed.set_footer(text=f"silent 임계: {period}")
+        return embed
+
+    # 문제 있는 어댑터 — 등록 미기록 / 오래 emit 없음
+    never = [s for s in silent if s.last_emit_at is None]
+    stale = [s for s in silent if s.last_emit_at is not None]
+
+    embed = discord.Embed(
+        title=f"⚠️ 어댑터 헬스 체크 — {len(silent)}개 이상",
+        description=f"{expected_count}개 중 {len(silent)}개가 {period} 이상 candidate 를 내지 못함.",
+        color=0xE74C3C if len(silent) >= 3 else 0xF1C40F,
+        timestamp=datetime.now(),
+    )
+
+    if never:
+        lines = [f"• `{s.source}` (누적 0건)" for s in never]
+        embed.add_field(
+            name=f"❌ 한 번도 emit 없음 ({len(never)}개)",
+            value="\n".join(lines)[:1024],
+            inline=False,
+        )
+
+    if stale:
+        lines = []
+        for s in stale:
+            hrs = s.hours_since_last or 0.0
+            days_ago = hrs / 24.0
+            if days_ago >= 1:
+                ago = f"{days_ago:.1f}일 전"
+            else:
+                ago = f"{hrs:.1f}시간 전"
+            lines.append(f"• `{s.source}` — 마지막 emit {ago} (누적 {s.emit_count:,}건)")
+        embed.add_field(
+            name=f"⏸ 오래 조용함 ({len(stale)}개)",
+            value="\n".join(lines)[:1024],
+            inline=False,
+        )
+
+    embed.set_footer(text=f"silent 임계: {period} · candidate emit 0 = HTML/API 변경 의심")
+    return embed
+
+
+def format_decision_report(summary) -> discord.Embed:
+    """Decision Ledger 드롭 분포 리포트.
+
+    summary: decision_summary() 반환한 DecisionSummary
+    """
+    hours = float(getattr(summary, "window_hours", 24.0))
+    days = int(hours // 24) if hours >= 24 else 0
+    period = f"{days}일" if days else f"{int(hours)}시간"
+
+    total = int(getattr(summary, "total", 0) or 0)
+    by_stage = getattr(summary, "by_stage", {}) or {}
+    top_drops = getattr(summary, "top_drops", []) or []
+
+    color = 0x3498DB if total > 0 else 0x808080
+    embed = discord.Embed(
+        title=f"🔍 Decision Ledger 분포 — 최근 {period}",
+        description=f"총 {total:,}건 기록",
+        color=color,
+        timestamp=datetime.now(),
+    )
+
+    if by_stage:
+        lines = []
+        for stage, counts in by_stage.items():
+            p = counts.get("pass", 0)
+            b = counts.get("block", 0)
+            tot = p + b
+            if tot == 0:
+                continue
+            pass_pct = (p / tot * 100.0) if tot else 0.0
+            lines.append(f"• **{stage}** — pass {p:,} / block {b:,} ({pass_pct:.1f}% pass)")
+        if lines:
+            embed.add_field(name="단계별 요약", value="\n".join(lines)[:1024], inline=False)
+
+    if top_drops:
+        lines = []
+        for bucket in top_drops[:10]:
+            lines.append(f"• `{bucket.stage}:{bucket.reason}` — {bucket.count:,}건")
+        embed.add_field(
+            name=f"🚫 상위 drop 사유 ({len(top_drops)}건 중 top {min(len(top_drops), 10)})",
+            value="\n".join(lines)[:1024],
+            inline=False,
+        )
+
+    embed.set_footer(text="과다 block 사유는 필터 튜닝 후보 · 급증 시 HTML/API 변경 의심")
+    return embed

@@ -472,6 +472,12 @@ class Orchestrator:
     async def _process_candidate(
         self, event: CandidateMatched, ckpt_id: int | None
     ) -> None:
+        # adapter heartbeat — 어댑터별 silent failure 감지용 (외부 API 0, local DB)
+        try:
+            from src.core.adapter_heartbeat import bump as _bump_heartbeat
+            await _bump_heartbeat(self._checkpoints.db_path, event.source)
+        except Exception:
+            logger.exception("[heartbeat] bump 실패")
         # 캐시 히트면 API 호출 불필요 → 쓰로틀 토큰 소비 없이 바로 진행
         cache_hit = False
         sfn = self._snapshot_fn

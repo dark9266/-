@@ -338,8 +338,20 @@ async def test_sweep_concurrent_safe(db: str):
 # ─── alert_outcome_sweeper.make_check_fn ──────────────────
 
 
+def _post(secs_after_fired: float = 60.0):
+    """fired_at 바로 뒤 datetime 을 만드는 헬퍼 (naive, 로컬 tz)."""
+    from datetime import datetime
+    return datetime.fromtimestamp(time.time() + secs_after_fired)
+
+
+def _pre(secs_before_fired: float = 3600.0):
+    """fired_at 이전 datetime."""
+    from datetime import datetime
+    return datetime.fromtimestamp(time.time() - secs_before_fired)
+
+
 async def test_check_fn_compares_size_last_sale(db: str):
-    """make_check_fn: 사이즈별 last_sale_price ≥ sell_at_fire 면 sold=True."""
+    """make_check_fn: fired_at 이후 체결 & price ≥ sell_at_fire 면 sold=True."""
     from dataclasses import dataclass
 
     from src.core.alert_outcome_sweeper import make_check_fn
@@ -348,6 +360,7 @@ async def test_check_fn_compares_size_last_sale(db: str):
     class _SP:
         size: str
         last_sale_price: int | None
+        last_sale_date: object = None  # datetime | None
 
     @dataclass
     class _Product:
@@ -363,13 +376,13 @@ async def test_check_fn_compares_size_last_sale(db: str):
             return self.prod
 
     prod = _Product(size_prices=[
-        _SP(size="270", last_sale_price=185_000),
-        _SP(size="280", last_sale_price=160_000),
+        _SP(size="270", last_sale_price=185_000, last_sale_date=_post()),
+        _SP(size="280", last_sale_price=160_000, last_sale_date=_post()),
     ])
     crawler = _Crawler(prod)
     check = make_check_fn(crawler=crawler)
 
-    # 270: last 185k ≥ fire 180k → sold
+    # 270: last 185k ≥ fire 180k, 체결 사후 → sold
     fid_a = await record_alert(
         db, alert_id=1, kream_product_id="999",
         size="270", retail_price=120_000, kream_sell_price_at_fire=180_000,
@@ -385,14 +398,18 @@ async def test_check_fn_compares_size_last_sale(db: str):
     )
     rec_b = await get_followup(db, fid_b)
     sold_b, price_b = await check(rec_b)
+    # post-fire 체결은 있지만 임계 미달 — sold=False 여도 실현가는 기록
     assert sold_b is False and price_b == 160_000
 
     # 같은 product_id 두 번 — fetch 1회만 (in-memory cache)
     assert crawler.calls == 1
 
 
-async def test_check_fn_handles_empty_size_uses_max_last_sale(db: str):
-    """size='' (MIN 대표가 알림) 케이스: 전 사이즈 중 max(last_sale) 사용."""
+async def test_check_fn_rejects_pre_fire_sale(db: str):
+    """last_sale_date 가 fired_at 이전이면 price 충족해도 sold=False.
+
+    이 필터가 없으면 과거 체결로 hit_rate 부풀려지는 결함이 생김.
+    """
     from dataclasses import dataclass
 
     from src.core.alert_outcome_sweeper import make_check_fn
@@ -401,6 +418,7 @@ async def test_check_fn_handles_empty_size_uses_max_last_sale(db: str):
     class _SP:
         size: str
         last_sale_price: int | None
+        last_sale_date: object = None
 
     @dataclass
     class _Product:
@@ -409,9 +427,77 @@ async def test_check_fn_handles_empty_size_uses_max_last_sale(db: str):
     class _Crawler:
         async def get_product_detail(self, pid):
             return _Product(size_prices=[
-                _SP(size="270", last_sale_price=150_000),
-                _SP(size="280", last_sale_price=180_000),  # max
-                _SP(size="290", last_sale_price=None),
+                # 가격은 충족하지만 체결시각이 fired_at 1시간 전
+                _SP(size="270", last_sale_price=200_000, last_sale_date=_pre()),
+            ])
+
+    check = make_check_fn(crawler=_Crawler())
+    fid = await record_alert(
+        db, alert_id=30, kream_product_id="888",
+        size="270", retail_price=120_000, kream_sell_price_at_fire=180_000,
+    )
+    rec = await get_followup(db, fid)
+    sold, price = await check(rec)
+    # 과거 체결은 제외 — sold=False, actual_price=None
+    assert sold is False and price is None
+
+
+async def test_check_fn_rejects_when_date_missing(db: str):
+    """last_sale_date 가 None 이면 체결 시점을 알 수 없으니 sold=False."""
+    from dataclasses import dataclass
+
+    from src.core.alert_outcome_sweeper import make_check_fn
+
+    @dataclass
+    class _SP:
+        size: str
+        last_sale_price: int | None
+        last_sale_date: object = None
+
+    @dataclass
+    class _Product:
+        size_prices: list
+
+    class _Crawler:
+        async def get_product_detail(self, pid):
+            return _Product(size_prices=[
+                _SP(size="270", last_sale_price=200_000, last_sale_date=None),
+            ])
+
+    check = make_check_fn(crawler=_Crawler())
+    fid = await record_alert(
+        db, alert_id=31, kream_product_id="889",
+        size="270", retail_price=120_000, kream_sell_price_at_fire=180_000,
+    )
+    rec = await get_followup(db, fid)
+    sold, price = await check(rec)
+    assert sold is False and price is None
+
+
+async def test_check_fn_handles_empty_size_uses_max_last_sale(db: str):
+    """size='' (MIN 대표가 알림) 케이스: 알림 이후 체결 중 max(last_sale) 사용."""
+    from dataclasses import dataclass
+
+    from src.core.alert_outcome_sweeper import make_check_fn
+
+    @dataclass
+    class _SP:
+        size: str
+        last_sale_price: int | None
+        last_sale_date: object = None
+
+    @dataclass
+    class _Product:
+        size_prices: list
+
+    class _Crawler:
+        async def get_product_detail(self, pid):
+            return _Product(size_prices=[
+                _SP(size="270", last_sale_price=150_000, last_sale_date=_post()),
+                _SP(size="280", last_sale_price=180_000, last_sale_date=_post()),
+                _SP(size="290", last_sale_price=None, last_sale_date=None),
+                # 이건 pre-fire — 제외돼야 함
+                _SP(size="300", last_sale_price=999_999, last_sale_date=_pre()),
             ])
 
     check = make_check_fn(crawler=_Crawler())
@@ -421,7 +507,7 @@ async def test_check_fn_handles_empty_size_uses_max_last_sale(db: str):
     )
     rec = await get_followup(db, fid)
     sold, price = await check(rec)
-    # max(150k, 180k) = 180k ≥ 170k → sold
+    # post-fire 중 max(150k, 180k) = 180k ≥ 170k → sold (300은 pre-fire 제외)
     assert sold is True and price == 180_000
 
 

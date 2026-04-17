@@ -130,6 +130,15 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
 ]
 
 
+def active_adapter_sources() -> list[str]:
+    """레지스트리에 등록된 (=활성) 어댑터 source 이름 목록.
+
+    heartbeat silent 감지의 expected 목록으로 사용. 주석 처리된 어댑터는
+    레지스트리에 없으므로 자동으로 제외된다.
+    """
+    return [name for name, _ in _ADAPTER_REGISTRY]
+
+
 class V3Runtime:
     """v3 런타임 단일 진입점.
 

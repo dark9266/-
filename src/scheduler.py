@@ -55,6 +55,8 @@ class Scheduler:
             self.followup_sweep_loop.start()
         if not self.followup_report_loop.is_running():
             self.followup_report_loop.start()
+        if not self.adapter_health_loop.is_running():
+            self.adapter_health_loop.start()
         if settings.v2_reverse_disabled:
             logger.warning(
                 "[v2] price_refresher/spike_detector 비활성 "
@@ -84,6 +86,7 @@ class Scheduler:
         self.continuous_loop.cancel()
         self.followup_sweep_loop.cancel()
         self.followup_report_loop.cancel()
+        self.adapter_health_loop.cancel()
         logger.info("스케줄러 중지")
 
     def start_auto_scan(self) -> None:
@@ -445,23 +448,32 @@ class Scheduler:
 
     @tasks.loop(time=time(hour=0, minute=30))
     async def followup_report_loop(self) -> None:
-        """7일 윈도우 적중률 → 로그 채널에 발송."""
+        """7일 윈도우 적중률 + 24h decision 분포 → 로그 채널에 발송."""
         try:
             from src.core.alert_outcome import hit_rate_summary
-            from src.discord_bot.formatter import format_followup_report
+            from src.core.decision_report import decision_summary
+            from src.discord_bot.formatter import (
+                format_decision_report,
+                format_followup_report,
+            )
 
             summary = await hit_rate_summary(self.bot.db.db_path, hours=168)
             embed = format_followup_report(summary)
+
+            dec = await decision_summary(self.bot.db.db_path, hours=24.0)
+            dec_embed = format_decision_report(dec)
 
             channel_id = settings.channel_log or settings.channel_daily_report
             if channel_id:
                 channel = self.bot.get_channel(channel_id)
                 if channel:
                     await channel.send(embed=embed)
+                    await channel.send(embed=dec_embed)
             logger.info(
-                "[followup_report] total=%d checked=%d sold=%d hit=%s",
+                "[followup_report] total=%d checked=%d sold=%d hit=%s decision_total=%d",
                 summary["total"], summary["checked"],
                 summary["sold"], summary["hit_rate_pct"],
+                dec.total,
             )
         except Exception as e:
             error_aggregator.add("followup_report_loop", e)
@@ -469,4 +481,41 @@ class Scheduler:
 
     @followup_report_loop.before_loop
     async def before_followup_report(self) -> None:
+        await self.bot.wait_until_ready()
+
+    # ─── 어댑터 silent failure 감지 (주간, 월요일 00:45) ──────
+
+    @tasks.loop(time=time(hour=0, minute=45))
+    async def adapter_health_loop(self) -> None:
+        """주 1회 어댑터별 candidate emit 감사 → silent 어댑터 경보."""
+        # 월요일만 실행 (daily loop 기반 주간 트리거)
+        if datetime.now().weekday() != 0:
+            return
+        try:
+            from src.core.adapter_heartbeat import silent_adapters
+            from src.core.runtime import active_adapter_sources
+            from src.discord_bot.formatter import format_adapter_health
+
+            expected = active_adapter_sources()
+            silent = await silent_adapters(
+                self.bot.db.db_path, expected, threshold_hours=168.0
+            )
+            embed = format_adapter_health(
+                silent, expected_count=len(expected), threshold_hours=168.0
+            )
+            channel_id = settings.channel_log or settings.channel_daily_report
+            if channel_id:
+                channel = self.bot.get_channel(channel_id)
+                if channel:
+                    await channel.send(embed=embed)
+            logger.info(
+                "[adapter_health] expected=%d silent=%d",
+                len(expected), len(silent),
+            )
+        except Exception as e:
+            error_aggregator.add("adapter_health_loop", e)
+            logger.error("adapter_health 리포트 실패: %s", e)
+
+    @adapter_health_loop.before_loop
+    async def before_adapter_health(self) -> None:
         await self.bot.wait_until_ready()
