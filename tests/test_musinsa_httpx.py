@@ -93,6 +93,43 @@ class TestIsOfflineOrUpcoming:
         ) is False
 
 
+class TestIsOfflineApiGoods:
+    """_is_offline_api_goods — API 경로 오프라인 전용 판별 (pid 6046587 회귀)."""
+
+    def test_isOfflineGoods_true(self):
+        # 실제 2026-04-18 알림 누수 케이스: pid 6046587 (아식스 1203A837-020)
+        data = {
+            "goodsNo": "6046587",
+            "isOfflineGoods": True,
+            "mdOpinion": "<p>해당 상품은 무신사 스토어 성수@대림창고에서 구매 가능한 상품입니다.</p>",
+        }
+        assert MusinsaHttpxCrawler._is_offline_api_goods(data) is True
+
+    def test_offline_store_banner(self):
+        data = {
+            "goodsNo": "X",
+            "isOfflineGoods": False,
+            "goodsDetailBanner": {
+                "offlineStoreBanner": {
+                    "eventBannerKind": "OFFLINESTORE",
+                    "name": "무신사 스토어@대림창고",
+                }
+            },
+        }
+        assert MusinsaHttpxCrawler._is_offline_api_goods(data) is True
+
+    def test_online_normal(self):
+        data = {
+            "goodsNo": "4216277",
+            "isOfflineGoods": False,
+            "goodsDetailBanner": {"offlineStoreBanner": None},
+        }
+        assert MusinsaHttpxCrawler._is_offline_api_goods(data) is False
+
+    def test_minimal_dict(self):
+        assert MusinsaHttpxCrawler._is_offline_api_goods({}) is False
+
+
 class TestExtractPrices:
     """_extract_prices_from_html 가격 추출 테스트."""
 

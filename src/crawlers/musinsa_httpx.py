@@ -335,6 +335,9 @@ class MusinsaHttpxCrawler:
                 # 전체 품절 상품 스킵 (재고 API 불능 시 유일한 품절 게이트)
                 if goods_data.get("isOutOfStock"):
                     return None
+                if self._is_offline_api_goods(goods_data):
+                    logger.info("오프라인 전용 상품 스킵: pid=%s", product_id)
+                    return None
 
                 name = goods_data.get("goodsNm") or ""
                 brand_info = goods_data.get("brandInfo")
@@ -695,6 +698,21 @@ class MusinsaHttpxCrawler:
             if not re.search(r'구매하기|바로구매|장바구니', html):
                 logger.info("오프라인전용 스킵")
                 return True
+        return False
+
+    @staticmethod
+    def _is_offline_api_goods(data: dict) -> bool:
+        """goods-detail API 응답에서 오프라인 전용 상품 판별.
+
+        ※ HTML 필터(`_is_offline_or_upcoming`)는 '오프라인 전용 상품' 정확 문구
+        + 구매버튼 부재 기준이지만, 실제 매장 한정 상품은 HTML 문구 없이
+        `isOfflineGoods: true` 플래그만 True 인 케이스가 있어 API 경로 별도 체크.
+        """
+        if data.get("isOfflineGoods"):
+            return True
+        banner = (data.get("goodsDetailBanner") or {}).get("offlineStoreBanner")
+        if isinstance(banner, dict) and banner.get("eventBannerKind") == "OFFLINESTORE":
+            return True
         return False
 
     def _extract_numeric_id(self, html: str, fallback: str) -> str | None:
