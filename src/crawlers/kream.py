@@ -549,6 +549,17 @@ class KreamCrawler:
                 return items
         return []
 
+    @staticmethod
+    def _dig(node, *keys):
+        # Why: pinia 체인이 중간에 list 를 내려보내는 케이스 방어.
+        # pinia.get("productDetail", {}).get(...) 패턴은 productDetail 가
+        # list 이면 AttributeError. 각 단계 isinstance(dict) 확인.
+        for k in keys:
+            if not isinstance(node, dict):
+                return None
+            node = node.get(k)
+        return node
+
     def _extract_page_data(self, html: str) -> dict | list | None:
         """HTML에서 페이지 데이터 추출. __NUXT_DATA__ 우선, __NEXT_DATA__ 폴백."""
         # 1차: __NUXT_DATA__
@@ -944,11 +955,7 @@ class KreamCrawler:
         if not isinstance(pinia, dict):
             return None
 
-        meta = (
-            pinia.get("productDetail", {})
-            .get("productDetailContent", {})
-            .get("meta")
-        )
+        meta = self._dig(pinia, "productDetail", "productDetailContent", "meta")
         if not isinstance(meta, dict) or not meta.get("name"):
             return None
 
@@ -1167,11 +1174,8 @@ class KreamCrawler:
         if not isinstance(pinia, dict):
             return []
 
-        th = (
-            pinia.get("transactionHistorySummary", {})
-            .get("previousItem", {})
-            .get("meta", {})
-            .get("transaction_history")
+        th = self._dig(
+            pinia, "transactionHistorySummary", "previousItem", "meta", "transaction_history",
         )
         if not isinstance(th, dict):
             return []
@@ -1506,11 +1510,8 @@ class KreamCrawler:
         if not isinstance(pinia, dict):
             return None
 
-        th = (
-            pinia.get("transactionHistorySummary", {})
-            .get("previousItem", {})
-            .get("meta", {})
-            .get("transaction_history")
+        th = self._dig(
+            pinia, "transactionHistorySummary", "previousItem", "meta", "transaction_history",
         )
         if not isinstance(th, dict):
             return None

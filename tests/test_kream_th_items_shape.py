@@ -68,3 +68,32 @@ def test_find_trades_in_pinia_handles_list_shape_sales():
     c = KreamCrawler.__new__(KreamCrawler)
     result = c._find_trades_in_pinia(data, "12345")
     assert result is None
+
+
+def test_dig_stops_on_list_intermediate():
+    # Why: pinia.get("productDetail") 가 list 를 돌려주면 .get("...") 가
+    # AttributeError. _dig 은 각 단계 isinstance(dict) 확인으로 None 반환.
+    assert KreamCrawler._dig({"a": [1, 2, 3]}, "a", "b") is None
+    assert KreamCrawler._dig({"a": {"b": "x"}}, "a", "b") == "x"
+    assert KreamCrawler._dig({"a": {"b": {"c": 1}}}, "a", "b", "c") == 1
+    assert KreamCrawler._dig({}, "a") is None
+    assert KreamCrawler._dig(None, "a") is None
+
+
+def test_find_product_in_pinia_handles_list_productdetail():
+    """productDetail 가 list 일 때 AttributeError 없이 None 반환."""
+    data = {"pinia": {"productDetail": [{"x": 1}]}}
+    c = KreamCrawler.__new__(KreamCrawler)
+    assert c._find_product_in_pinia(data, "12345") is None
+
+
+def test_find_prices_in_pinia_handles_list_transactionhistorysummary():
+    data = {"pinia": {"transactionHistorySummary": [{"x": 1}]}}
+    c = KreamCrawler.__new__(KreamCrawler)
+    assert c._find_prices_in_pinia(data, "12345") == []
+
+
+def test_find_trades_in_pinia_handles_list_transactionhistorysummary():
+    data = {"pinia": {"transactionHistorySummary": [{"x": 1}]}}
+    c = KreamCrawler.__new__(KreamCrawler)
+    assert c._find_trades_in_pinia(data, "12345") is None
