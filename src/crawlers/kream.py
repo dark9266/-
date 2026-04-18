@@ -536,6 +536,19 @@ class KreamCrawler:
 
         return results
 
+    @staticmethod
+    def _th_items(node) -> list:
+        # Why: transaction_history.asks/bids/sales 는 dict({"items":[...]}) 또는
+        # list([...]) 두 shape 중 하나. list 를 .get("items") 로 접근하면
+        # AttributeError → snapshot_light 파싱 실패 → no_profit 으로 기록.
+        if isinstance(node, list):
+            return node
+        if isinstance(node, dict):
+            items = node.get("items")
+            if isinstance(items, list):
+                return items
+        return []
+
     def _extract_page_data(self, html: str) -> dict | list | None:
         """HTML에서 페이지 데이터 추출. __NUXT_DATA__ 우선, __NEXT_DATA__ 폴백."""
         # 1차: __NUXT_DATA__
@@ -1167,7 +1180,7 @@ class KreamCrawler:
         size_map: dict[str, dict] = {}
 
         # asks → 즉시구매가 (사이즈별 최저 판매 희망가 = 구매자가 바로 살 수 있는 가격)
-        asks = th.get("asks", {}).get("items", [])
+        asks = self._th_items(th.get("asks"))
         for item in asks:
             if not isinstance(item, dict):
                 continue
@@ -1183,7 +1196,7 @@ class KreamCrawler:
                     size_map[size]["buy_now_price"] = price
 
         # bids → 즉시판매가 (사이즈별 최고 구매 희망가 = 판매자가 바로 팔 수 있는 가격)
-        bids = th.get("bids", {}).get("items", [])
+        bids = self._th_items(th.get("bids"))
         for item in bids:
             if not isinstance(item, dict):
                 continue
@@ -1202,7 +1215,7 @@ class KreamCrawler:
                 size_map[size]["bid_count"] = size_map[size].get("bid_count", 0) + qty
 
         # sales → 최근 체결가
-        sales = th.get("sales", {}).get("items", [])
+        sales = self._th_items(th.get("sales"))
         for item in sales:
             if not isinstance(item, dict):
                 continue
@@ -1387,7 +1400,7 @@ class KreamCrawler:
         if not th:
             return None
 
-        sales = th.get("sales", {}).get("items", [])
+        sales = self._th_items(th.get("sales"))
         if not sales:
             return None
 
@@ -1409,8 +1422,8 @@ class KreamCrawler:
         # 과거(~2026-04-15): sales+asks+bids 합산 ×2/×3 → HQ4309-003 포함 저거래
         # 상품의 volume_7d 가 최대 3배 뻥튀기 → 하드 플로어 ≥1 무력화 → 거짓 알림.
         # 현재: 체결(sales) 원시 카운트만 사용. 관측용 로그에만 asks/bids 수 기재.
-        asks_count = len(th.get("asks", {}).get("items", []))
-        bids_count = len(th.get("bids", {}).get("items", []))
+        asks_count = len(self._th_items(th.get("asks")))
+        bids_count = len(self._th_items(th.get("bids")))
 
         logger.info(
             "거래내역 (%s): [screens] 7일=%d, 30일=%d (sales=%d, asks=%d, bids=%d)",
@@ -1502,8 +1515,8 @@ class KreamCrawler:
         if not isinstance(th, dict):
             return None
 
-        sales = th.get("sales", {}).get("items", [])
-        if not isinstance(sales, list) or not sales:
+        sales = self._th_items(th.get("sales"))
+        if not sales:
             return None
 
         # date_created 필드를 _calculate_trade_stats 가 인식할 수 있도록 매핑
