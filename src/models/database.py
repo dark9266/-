@@ -235,8 +235,19 @@ class Database:
         logger.info("데이터베이스 연결 완료: %s", self.db_path)
 
     async def close(self) -> None:
-        """DB 연결 종료."""
+        """DB 연결 종료 — WAL checkpoint(TRUNCATE) 후 안전 flush.
+
+        2026-04-18 incident 대응 Phase 1 보완. aiosqlite.close() 는 WAL 을 자동
+        체크포인트하지 않는다 (wal_autocheckpoint 임계 도달 전이면 WAL 잔존).
+        TRUNCATE 모드로 명시 호출해야 재시작 후 WAL 파일이 0 바이트에서 재생성됨.
+        실패해도 close 자체는 진행 — 다음 기동에 자동 복구.
+        """
         if self._db:
+            try:
+                await self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                await self._db.commit()
+            except Exception:
+                logger.exception("[shutdown] WAL checkpoint 실패 (비치명)")
             await self._db.close()
             self._db = None
             logger.info("데이터베이스 연결 종료")
