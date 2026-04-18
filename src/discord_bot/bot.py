@@ -361,8 +361,18 @@ class KreamBot(commands.Bot):
     async def close(self) -> None:
         """SIGINT/SIGTERM 시 WAL checkpoint flush 보장 (2026-04-18 incident 대응).
 
-        순서: v3 runtime stop → Database close → discord.Client.close.
+        순서: scheduler stop → v3 runtime stop → Database close → discord.Client.close.
+        scheduler 가 먼저 정지해야 tasks.loop 가 DB 를 다시 치지 않아
+        close 중 "database is locked" 스톰을 억제한다.
         """
+        if self.scheduler is not None:
+            try:
+                self.scheduler.stop()
+                # 취소 신호가 이벤트 루프로 전파될 시간 확보 — 하나씩 완료 대기.
+                await asyncio.sleep(0)
+                logger.info("[shutdown] scheduler 정지")
+            except Exception:
+                logger.exception("[shutdown] scheduler stop 실패")
         try:
             from main import _v3_runtime
             if _v3_runtime is not None:
