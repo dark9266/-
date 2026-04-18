@@ -92,10 +92,14 @@ class _FakeArcteryxHttp:
         category_items: dict[str, list[dict]],
         options_by_id: dict[int | str, str] | None = None,
         pdp_sizes: dict[str, list[str]] | None = None,
+        colors_by_id: dict[int | str, str] | None = None,
     ):
         self._category_items = category_items
         self._options_by_id = options_by_id or {}
         self._pdp = pdp_sizes if pdp_sizes is not None else {}
+        # pid → arc level=1 색상 value (예: "Black", "Void"). 기본 "Black".
+        # arcteryx 가 pid 별로 다른 색상을 반환하는 현실을 반영한다.
+        self._colors_by_id = colors_by_id or {}
         self.list_calls: list[dict] = []
         self.options_calls: list[int | str] = []
 
@@ -145,13 +149,18 @@ class _FakeArcteryxHttp:
             }
         color_id = int(product_id) * 10 + 1  # 결정적 color id
         sizes_for_pid = self._pdp.get(str(product_id), ["L"])
+        color_value = (
+            self._colors_by_id.get(product_id)
+            or self._colors_by_id.get(str(product_id))
+            or "Black"
+        )
         return {
             "options": [
                 {
                     "level": 1,
                     "code": code,
                     "values": [
-                        {"id": color_id, "value": "Black", "sale_state": "ON"},
+                        {"id": color_id, "value": color_value, "sale_state": "ON"},
                     ],
                 },
                 {
@@ -555,6 +564,7 @@ async def test_style_index_1n_color_matching(bus, tmp_path):
         options_by_id={
             8001: "ABQSU10358",  # style=10358 → 크림 801,802 둘 다 후보
         },
+        colors_by_id={8001: "Black"},  # arc 옵션 색상 → 블랙
     )
     adapter = ArcteryxAdapter(
         bus=bus,
@@ -562,7 +572,7 @@ async def test_style_index_1n_color_matching(bus, tmp_path):
         http_client=fake_http,
     )
 
-    # 소싱처 상품명에 "Black" → 크림 "블랙" 상품 801 선택되어야 함
+    # arc 색상 "Black" → 크림 "블랙" 상품 801 선택되어야 함
     products_black = [
         {
             "product_id": 8001,
@@ -576,12 +586,13 @@ async def test_style_index_1n_color_matching(bus, tmp_path):
     assert stats.matched == 1
     assert matches[0].kream_product_id == 801
 
-    # 소싱처 상품명에 "Void" → 크림 "보이드" 상품 802 선택되어야 함
+    # arc 색상 "Void" → 크림 "보이드" 상품 802 선택되어야 함
     fake_http2 = _FakeArcteryxHttp(
         category_items={},
         options_by_id={
             8002: "ABQSU10358",
         },
+        colors_by_id={8002: "Void"},
     )
     adapter2 = ArcteryxAdapter(
         bus=bus,
@@ -600,3 +611,198 @@ async def test_style_index_1n_color_matching(bus, tmp_path):
     matches2, stats2 = await adapter2.match_to_kream(products_void)
     assert stats2.matched == 1
     assert matches2[0].kream_product_id == 802
+
+
+# ─── (h) 리스팅 색상 누락 — arc 옵션 API 기반 다중 emit ───
+#
+# 실세계 버그 재현: arcteryx 신솔로 햇(683028) 리스팅 응답은
+# product_name="신솔로 햇" (색상 누락). 크림은 style=5435 에 블랙/벨벳샌드/
+# 정글 3행이 있고 arc 사이트는 JUNGLE + VELVET SAND 만 판매 중.
+#
+# 기존 로직은 listing name 기반 `_pick_kream_by_color` 가 실패해
+# candidates[0]="블랙" 으로 fallback → 색상 없는 arc 에서 전 사이즈 수락 →
+# "신솔로 햇 블랙" 허위 알림. 본 테스트는 그 회귀를 막는다.
+
+class _FakeHttpColorOptions:
+    """여러 색상(level=1) + 색상별 사이즈(level=2 parent_ids) mock."""
+
+    def __init__(self, options_by_id: dict):
+        self._options_by_id = options_by_id
+        self.options_calls: list = []
+
+    async def _list_raw(self, *, category, page_size=60, page_number=1):
+        return {"rows": [], "total": 0}
+
+    async def _options_raw(self, *, product_id):
+        self.options_calls.append(product_id)
+        return self._options_by_id.get(product_id) or self._options_by_id.get(
+            int(product_id) if str(product_id).isdigit() else product_id, {}
+        )
+
+
+async def test_multi_color_arc_bare_listing_emits_per_color(bus, tmp_path):
+    """arc 리스팅에 색상이 없어도 옵션 API 기반으로 색상별 emit.
+
+    기대: '블랙' 크림은 drop (arc 에 black 없음), 정글·벨벳샌드 2건 emit.
+    """
+    db_path = tmp_path / "kream_synsolo.db"
+    _init_kream_db(
+        str(db_path),
+        rows=[
+            {
+                "product_id": "54256",
+                "name": "아크테릭스 신솔로 햇 블랙",
+                "model_number": "29087/5435",
+                "brand": "Arc'teryx",
+            },
+            {
+                "product_id": "119423",
+                "name": "아크테릭스 신솔로 햇 벨벳 샌드",
+                "model_number": "5435",
+                "brand": "Arc'teryx",
+            },
+            {
+                "product_id": "115303",
+                "name": "아크테릭스 신솔로 햇 정글",
+                "model_number": "29087/5435",
+                "brand": "Arc'teryx",
+            },
+        ],
+    )
+
+    options_payload = {
+        "options": [
+            {
+                "level": 1,
+                "code": "AENSUX5435",
+                "values": [
+                    {"id": 36494, "value": "JUNGLE", "sale_state": "ON"},
+                    {"id": 36497, "value": "VELVET SAND", "sale_state": "ON"},
+                ],
+            },
+            {
+                "level": 2,
+                "values": [
+                    {
+                        "value": "S-M", "parent_ids": [0, 36494],
+                        "sale_state": "ON", "is_orderable": True, "stock": 5,
+                    },
+                    {
+                        "value": "L-XL", "parent_ids": [0, 36494],
+                        "sale_state": "ON", "is_orderable": True, "stock": 5,
+                    },
+                    {
+                        "value": "S-M", "parent_ids": [0, 36497],
+                        "sale_state": "ON", "is_orderable": True, "stock": 5,
+                    },
+                    {
+                        "value": "L-XL", "parent_ids": [0, 36497],
+                        "sale_state": "ON", "is_orderable": True, "stock": 5,
+                    },
+                ],
+            },
+        ],
+    }
+
+    fake_http = _FakeHttpColorOptions({683028: options_payload})
+    adapter = ArcteryxAdapter(
+        bus=bus,
+        db_path=str(db_path),
+        http_client=fake_http,
+    )
+    products = [
+        {
+            "product_id": 683028,
+            "product_name": "신솔로 햇",  # 리스팅 색상 누락
+            "sell_price": 50000,
+            "sale_state": "ON",
+            "_category": "caps",
+        },
+    ]
+    matches, stats = await adapter.match_to_kream(products)
+
+    matched_ids = sorted(m.kream_product_id for m in matches)
+    assert matched_ids == [115303, 119423], (
+        f"기대: 정글+벨벳샌드 2건. 실제: {matched_ids}"
+    )
+    assert all(m.kream_product_id != 54256 for m in matches), (
+        "블랙은 arc 에 없으므로 절대 매칭돼선 안 됨"
+    )
+    assert stats.matched == 2
+
+
+async def test_multi_color_arc_soldout_color_dropped(bus, tmp_path):
+    """arc 에 존재하지만 SOLDOUT 색상의 크림은 emit 하지 않는다."""
+    db_path = tmp_path / "kream_cragss.db"
+    _init_kream_db(
+        str(db_path),
+        rows=[
+            {
+                "product_id": "474180",
+                "name": "아크테릭스 크래그 코튼 로고 SS 티셔츠 24K 블랙",
+                "model_number": "8464",
+                "brand": "Arc'teryx",
+            },
+            {
+                "product_id": "474201",
+                "name": "아크테릭스 크래그 코튼 로고 SS 티셔츠 소울소닉 다이나스티",
+                "model_number": "8464",
+                "brand": "Arc'teryx",
+            },
+            {
+                "product_id": "525823",
+                "name": "아크테릭스 크래그 코튼 로고 SS 티셔츠 화이트 라이트 소울",
+                "model_number": "8464",
+                "brand": "Arc'teryx",
+            },
+        ],
+    )
+    options_payload = {
+        "options": [
+            {
+                "level": 1,
+                "code": "ATPSM08464",
+                "values": [
+                    {"id": 58910, "value": "SOULSONIC / DYNASTY", "sale_state": "ON"},
+                    {"id": 58924, "value": "WHITE LIGHT / SOUL", "sale_state": "ON"},
+                    {"id": 58917, "value": "24K BLACK", "sale_state": "SOLDOUT"},
+                ],
+            },
+            {
+                "level": 2,
+                "values": [
+                    {
+                        "value": "M", "parent_ids": [0, 58910],
+                        "sale_state": "ON", "is_orderable": True, "stock": 3,
+                    },
+                    {
+                        "value": "M", "parent_ids": [0, 58924],
+                        "sale_state": "ON", "is_orderable": True, "stock": 3,
+                    },
+                    {
+                        "value": "M", "parent_ids": [0, 58917],
+                        "sale_state": "SOLDOUT", "is_orderable": False, "stock": 0,
+                    },
+                ],
+            },
+        ],
+    }
+    fake_http = _FakeHttpColorOptions({685300: options_payload})
+    adapter = ArcteryxAdapter(
+        bus=bus,
+        db_path=str(db_path),
+        http_client=fake_http,
+    )
+    products = [
+        {
+            "product_id": 685300,
+            "product_name": "크래그 코튼 로고 SS 티셔츠",
+            "sell_price": 104000,
+            "sale_state": "ON",
+        },
+    ]
+    matches, stats = await adapter.match_to_kream(products)
+    matched_ids = sorted(m.kream_product_id for m in matches)
+    assert 474180 not in matched_ids, "24K BLACK SOLDOUT 크림 블랙이 emit 되면 안 됨"
+    assert 474201 in matched_ids, "소울소닉 다이나스티 (ON) 은 emit"
+    assert 525823 in matched_ids, "화이트 라이트 소울 (ON) 은 emit"

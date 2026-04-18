@@ -92,6 +92,7 @@ _KR_COLOR_MAP: dict[str, str] = {
     "브라운": "brown", "옐로": "yellow", "핑크": "pink", "퍼플": "purple",
     "오렌지": "orange", "카키": "khaki", "아이보리": "ivory",
     "보이드": "void", "일렉트라": "electra", "다이너스티": "dynasty",
+    "다이나스티": "dynasty",
     "솔리튜드": "solitude", "소울소닉": "soulsonic", "블레이즈": "blaze",
     "모스": "moss", "문스톤": "moonstone", "캔버스": "canvas",
     "레벨": "revel", "루미나": "lumina", "메스머": "mesmer",
@@ -102,6 +103,21 @@ _KR_COLOR_MAP: dict[str, str] = {
     "데이브레이크": "daybreak", "헤드워터스": "headwaters",
     "스포트라이트": "spotlight", "알펜글로우": "alpenglow",
     "포스포레센트": "phosphorescent", "로데스타": "lodestar",
+    # 2026-04-18: arcteryx 신솔로 햇 블랙 허위 알림 디버깅 과정에서 보강.
+    # 리스팅 응답에 색상이 없어도 옵션 API level=1 색상 value 와 크림
+    # 한글 색상의 교집합이 성립해야 색상별 multi-emit 분기가 바르게 동작함.
+    "정글": "jungle", "벨벳": "velvet", "샌드": "sand",
+    "이머전": "immersion", "룬": "rune", "시더": "cedar",
+    "사파이어": "sapphire", "알파인": "alpine", "로즈": "rose",
+    "라이트": "light", "소울": "soul", "마스": "mars", "멀티": "multi",
+    "넵튠": "neptune", "골드": "gold", "그래파이트": "graphite",
+    "델타": "delta", "스모크": "smoke", "스톤": "stone", "솔트": "salt",
+    "아크틱": "arctic", "애스터": "aster", "에테르": "ether",
+    "오르카": "orca", "카본": "carbon", "크로닌": "kronin",
+    "클라우드": "cloud", "클로리스": "cloris", "파일럿": "pilot",
+    "페놈": "phenom", "피테아스": "pytheas", "헤이즐넛": "hazelnut",
+    "워시": "wash", "루센트": "lucent", "문리트": "moonlit",
+    "보르도": "bordeaux", "서린": "serin", "블리스": "bliss",
 }
 
 # 아크테릭스 제품명에서 색상 부분을 추출할 때 제거할 비색상 토큰
@@ -128,6 +144,14 @@ _KR_COMPOUND_COLOR_MAP: dict[str, tuple[str, ...]] = {
     "핑크 글로우": ("pink", "glow"),
     "포리지 타츠": ("forage", "tatsu"),
     "캔버스 포리지": ("canvas", "forage"),
+    # 2026-04-18: 신솔로 햇 허위 알림 — arc "VELVET SAND" 가 단일 토큰 매칭만
+    # 쓰면 "벨벳"+"샌드" 분할 매칭에 의존하지만, 복합 명시가 더 안전함.
+    "벨벳 샌드": ("velvet", "sand"),
+    "다크 이머전": ("dark", "immersion"),
+    "화이트 라이트": ("white", "light"),
+    "블랙 일렉트라": ("black", "electra"),
+    "소울소닉 다이나스티": ("soulsonic", "dynasty"),
+    "다이나스티 마스": ("dynasty", "mars"),
 }
 
 
@@ -192,12 +216,18 @@ def _pick_kream_by_color(
 ) -> dict | None:
     """크림 후보 리스트에서 아크테릭스 색상과 가장 잘 매칭되는 크림 상품 선택.
 
-    arc_color_name: 아크테릭스 상품명 (색상 포함)
+    arc_color_name: 아크테릭스 색상/상품명 문자열 (색상 토큰 포함)
     kream_candidates: 같은 style number 를 공유하는 크림 상품 리스트
 
-    각 크림 상품명에서 색상 토큰을 추출하고, 아크테릭스 상품명 색상 토큰과
+    각 크림 상품명에서 색상 토큰을 추출하고, `arc_color_name` 토큰과
     교집합이 가장 큰 것을 반환. 동점 시 토큰 수가 적은(더 구체적인) 것 우선.
-    1개면 그대로 반환. 매칭 실패 시 None.
+    1개면 그대로 반환. 매칭 실패(overlap=0) 시 **None**.
+
+    주의: 2026-04-18 이전에는 overlap=0 일 때 `candidates[0]` 을 반환했는데,
+    이것이 arcteryx 리스팅 응답에 색상이 누락된 경우(예: "신솔로 햇")
+    크림 "블랙" 후보가 아무 검증 없이 선택돼 허위 알림을 유발했다. 지금은
+    불확실하면 None 을 반환하고, 호출부가 옵션 API 기반 multi-emit 분기로
+    재시도하도록 한다.
     """
     if not kream_candidates:
         return None
@@ -223,7 +253,54 @@ def _pick_kream_by_color(
             best_overlap = overlap
             best = kream_row
             best_kream_len = len(kream_tokens)
-    return best if best_overlap >= 1 else kream_candidates[0]
+    return best if best_overlap >= 1 else None
+
+
+def _extract_arc_colors(options_data: dict) -> list[dict]:
+    """옵션 API 응답에서 level=1 색상 value 리스트 반환."""
+    if not isinstance(options_data, dict):
+        return []
+    for opt in options_data.get("options") or []:
+        if opt.get("level") == 1:
+            return [v for v in (opt.get("values") or []) if isinstance(v, dict)]
+    return []
+
+
+def _extract_sizes_for_color(
+    options_data: dict, color_id: int | None,
+) -> tuple[str, ...]:
+    """레벨2 사이즈 중 `color_id` 에 속하는 재고 사이즈만 추출.
+
+    `color_id=None` 이면 색상 필터를 걸지 않고 재고 있는 모든 사이즈 반환
+    (단일 색상 상품용).
+    """
+    sizes: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(options_data, dict):
+        return ()
+    for opt in options_data.get("options") or []:
+        if opt.get("level") != 2:
+            continue
+        for val in opt.get("values") or []:
+            if not isinstance(val, dict):
+                continue
+            size_val = str(val.get("value") or "").strip()
+            if not size_val or size_val in seen:
+                continue
+            if color_id is not None:
+                pids = val.get("parent_ids") or []
+                if color_id not in pids:
+                    continue
+            in_stock = (
+                val.get("sale_state") == "ON"
+                and bool(val.get("is_orderable", False))
+                and int(val.get("stock") or 0) > 0
+            )
+            if not in_stock:
+                continue
+            seen.add(size_val)
+            sizes.append(size_val)
+    return tuple(sizes)
 
 
 def _extract_model_from_options(data: dict) -> str:
@@ -311,6 +388,10 @@ class ArcteryxAdapter:
         # 상품당 options API 1회 호출이 강제되는데(~2s/req), 2회차 사이클부터는
         # 동일 상품이 대부분이라 캐시만 있으면 HTTP 0건으로 끝난다.
         self._model_cache: dict[Any, str] = {}
+        # product_id → raw options payload. 한 사이클 안에서 모델번호 추출,
+        # 색상 디스앰비규에이션, 사이즈 필터까지 같은 payload 를 3곳에서 쓴다.
+        # HTTP 왕복을 1회로 줄이고 `AsyncRateLimiter` 도 덜 건든다.
+        self._options_cache: dict[Any, dict] = {}
 
     # ------------------------------------------------------------------
     # HTTP 레이어 — 지연 import / 생성
@@ -428,6 +509,28 @@ class ArcteryxAdapter:
         except ValueError:
             return ""
 
+    async def _get_options_data(self, http: Any, pid: Any) -> dict:
+        """옵션 API 응답을 캐시 경유로 조회.
+
+        동일 pid 에 대해 `_resolve_model_number`, 색상 디스앰비규에이션,
+        사이즈 필터가 순차 호출되는데 원본 응답을 그대로 여러 번 쓴다.
+        HTTP 레이어의 rate limiter 가 보수적이라(2.0s 간격) 중복을 없애는
+        게 사이클 시간에 직결된다.
+        """
+        if pid is None:
+            return {}
+        if pid in self._options_cache:
+            return self._options_cache[pid]
+        try:
+            data = await http._options_raw(product_id=pid)
+        except Exception:
+            logger.exception("[arcteryx] 옵션 조회 실패: id=%s", pid)
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        self._options_cache[pid] = data
+        return data
+
     async def _resolve_model_number(self, http: Any, item: dict) -> str:
         """아이템에 이미 model_number 가 있으면 사용, 없으면 옵션 API 호출.
 
@@ -447,23 +550,28 @@ class ArcteryxAdapter:
         cached = self._model_cache.get(pid)
         if cached is not None:
             return cached
-        try:
-            data = await http._options_raw(product_id=pid)
-        except Exception:
-            logger.exception("[arcteryx] 옵션 조회 실패: id=%s", pid)
-            self._model_cache[pid] = ""
-            return ""
-        if not isinstance(data, dict):
-            self._model_cache[pid] = ""
-            return ""
-        model = _extract_model_from_options(data)
+        data = await self._get_options_data(http, pid)
+        model = _extract_model_from_options(data) if data else ""
         self._model_cache[pid] = model
         return model
 
     async def match_to_kream(
         self, products: list[dict]
     ) -> tuple[list[CandidateMatched], ArcteryxMatchStats]:
-        """덤프된 아이템 → 크림 DB 매칭 → CandidateMatched publish."""
+        """덤프된 아이템 → 크림 DB 매칭 → CandidateMatched publish.
+
+        분기 흐름
+        --------
+        1. stripped key 직접 매칭 성공 → 크림 1행 단일 emit
+           (색상 인식 사이즈 — 크림 이름 기준 arc 색상 추적, SOLDOUT 이면 drop).
+        2. 1차 실패 + style number 역참조로 1개 후보 → 단일 emit (같은 경로).
+        3. style 역참조로 N>1 후보 (같은 style 의 색상별 크림) →
+           옵션 API 의 level=1 색상 리스트와 각 크림 후보의 색상 토큰을
+           매칭해서 **색상별 multi-emit**. 소싱 리스팅 응답이 "신솔로 햇"
+           처럼 색상 누락이어도 옵션 API 기반이라 정확. SOLDOUT 색상은
+           drop, kream 후보가 매치되지 않는 arc 색상도 drop.
+        4. 모두 실패 → pending_collect 로 쌓아 사이클 끝에 batch flush.
+        """
         stats = ArcteryxMatchStats(dumped=len(products))
         kream_index = self._load_kream_index()
         kream_style_index = self._load_kream_style_index()
@@ -501,93 +609,132 @@ class ArcteryxAdapter:
             except Exception:
                 logger.debug("[arcteryx] dump_ledger 실패 (비치명)")
 
-            # 1차: stripped key 직접 매칭 (크림이 ERP SKU 를 그대로 쓰는 극소수
-            # 경우 대비). 2차: 트레일링 style number 역참조 — 크림 Arc'teryx
-            # 엔트리의 슬래시 조합과 exact intersect.
-            kream_row = kream_index.get(key)
-            if kream_row is None:
-                style_no = self._extract_style_from_sku(model_no)
-                if style_no:
-                    candidates = kream_style_index.get(style_no, [])
-                    if candidates:
-                        arc_name = item.get("product_name") or ""
-                        kream_row = _pick_kream_by_color(arc_name, candidates)
-            if kream_row is None:
-                # 미등재 신상 → 배치 버퍼에 쌓고 사이클 끝에서 한 번에 flush.
-                # 행 단위 INSERT 가 19개 어댑터 동시 쓰기에서 DB 락을 유발하는
-                # 문제를 완화.
-                pid = item.get("product_id")
-                pending_collect.append((
-                    normalize_model_number(model_no),
-                    "Arc'teryx",
-                    item.get("product_name") or "",
-                    self.source_name,
-                    _build_url(pid) if pid is not None else "",
-                ))
-                continue
-
-            # 매칭 가드 — 크림 이름 vs 소싱 이름 키워드 비교
-            source_name_text = item.get("product_name") or ""
-            kream_name = kream_row.get("name") or ""
-            if collab_match_fails(kream_name, source_name_text):
-                logger.info(
-                    "[arcteryx] 콜라보 가드 차단: kream=%r source=%r",
-                    kream_name[:40],
-                    source_name_text[:40],
-                )
-                stats.skipped_guard += 1
-                continue
-            stype_diff = subtype_mismatch(
-                _keyword_set(kream_name), _keyword_set(source_name_text)
-            )
-            if stype_diff:
-                logger.info(
-                    "[arcteryx] 서브타입 가드 차단: source=%r extra=%s",
-                    source_name_text[:40],
-                    stype_diff,
-                )
-                stats.skipped_guard += 1
-                continue
-
-            # CandidateMatched 이벤트 생성
-            price = int(item.get("sell_price") or item.get("retail_price") or 0)
             pid = item.get("product_id")
+            source_name_text = item.get("product_name") or ""
+            price = int(item.get("sell_price") or item.get("retail_price") or 0)
             url = _build_url(pid) if pid is not None else ""
-            try:
-                kream_product_id = int(kream_row["product_id"])
-            except (TypeError, ValueError):
-                logger.warning(
-                    "[arcteryx] 비정수 kream_product_id 스킵: %r",
-                    kream_row.get("product_id"),
-                )
-                stats.skipped_guard += 1
-                continue
 
-            # PDP 실재고 사이즈 — 색상별 필터 (크로스컬러 거짓양성 방지)
-            http = await self._get_http()
-            available_sizes = await self._fetch_color_aware_sizes(
-                http, str(pid or ""), kream_name,
-            )
-            if not available_sizes:
-                logger.info(
-                    "[arcteryx] PDP 재고 없음 drop: pid=%s model=%s",
-                    pid, model_no,
+            # 후보 결정 — (kream_row, color_id_or_None) 쌍 리스트
+            emit_pairs: list[tuple[dict, int | None]] = []
+            kream_row = kream_index.get(key)
+            if kream_row is not None:
+                emit_pairs.append((kream_row, None))
+            else:
+                style_no = self._extract_style_from_sku(model_no)
+                candidates = (
+                    kream_style_index.get(style_no, []) if style_no else []
                 )
-                stats.soldout_dropped += 1
-                continue
+                if not candidates:
+                    # 미등재 신상 → 배치 버퍼 (사이클 끝 flush)
+                    pending_collect.append((
+                        normalize_model_number(model_no),
+                        "Arc'teryx",
+                        source_name_text,
+                        self.source_name,
+                        _build_url(pid) if pid is not None else "",
+                    ))
+                    continue
+                if len(candidates) == 1:
+                    emit_pairs.append((candidates[0], None))
+                else:
+                    # 다중 후보 — arc 옵션 API 색상 기반 disambiguation.
+                    options_data = await self._get_options_data(http, pid)
+                    arc_colors = _extract_arc_colors(options_data)
+                    used_kream_ids: set = set()
+                    for ac in arc_colors:
+                        if ac.get("sale_state") != "ON":
+                            continue
+                        arc_value = str(ac.get("value") or "")
+                        picked = _pick_kream_by_color(arc_value, candidates)
+                        if picked is None:
+                            continue
+                        kid = picked.get("product_id")
+                        if kid in used_kream_ids:
+                            # 같은 크림이 2개 arc 색상에 걸린 경우 첫 매치만 인정
+                            continue
+                        used_kream_ids.add(kid)
+                        cid = ac.get("id")
+                        try:
+                            color_id_int = int(cid) if cid is not None else None
+                        except (TypeError, ValueError):
+                            color_id_int = None
+                        emit_pairs.append((picked, color_id_int))
+                    if not emit_pairs:
+                        # arc 색상 중 kream 에 매치되는 것이 하나도 없음 → drop.
+                        # 허위 매칭 방지 — 옛 로직은 candidates[0] 폴백해서
+                        # "신솔로 햇 블랙" 같은 오알림을 냈다.
+                        logger.info(
+                            "[arcteryx] 다중 style 후보 색상 매칭 실패 drop: "
+                            "pid=%s model=%s candidates=%d arc_colors=%d",
+                            pid, model_no, len(candidates), len(arc_colors),
+                        )
+                        stats.skipped_guard += 1
+                        continue
 
-            candidate = CandidateMatched(
-                source=self.source_name,
-                kream_product_id=kream_product_id,
-                model_no=normalize_model_number(model_no),
-                retail_price=price,
-                size="",  # 리스팅 단계엔 사이즈 정보 없음 — 수익 consumer 가 보강
-                url=url,
-                available_sizes=available_sizes,
-            )
-            await self._bus.publish(candidate)
-            matched.append(candidate)
-            stats.matched += 1
+            # 각 (kream_row, color_id) 에 대해 가드 + 사이즈 + emit
+            for kream_row, arc_color_id in emit_pairs:
+                kream_name = kream_row.get("name") or ""
+                if collab_match_fails(kream_name, source_name_text):
+                    logger.info(
+                        "[arcteryx] 콜라보 가드 차단: kream=%r source=%r",
+                        kream_name[:40],
+                        source_name_text[:40],
+                    )
+                    stats.skipped_guard += 1
+                    continue
+                stype_diff = subtype_mismatch(
+                    _keyword_set(kream_name), _keyword_set(source_name_text)
+                )
+                if stype_diff:
+                    logger.info(
+                        "[arcteryx] 서브타입 가드 차단: source=%r extra=%s",
+                        source_name_text[:40],
+                        stype_diff,
+                    )
+                    stats.skipped_guard += 1
+                    continue
+
+                try:
+                    kream_product_id = int(kream_row["product_id"])
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[arcteryx] 비정수 kream_product_id 스킵: %r",
+                        kream_row.get("product_id"),
+                    )
+                    stats.skipped_guard += 1
+                    continue
+
+                # 사이즈 결정 — arc_color_id 가 지정됐으면 해당 색상만,
+                # 아니면 크림 이름 기반 색상 인식 탐색(직접 매칭 경로).
+                if arc_color_id is not None:
+                    options_data = await self._get_options_data(http, pid)
+                    available_sizes = _extract_sizes_for_color(
+                        options_data, arc_color_id,
+                    )
+                else:
+                    available_sizes = await self._fetch_color_aware_sizes(
+                        http, str(pid or ""), kream_name,
+                    )
+                if not available_sizes:
+                    logger.info(
+                        "[arcteryx] PDP 재고 없음 drop: pid=%s model=%s color_id=%s",
+                        pid, model_no, arc_color_id,
+                    )
+                    stats.soldout_dropped += 1
+                    continue
+
+                candidate = CandidateMatched(
+                    source=self.source_name,
+                    kream_product_id=kream_product_id,
+                    model_no=normalize_model_number(model_no),
+                    retail_price=price,
+                    size="",
+                    url=url,
+                    available_sizes=available_sizes,
+                )
+                await self._bus.publish(candidate)
+                matched.append(candidate)
+                stats.matched += 1
 
         # 사이클 끝 — 미등재 신상을 한 번에 flush. DB 락 경합 최소화.
         if pending_collect:
@@ -612,26 +759,18 @@ class ArcteryxAdapter:
         """색상 인식 사이즈 조회 — 크림 상품명의 색상과 매칭되는 arcteryx 색상만.
 
         크로스컬러 거짓양성 방지: arcteryx 1개 상품 = 크림 N개 색상별 상품.
-        크림 "24K 블랙"에 SOULSONIC 색상의 재고가 섞이는 것을 차단.
+        - 단일 색상 arc 상품 → 색상 필터 없이 재고 사이즈 전부 반환.
+        - 다색 arc 상품 → 크림 색상과 매칭되는 arc 색상 1개만 남기고, 매칭
+          실패 시 빈 튜플 반환(drop). 2026-04-18 이전에는 매칭 실패 시 전
+          색상 재고를 합쳐 반환해서 "신솔로 햇 블랙" 같은 허위 알림을 냈다.
         """
         if not product_id:
             return ()
-        try:
-            data = await http._options_raw(product_id=product_id)
-        except Exception as exc:
-            logger.warning("[arcteryx] 옵션 조회 실패 pid=%s: %s", product_id, exc)
-            return ()
+        data = await self._get_options_data(http, product_id)
         if not data:
             return ()
 
-        options = data.get("options") or []
-
-        # Level 1: 색상 목록 + 크림 이름 매칭
-        color_values: list[dict] = []
-        for opt in options:
-            if opt.get("level") == 1:
-                color_values = opt.get("values") or []
-                break
+        color_values = _extract_arc_colors(data)
 
         target_color_id: int | None = None
         if color_values:
@@ -648,34 +787,17 @@ class ArcteryxAdapter:
                             return ()
                         break
 
-        # Level 2: 타겟 색상의 사이즈만 수집
-        sizes: list[str] = []
-        seen: set[str] = set()
-        for opt in options:
-            if opt.get("level") != 2:
-                continue
-            for val in opt.get("values") or []:
-                if not isinstance(val, dict):
-                    continue
-                size_val = str(val.get("value") or "").strip()
-                if not size_val or size_val in seen:
-                    continue
-                # 색상 필터: target_color_id 가 있으면 해당 색상만
-                if target_color_id is not None:
-                    pids = val.get("parent_ids") or []
-                    if target_color_id not in pids:
-                        continue
-                in_stock = (
-                    val.get("sale_state") == "ON"
-                    and bool(val.get("is_orderable", False))
-                    and int(val.get("stock") or 0) > 0
-                )
-                if not in_stock:
-                    continue
-                seen.add(size_val)
-                sizes.append(size_val)
+        # 다색 상품인데 크림 이름과 매칭되는 arc 색상이 없다 → drop.
+        # 단일 색상 상품은 색상 필터 불필요하므로 그대로 진행.
+        if target_color_id is None and len(color_values) > 1:
+            logger.info(
+                "[arcteryx] 다색 상품 색상 매칭 실패 drop: "
+                "pid=%s kream=%s arc_colors=%d",
+                product_id, kream_name[:40], len(color_values),
+            )
+            return ()
 
-        return tuple(sizes)
+        return _extract_sizes_for_color(data, target_color_id)
 
     # ------------------------------------------------------------------
     # 3) 단발 사이클 — dump → match
