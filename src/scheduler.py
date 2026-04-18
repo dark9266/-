@@ -9,16 +9,25 @@ discord.ext.tasks 기반 3티어 실시간 아키텍처:
 """
 
 import asyncio
+import os
 from datetime import datetime, time
+from pathlib import Path
 
 from discord.ext import tasks
 
 from src.config import settings
+from src.core.db import sync_connect
 from src.models.product import Signal
 from src.utils.logging import setup_logger
 from src.utils.resilience import error_aggregator
 
 logger = setup_logger("scheduler")
+
+# Phase 4 헬스모니터 임계값 — 2026-04-18 incident 기준.
+# 평상시 WAL 은 수 MB 이내이고 fd 는 적으면 3, 많아도 7~8 수준.
+_HEALTH_WAL_WARN_MB: float = 100.0
+_HEALTH_FD_WARN: int = 10
+_HEALTH_DECISION_STALL_SEC: int = 3600  # 1h 무이벤트
 
 
 class Scheduler:
@@ -57,6 +66,8 @@ class Scheduler:
             self.followup_report_loop.start()
         if not self.adapter_health_loop.is_running():
             self.adapter_health_loop.start()
+        if not self.db_health_loop.is_running():
+            self.db_health_loop.start()
         if settings.v2_reverse_disabled:
             logger.warning(
                 "[v2] price_refresher/spike_detector 비활성 "
@@ -87,6 +98,7 @@ class Scheduler:
         self.followup_sweep_loop.cancel()
         self.followup_report_loop.cancel()
         self.adapter_health_loop.cancel()
+        self.db_health_loop.cancel()
         logger.info("스케줄러 중지")
 
     def start_auto_scan(self) -> None:
@@ -519,3 +531,86 @@ class Scheduler:
     @adapter_health_loop.before_loop
     async def before_adapter_health(self) -> None:
         await self.bot.wait_until_ready()
+
+    # ─── DB 헬스모니터 (5분 주기) ─────────────────────────
+    # 2026-04-18 WAL incident 이후 자가 관측 레이어.
+    # session-only 크론/lsof 의존 제거 — 봇 안에서 WAL 부풀음·fd 누수·
+    # orchestrator 정체를 감지해 조기 경보한다.
+
+    @tasks.loop(minutes=5)
+    async def db_health_loop(self) -> None:
+        """WAL 크기 · DB fd 수 · decision_log 정체 3종 헬스핀."""
+        try:
+            db_path = settings.db_path
+
+            # 1) WAL 파일 크기
+            wal_path = Path(f"{db_path}-wal")
+            try:
+                wal_mb = wal_path.stat().st_size / 1024 / 1024
+            except FileNotFoundError:
+                wal_mb = 0.0
+            if wal_mb > _HEALTH_WAL_WARN_MB:
+                logger.warning("[health] WAL 비대화: %.1fMB", wal_mb)
+
+            # 2) DB fd 수 (Linux /proc 기반 — WSL/리눅스만)
+            fd_count = _count_db_fds(db_path)
+            if fd_count is not None and fd_count > _HEALTH_FD_WARN:
+                logger.warning("[health] DB fd 누수 의심: %d", fd_count)
+
+            # 3) decision_log 1h 무이벤트 — orchestrator 정체 의심
+            stall = _decision_log_stall(db_path, _HEALTH_DECISION_STALL_SEC)
+            if stall:
+                logger.warning(
+                    "[health] decision_log 1h 무이벤트 — orchestrator 정체 의심"
+                )
+
+            logger.info(
+                "[health] WAL=%.1fMB fd=%s decision_stall=%s",
+                wal_mb,
+                fd_count if fd_count is not None else "n/a",
+                stall,
+            )
+        except Exception as e:
+            error_aggregator.add("db_health_loop", e)
+            logger.exception("db_health_loop 실패: %s", e)
+
+    @db_health_loop.before_loop
+    async def before_db_health(self) -> None:
+        await self.bot.wait_until_ready()
+
+
+def _count_db_fds(db_path: str) -> int | None:
+    """현재 프로세스가 열고 있는 DB 관련 fd 수. Linux only.
+
+    /proc 접근 불가 환경에서는 None 반환 (사일런스).
+    """
+    proc_fd = Path("/proc/self/fd")
+    if not proc_fd.exists():
+        return None
+    db_name = Path(db_path).name
+    count = 0
+    try:
+        for fd in proc_fd.iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if db_name in target:
+                count += 1
+    except OSError:
+        return None
+    return count
+
+
+def _decision_log_stall(db_path: str, seconds: int) -> bool:
+    """최근 `seconds` 초 동안 decision_log 쓰기가 0건인가."""
+    cutoff = datetime.now().timestamp() - seconds
+    try:
+        with sync_connect(db_path, read_only=True, timeout=5.0) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM decision_log WHERE ts >= ?",
+                (cutoff,),
+            ).fetchone()
+    except Exception:
+        return False  # 테이블 미생성 등 — 경보 억제
+    return int(row[0] or 0) == 0
