@@ -46,7 +46,7 @@
 1. 봇 프로세스 살아있나 (`ps -ef | grep python.*main`)
 2. 마지막 알림 24h 내 (`alert_sent.fired_at`)
 3. 크림 일일 호출 KREAM_DAILY_CAP 이하 (`kream_api_calls` 24h, .env 기준)
-4. 큐 최근 2h 내 갱신 (`kream_collect_queue.added_at`)
+4. 파이프라인 활동 — `decision_log` 최근 2h 내 `dedup_recent|prefilter_unprofitable|profit_emitted|alert_sent` 합 > 0 (※ `kream_collect_queue` 는 미등재 신상 보조 채널이라 공백 정상)
 
 **1개라도 FAIL → 매칭/신규 작업 착수 금지, 복구 먼저.**
 
