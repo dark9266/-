@@ -23,6 +23,8 @@ import time
 
 import aiosqlite
 
+from src.core.db import async_connect
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,7 +61,7 @@ async def record_dump_item(
         return
     now = time.time()
     try:
-        async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        async with async_connect(db_path) as conn:
             await _ensure_schema(conn)
             await conn.execute(
                 """INSERT INTO catalog_dump_items
@@ -89,9 +91,8 @@ async def unmatched_sample(
 ) -> list[dict]:
     """해당 source 의 아이템 중 retail_products 에 없는 (=매칭 실패) 상위 limit."""
     try:
-        async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        async with async_connect(db_path) as conn:
             await _ensure_schema(conn)
-            conn.row_factory = aiosqlite.Row
             async with conn.execute(
                 """SELECT d.model_no, d.name, d.url, d.last_seen_at, d.seen_count
                    FROM catalog_dump_items d
@@ -112,7 +113,7 @@ async def unmatched_sample(
 async def match_rate(db_path: str, source: str) -> dict:
     """해당 source 의 덤프 vs 매칭 비율."""
     try:
-        async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        async with async_connect(db_path) as conn:
             await _ensure_schema(conn)
             async with conn.execute(
                 "SELECT COUNT(*) FROM catalog_dump_items WHERE source = ?",

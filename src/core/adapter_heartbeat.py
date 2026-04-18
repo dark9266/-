@@ -23,6 +23,8 @@ from dataclasses import dataclass
 
 import aiosqlite
 
+from src.core.db import async_connect
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,7 @@ async def bump(db_path: str, source: str) -> None:
         return
     now = time.time()
     try:
-        async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        async with async_connect(db_path) as conn:
             await _ensure_schema(conn)
             await conn.execute(
                 """INSERT INTO adapter_heartbeat (source, last_emit_at, emit_count)
@@ -75,9 +77,8 @@ async def bump(db_path: str, source: str) -> None:
 async def snapshot(db_path: str) -> dict[str, tuple[float, int]]:
     """모든 source 의 (last_emit_at, emit_count) 맵."""
     try:
-        async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        async with async_connect(db_path) as conn:
             await _ensure_schema(conn)
-            conn.row_factory = aiosqlite.Row
             async with conn.execute(
                 "SELECT source, last_emit_at, emit_count FROM adapter_heartbeat"
             ) as cur:

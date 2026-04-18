@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
+from src.core.db import sync_connect
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -258,15 +258,11 @@ class MusinsaAdapter:
         블로킹 sqlite3 — 어댑터 수준에서 단발 실행이라 허용.
         테스트에서는 tmp db 로 고립.
         """
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             rows = conn.execute(
                 "SELECT product_id, name, brand, model_number "
                 "FROM kream_products WHERE model_number != ''"
             ).fetchall()
-        finally:
-            conn.close()
         index: dict[str, dict] = {}
         for row in rows:
             key = _strip_key(row["model_number"])

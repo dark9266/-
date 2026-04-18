@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
+from src.core.db import sync_connect
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -384,15 +384,11 @@ class ArcteryxAdapter:
     # ------------------------------------------------------------------
     def _load_kream_index(self) -> dict[str, dict]:
         """크림 DB 전체를 모델번호 stripped key 로 인덱스."""
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             rows = conn.execute(
                 "SELECT product_id, name, brand, model_number "
                 "FROM kream_products WHERE model_number != ''"
             ).fetchall()
-        finally:
-            conn.close()
         index: dict[str, dict] = {}
         for row in rows:
             key = _strip_key(row["model_number"])
@@ -411,16 +407,12 @@ class ArcteryxAdapter:
         1:N 매핑: 같은 style number 가 여러 크림 상품(색상별)에 포함되므로
         리스트로 저장하고 매칭 시 색상으로 최적 후보를 선택한다.
         """
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             rows = conn.execute(
                 "SELECT product_id, name, brand, model_number "
                 "FROM kream_products "
                 "WHERE brand LIKE '%arc%' OR brand LIKE '%아크%'"
             ).fetchall()
-        finally:
-            conn.close()
         style_index: dict[str, list[dict]] = {}
         for row in rows:
             mn = row["model_number"] or ""

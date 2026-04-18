@@ -38,6 +38,7 @@ from typing import Any
 import aiosqlite
 
 from src.core import event_bus as _event_bus_module
+from src.core.db import apply_write_pragmas
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,8 @@ class CheckpointStore:
             return
         self._db = await aiosqlite.connect(self.db_path, timeout=30.0)
         self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA busy_timeout=30000")
+        # WAL 경합 방어 PRAGMA 4종 (src/core/db.py로 통합). 2026-04-18 incident 대응.
+        await apply_write_pragmas(self._db)
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
         await _ensure_columns(self._db)

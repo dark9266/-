@@ -15,7 +15,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-import aiosqlite
+from src.core.db import async_connect
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +46,7 @@ async def decision_summary(
     """최근 hours 시간 동안의 decision_log 집계."""
     since = time.time() - hours * 3600.0
     try:
-        async with aiosqlite.connect(db_path, timeout=30.0) as conn:
-            conn.row_factory = aiosqlite.Row
+        async with async_connect(db_path) as conn:
             async with conn.execute(
                 """SELECT stage, decision, reason, COUNT(*) AS c
                    FROM decision_log

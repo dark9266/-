@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import sqlite3
+from src.core.db import sync_connect
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -323,16 +323,12 @@ class ConverseAdapter:
     # 2) 크림 DB 인덱스 — Converse 풀의 모델번호 다중 인덱스
     # --------------------------------------------------------------
     def _load_kream_index(self) -> dict[str, list[dict]]:
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             rows = conn.execute(
                 "SELECT product_id, name, brand, model_number "
                 "FROM kream_products "
                 "WHERE brand = 'Converse' AND model_number != ''"
             ).fetchall()
-        finally:
-            conn.close()
         index: dict[str, list[dict]] = defaultdict(list)
         for row in rows:
             mn = (row["model_number"] or "").strip().upper()

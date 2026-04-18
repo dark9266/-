@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
+from src.core.db import sync_connect
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -230,16 +230,12 @@ class PumaAdapter:
         브랜드 필터 `brand='Puma'` 추가 — 동일 번호가 다른 브랜드와 충돌할
         가능성은 낮지만(`403767-03` 패턴은 Puma 고유), 안전상 격리.
         """
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             rows = conn.execute(
                 "SELECT product_id, name, brand, model_number "
                 "FROM kream_products "
                 "WHERE brand = 'Puma' AND model_number != ''"
             ).fetchall()
-        finally:
-            conn.close()
         index: dict[str, dict] = {}
         for row in rows:
             key = _strip_key(row["model_number"])

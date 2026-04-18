@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
+from src.core.db import sync_connect
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -163,9 +163,7 @@ class KreamHotWatcher:
         )
 
     def _load_hot_products_sync(self) -> list[dict[str, Any]]:
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             rows = conn.execute(
                 "SELECT product_id, name, brand, model_number, volume_7d "
                 "FROM kream_products "
@@ -173,8 +171,6 @@ class KreamHotWatcher:
                 "ORDER BY volume_7d DESC",
                 (self._hot_volume_threshold,),
             ).fetchall()
-        finally:
-            conn.close()
         return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------

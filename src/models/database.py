@@ -5,6 +5,7 @@ import re
 import aiosqlite
 
 from src.config import settings
+from src.core.db import apply_write_pragmas
 from src.utils.logging import setup_logger
 
 logger = setup_logger("database")
@@ -225,8 +226,9 @@ class Database:
         """DB 연결 및 스키마 초기화."""
         self._db = await aiosqlite.connect(self.db_path, timeout=30.0)
         self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA busy_timeout = 30000")
-        await self._db.execute("PRAGMA journal_mode = WAL")
+        # WAL 경합 방어 PRAGMA 4종 (src/core/db.py로 통합). 2026-04-18 incident 대응.
+        # 기존엔 busy_timeout + journal_mode만 있고 synchronous/wal_autocheckpoint 누락 → writer 경합.
+        await apply_write_pragmas(self._db)
         await self._db.executescript(SCHEMA_SQL)
         await self._db.commit()
         await self.migrate_realtime_columns()

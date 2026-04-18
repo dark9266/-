@@ -24,7 +24,7 @@ import json
 import time
 from typing import Any
 
-import aiosqlite
+from src.core.db import async_connect
 
 # ─── 기본 해시 대상 필드 ──────────────────────────────────
 DEFAULT_HASH_FIELDS: tuple[str, ...] = (
@@ -93,7 +93,7 @@ class DeltaEngine:
 
     async def init(self) -> None:
         """kream_snapshot_hash 테이블 생성 (IF NOT EXISTS)."""
-        async with aiosqlite.connect(self._db_path, timeout=30.0) as conn:
+        async with async_connect(self._db_path) as conn:
             await conn.executescript(_SCHEMA_SQL)
             await conn.commit()
 
@@ -111,15 +111,14 @@ class DeltaEngine:
             f"SELECT kream_product_id, hash FROM kream_snapshot_hash "
             f"WHERE kream_product_id IN ({placeholders})"
         )
-        async with aiosqlite.connect(self._db_path, timeout=30.0) as conn:
-            conn.row_factory = aiosqlite.Row
+        async with async_connect(self._db_path) as conn:
             async with conn.execute(query, pids) as cur:
                 rows = await cur.fetchall()
         return {int(r["kream_product_id"]): str(r["hash"]) for r in rows}
 
     async def _load_all_ids(self) -> set[int]:
         """저장된 모든 pid (삭제 감지용)."""
-        async with aiosqlite.connect(self._db_path, timeout=30.0) as conn:
+        async with async_connect(self._db_path) as conn:
             async with conn.execute(
                 "SELECT kream_product_id FROM kream_snapshot_hash"
             ) as cur:
@@ -128,7 +127,7 @@ class DeltaEngine:
 
     async def pending_count(self) -> int:
         """저장된 스냅샷 총 개수 — 관측/디버깅용."""
-        async with aiosqlite.connect(self._db_path, timeout=30.0) as conn:
+        async with async_connect(self._db_path) as conn:
             async with conn.execute(
                 "SELECT COUNT(*) FROM kream_snapshot_hash"
             ) as cur:
@@ -189,7 +188,7 @@ class DeltaEngine:
             rows.append((pid, compute_hash(p, self._hash_fields), now))
         if not rows:
             return
-        async with aiosqlite.connect(self._db_path, timeout=30.0) as conn:
+        async with async_connect(self._db_path) as conn:
             await conn.executemany(
                 "INSERT INTO kream_snapshot_hash "
                 "(kream_product_id, hash, updated_at) "
@@ -205,7 +204,7 @@ class DeltaEngine:
         if not pids:
             return
         placeholders = ",".join("?" * len(pids))
-        async with aiosqlite.connect(self._db_path, timeout=30.0) as conn:
+        async with async_connect(self._db_path) as conn:
             await conn.execute(
                 f"DELETE FROM kream_snapshot_hash "
                 f"WHERE kream_product_id IN ({placeholders})",

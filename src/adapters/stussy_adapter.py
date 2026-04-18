@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
+from src.core.db import sync_connect
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -253,16 +253,12 @@ class StussyAdapter:
     # --------------------------------------------------------------
     def _load_kream_prefix_index(self) -> dict[str, list[dict]]:
         """크림 Stussy 행을 digit prefix 키로 다중 인덱스."""
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             rows = conn.execute(
                 "SELECT product_id, name, brand, model_number "
                 "FROM kream_products "
                 "WHERE brand = 'Stussy' AND model_number != ''"
             ).fetchall()
-        finally:
-            conn.close()
         index: dict[str, list[dict]] = defaultdict(list)
         for row in rows:
             mn = (row["model_number"] or "").strip()

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
+from src.core.db import sync_connect
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -143,16 +143,12 @@ class KreamDeltaWatcher:
         )
 
     def _load_watch_targets_sync(self) -> list[int]:
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             rows = conn.execute(
                 "SELECT product_id FROM kream_products "
                 "WHERE volume_7d >= ? ORDER BY volume_7d DESC",
                 (self._hot_volume_threshold,),
             ).fetchall()
-        finally:
-            conn.close()
         pids: list[int] = []
         for r in rows:
             try:
@@ -168,16 +164,12 @@ class KreamDeltaWatcher:
         )
 
     def _load_kream_row_sync(self, pid: int) -> dict[str, Any] | None:
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        try:
+        with sync_connect(self._db_path, read_only=True) as conn:
             row = conn.execute(
                 "SELECT product_id, name, brand, model_number, volume_7d "
                 "FROM kream_products WHERE product_id = ?",
                 (str(pid),),
             ).fetchone()
-        finally:
-            conn.close()
         return dict(row) if row else None
 
     # ------------------------------------------------------------------

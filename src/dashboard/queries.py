@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+import sqlite3  # noqa: F401 — OperationalError 예외 처리용
 from typing import Any
 
 from src.config import settings
+from src.core.db import sync_connect
 
 # 크림 일일 호출 캡 — src.core.kream_budget 의 BUDGET 과 동일 기본값.
 # 여기서 import 하지 않는 이유: 대시보드는 완전히 읽기 전용 의존성만 유지하고,
@@ -14,10 +15,9 @@ from src.config import settings
 KREAM_DAILY_CAP_DEFAULT = 10000
 
 
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _conn():
+    """읽기 전용 연결 컨텍스트 — PRAGMA 4종 helper(src/core/db.py) 경유."""
+    return sync_connect(settings.db_path, read_only=True)
 
 
 def recent_alerts(hours: int = 24, limit: int = 100) -> list[dict[str, Any]]:

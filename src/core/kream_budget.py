@@ -24,9 +24,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 
-import aiosqlite
-
 from src.config import settings
+from src.core.db import async_connect
 from src.utils.logging import setup_logger
 
 logger = setup_logger("kream_budget")
@@ -80,7 +79,7 @@ class KreamBudgetExceeded(RuntimeError):
 
 
 async def _count_last_24h() -> int:
-    async with aiosqlite.connect(settings.db_path, timeout=30.0) as db:
+    async with async_connect(settings.db_path) as db:
         cur = await db.execute(
             "SELECT COUNT(*) FROM kream_api_calls WHERE ts >= datetime('now','-1 day')"
         )
@@ -143,7 +142,7 @@ async def record_call(
     if purpose == "manual":
         purpose = _purpose_var.get()
     try:
-        async with aiosqlite.connect(settings.db_path, timeout=30.0) as db:
+        async with async_connect(settings.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO kream_api_calls(endpoint, method, status, latency_ms, purpose)

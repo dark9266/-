@@ -20,12 +20,12 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 import httpx
 
+from src.core.db import sync_connect
 from src.core.event_bus import AlertSent, ProfitFound
 
 logger = logging.getLogger(__name__)
@@ -56,16 +56,12 @@ _ALERT_SIGNALS: frozenset[str] = frozenset({"강력매수", "매수"})
 def _lookup_kream_product(db_path: str, kream_product_id: int) -> dict | None:
     """크림 상품 메타 조회 (읽기 전용, 동기 SQLite — 수 ms)."""
     try:
-        conn = sqlite3.connect(db_path, timeout=2.0)
-        try:
-            conn.row_factory = sqlite3.Row
+        with sync_connect(db_path, read_only=True, timeout=2.0) as conn:
             row = conn.execute(
                 "SELECT name, brand, category, image_url, url, volume_7d, volume_30d "
                 "FROM kream_products WHERE product_id=?",
                 (str(kream_product_id),),
             ).fetchone()
-        finally:
-            conn.close()
         return dict(row) if row else None
     except Exception as e:
         logger.debug("[v3_discord] kream_products 조회 실패: %s", e)
