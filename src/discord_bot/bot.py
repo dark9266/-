@@ -358,6 +358,28 @@ class KreamBot(commands.Bot):
         )
         return True
 
+    async def close(self) -> None:
+        """SIGINT/SIGTERM 시 WAL checkpoint flush 보장 (2026-04-18 incident 대응).
+
+        순서: v3 runtime stop → Database close → discord.Client.close.
+        """
+        try:
+            from main import _v3_runtime
+            if _v3_runtime is not None:
+                try:
+                    await _v3_runtime.stop()
+                    logger.info("[shutdown] v3 runtime 정상 종료")
+                except Exception:
+                    logger.exception("[shutdown] v3 runtime stop 실패")
+        except Exception:
+            logger.exception("[shutdown] v3 runtime import 실패")
+        if self.db:
+            try:
+                await self.db.close()
+            except Exception:
+                logger.exception("[shutdown] db close 실패")
+        await super().close()
+
 
 # --- 봇 인스턴스 및 명령어 등록 ---
 

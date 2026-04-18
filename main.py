@@ -5,6 +5,7 @@
     PYTHONPATH=. python main.py
 """
 
+import asyncio
 import atexit
 import os
 import sys
@@ -141,6 +142,16 @@ def _register_v3_runtime_hook() -> None:
             logger.warning("[v3] 런타임 기동 실패 — v2 단독 운영 지속")
 
 
+async def _main_async() -> None:
+    """봇 이벤트 루프 — graceful shutdown 보장 (2026-04-18 incident 대응).
+
+    bot.run()은 SIGINT 시 내부 cleanup만 돌고 `KreamBot.close()`를 안 부른다.
+    `async with bot:` 의 __aexit__가 close()를 보장 → WAL checkpoint flush.
+    """
+    async with bot:
+        await bot.start(settings.discord_token)
+
+
 def main():
     if not settings.discord_token:
         print("❌ DISCORD_TOKEN이 설정되지 않았습니다.")
@@ -154,7 +165,10 @@ def main():
         _register_v3_runtime_hook()
     except Exception:
         logger.warning("[v3] 런타임 hook 등록 실패 — v2 단독 운영 지속", exc_info=True)
-    bot.run(settings.discord_token, log_handler=None)
+    try:
+        asyncio.run(_main_async())
+    except KeyboardInterrupt:
+        logger.info("SIGINT 수신 — graceful shutdown 진행")
 
 
 if __name__ == "__main__":
