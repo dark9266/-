@@ -30,11 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from src.core.db import sync_connect
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from src.core.db import sync_connect
 from src.core.event_bus import CandidateMatched, EventBus
 from src.core.kream_budget import KreamBudgetExceeded, kream_purpose
 

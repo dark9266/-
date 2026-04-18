@@ -30,11 +30,11 @@ from __future__ import annotations
 
 import logging
 import re
-from src.core.db import sync_connect
 import time
 from dataclasses import dataclass
 from typing import Any
 
+from src.core.db import sync_connect
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 

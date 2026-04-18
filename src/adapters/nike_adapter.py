@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from src.core.db import sync_connect
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -312,18 +311,8 @@ class NikeAdapter:
     # 2) 크림 DB 매칭
     # ------------------------------------------------------------------
     def _load_kream_index(self) -> dict[str, dict]:
-        """크림 DB 전체를 모델번호 stripped key 로 인덱스."""
-        with sync_connect(self._db_path, read_only=True) as conn:
-            rows = conn.execute(
-                "SELECT product_id, name, brand, model_number "
-                "FROM kream_products WHERE model_number != ''"
-            ).fetchall()
-        index: dict[str, dict] = {}
-        for row in rows:
-            key = _strip_key(row["model_number"])
-            if key:
-                index[key] = dict(row)
-        return index
+        from src.core.kream_index import get_kream_index
+        return get_kream_index(self._db_path).get()
 
     def _build_collect_row(
         self, item: dict, model_no: str

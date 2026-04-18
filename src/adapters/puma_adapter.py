@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import re
-from src.core.db import sync_connect
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -225,23 +224,8 @@ class PumaAdapter:
     # 2) 크림 DB 매칭
     # ------------------------------------------------------------------
     def _load_kream_index(self) -> dict[str, dict]:
-        """Puma 한정으로 크림 DB 를 stripped key 로 인덱스.
-
-        브랜드 필터 `brand='Puma'` 추가 — 동일 번호가 다른 브랜드와 충돌할
-        가능성은 낮지만(`403767-03` 패턴은 Puma 고유), 안전상 격리.
-        """
-        with sync_connect(self._db_path, read_only=True) as conn:
-            rows = conn.execute(
-                "SELECT product_id, name, brand, model_number "
-                "FROM kream_products "
-                "WHERE brand = 'Puma' AND model_number != ''"
-            ).fetchall()
-        index: dict[str, dict] = {}
-        for row in rows:
-            key = _strip_key(row["model_number"])
-            if key:
-                index[key] = dict(row)
-        return index
+        from src.core.kream_index import get_kream_index
+        return get_kream_index(self._db_path).get()
 
     def _build_collect_row(
         self, item: dict, model_no: str

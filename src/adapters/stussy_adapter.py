@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import re
-from src.core.db import sync_connect
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -29,6 +28,7 @@ from typing import Any
 import httpx
 
 from src.adapters._collect_queue import aenqueue_collect_batch
+from src.core.db import sync_connect
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.matcher import normalize_model_number
 

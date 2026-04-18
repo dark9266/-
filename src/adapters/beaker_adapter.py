@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 import re
-from src.core.db import sync_connect
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -194,17 +193,8 @@ class BeakerAdapter:
     # 2) 크림 DB 매칭
     # ------------------------------------------------------------------
     def _load_kream_index(self) -> dict[str, dict]:
-        with sync_connect(self._db_path, read_only=True) as conn:
-            rows = conn.execute(
-                "SELECT product_id, name, brand, model_number "
-                "FROM kream_products WHERE model_number != ''"
-            ).fetchall()
-        index: dict[str, dict] = {}
-        for row in rows:
-            key = _strip_key(row["model_number"])
-            if key:
-                index[key] = dict(row)
-        return index
+        from src.core.kream_index import get_kream_index
+        return get_kream_index(self._db_path).get()
 
     async def _enqueue_collect(self, item: dict, model_no: str) -> bool:
         pid = str(item.get("product_id") or "")

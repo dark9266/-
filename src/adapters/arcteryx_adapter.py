@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import re
-from src.core.db import sync_connect
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -29,7 +28,7 @@ from typing import Any
 import httpx
 
 from src.adapters._collect_queue import aenqueue_collect_batch
-from src.adapters._size_helpers import fetch_in_stock_sizes
+from src.core.db import sync_connect
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import normalize_model_number
@@ -383,18 +382,8 @@ class ArcteryxAdapter:
     # 2) 크림 DB 매칭
     # ------------------------------------------------------------------
     def _load_kream_index(self) -> dict[str, dict]:
-        """크림 DB 전체를 모델번호 stripped key 로 인덱스."""
-        with sync_connect(self._db_path, read_only=True) as conn:
-            rows = conn.execute(
-                "SELECT product_id, name, brand, model_number "
-                "FROM kream_products WHERE model_number != ''"
-            ).fetchall()
-        index: dict[str, dict] = {}
-        for row in rows:
-            key = _strip_key(row["model_number"])
-            if key:
-                index[key] = dict(row)
-        return index
+        from src.core.kream_index import get_kream_index
+        return get_kream_index(self._db_path).get()
 
     def _load_kream_style_index(self) -> dict[str, list[dict]]:
         """크림 Arc'teryx 엔트리의 슬래시/쉼표 분리 style number 인덱스.
