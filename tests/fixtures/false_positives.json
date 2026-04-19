@@ -85,6 +85,35 @@
       "fix": "src/reverse_scanner.py hot/warm 단계 강제 refetch + full_info is None → no_prices 드롭",
       "bug_date": "2026-04-13",
       "status": "fixed"
+    },
+    {
+      "id": "on_running_old_sku_dot_vs_hyphen",
+      "description": "On Running 구형 SKU는 사이트가 61.99025, 크림 DB는 61-99025로 저장됨. 정규화 없이 매칭하면 전부 미스매치.",
+      "type": "model_match",
+      "input": {
+        "retail_model": "61.99025",
+        "kream_model": "61-99025"
+      },
+      "expected": "match",
+      "root_cause": "On Running 구형 SKU(`NN.XXXXX`)와 크림 DB(`NN-XXXXX`) 포맷 불일치. 신형 11자리(`3MF10071043`)는 양쪽 동일.",
+      "fix": "src/crawlers/on_running.py::normalize_sku_for_kream 에서 점→하이픈 치환 후 어댑터가 strip_key로 매칭.",
+      "bug_date": "2026-04-19",
+      "status": "fixed"
+    },
+    {
+      "id": "on_running_line_slug_not_sku",
+      "description": "On Running URL path segment `3mf1007`는 ProductGroup line slug이지 variant SKU가 아님. 이것을 SKU로 오인하면 크림 매칭이 전부 깨진다.",
+      "type": "sku_extraction",
+      "input": {
+        "url": "https://www.on.com/ko-kr/products/cloud-6-m-3mf1007/mens/apollo-eclipse-shoes-3MF10074109",
+        "wrong_sku": "3MF1007",
+        "right_sku": "3MF10074109"
+      },
+      "expected": "extract_trailing_sku_only",
+      "root_cause": "URL은 `{product-slug}/{gender}/{color-slug}-{category}-{SKU}` 포맷. 트레일링 11자리만 진짜 SKU.",
+      "fix": "src/crawlers/on_running.py::_URL_SKU_RE 가 카테고리 토큰 뒤 SKU만 캡처 + is_valid_sku가 11자리 고정 검증.",
+      "bug_date": "2026-04-19",
+      "status": "fixed"
     }
   ]
 }

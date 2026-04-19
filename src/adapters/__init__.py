@@ -30,7 +30,6 @@ from src.adapters.tune_adapter import TuneAdapter
 from src.adapters.twentynine_cm_adapter import TwentynineCmAdapter
 from src.adapters.vans_adapter import VansAdapter
 from src.adapters.wconcept_adapter import WconceptAdapter
-from src.adapters.worksout_adapter import WorksoutAdapter
 
 __all__ = [
     "AbcmartAdapter",
@@ -55,5 +54,4 @@ __all__ = [
     "TwentynineCmAdapter",
     "VansAdapter",
     "WconceptAdapter",
-    "WorksoutAdapter",
 ]

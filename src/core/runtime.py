@@ -43,6 +43,7 @@ from src.adapters.kream_hot_watcher import KreamHotWatcher
 from src.adapters.musinsa_adapter import MusinsaAdapter
 from src.adapters.nbkorea_adapter import NbkoreaAdapter
 from src.adapters.nike_adapter import NikeAdapter
+from src.adapters.on_running_adapter import OnRunningAdapter
 from src.adapters.patagonia_adapter import PatagoniaAdapter
 from src.adapters.puma_adapter import PumaAdapter
 from src.adapters.salomon_adapter import SalomonAdapter
@@ -53,7 +54,6 @@ from src.adapters.tune_adapter import TuneAdapter
 from src.adapters.twentynine_cm_adapter import TwentynineCmAdapter
 from src.adapters.vans_adapter import VansAdapter
 from src.adapters.wconcept_adapter import WconceptAdapter
-from src.adapters.worksout_adapter import WorksoutAdapter
 from src.core.call_throttle import CallThrottle
 from src.core.checkpoint_store import CheckpointStore
 from src.core.kream_budget import KreamBudgetExceeded
@@ -98,11 +98,9 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("arcteryx", ArcteryxAdapter),
     ("vans", VansAdapter),
     ("wconcept", WconceptAdapter),
-    # ("worksout", WorksoutAdapter),
-    # 2026-04-15 비활성화: 이름 기반 매칭이 토큰 2개 교차만으로 성립하여
-    # 194→58 매칭 중 30%+가 거짓 (Nike Dunk ↔ Jordan Retro, Patagonia ↔ ON 등).
-    # CandidateMatched publish 시 orchestrator → 수익/알림 체인 진입 가능 →
-    # 정확성 축 ① 위반. 토큰 교차 임계 상향 + 브랜드 강제 일치 가드 도입 후 재활성화.
+    # worksout: 2026-04-19 폐기 — 공식 SKU 노출 경로 전무 확정.
+    # Next.js 번들 14 chunk + API 43필드 + Wayback 과거 스냅샷까지 전수 스캔
+    # 결과 brand 원본 SKU 필드 0건. 이름 fuzzy 외 매칭 불가능 → 정확성 축 ① 충돌.
     ("adidas", AdidasAdapter),
     # ("hoka", HokaAdapter),
     # 2026-04-17 비활성화: 호카는 한국 직판 없음. 현 어댑터가 `www.hoka.com/en/us/...`
@@ -120,13 +118,10 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("thenorthface", TheNorthFaceAdapter),
     ("stussy", StussyAdapter),
     ("converse", ConverseAdapter),
-    # ("carhartt", CarharttAdapter),
-    # 2026-04-14 abort: 한국 공식몰(carhartt-wip.co.kr) 은 WORKSOUT 운영 플랫폼
-    # 이라 productCode 가 WORKSOUT 내부 SKU (CAAACOJAJL00040002) 로만 노출되고,
-    # 크림 Carhartt WIP 풀 (1,984행) 의 브랜드 공식 style-number (I033112-00E-02)
-    # 가 detail / info / productName 어느 필드에도 나오지 않는다. 샘플 15건 전부
-    # I-code 매칭 0건. 한국 공홈만 사용 시 매칭 0건 확정 — 어댑터 등록 해제.
-    # EU 글로벌 스토어 (carhartt-wip.com/en-gb) 는 KRW 정합성 위반으로 사용 금지.
+    ("on_running", OnRunningAdapter),
+    # carhartt: 2026-04-19 폐기 — 한국 공식몰이 Worksout 플랫폼(같은 백엔드)이라
+    # 원본 I-code SKU 노출 경로 전무. Playwright WAF 우회 후에도 필드 부재 실증.
+    # EU 글로벌 스토어는 KRW 정합성 위반.
 ]
 
 

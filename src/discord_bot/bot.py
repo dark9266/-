@@ -89,7 +89,6 @@ class KreamBot(commands.Bot):
         import src.crawlers.twentynine_cm  # noqa: F401
         import src.crawlers.vans  # noqa: F401
         import src.crawlers.wconcept  # noqa: F401
-        import src.crawlers.worksout  # noqa: F401
 
         self.scheduler = Scheduler(self)
 

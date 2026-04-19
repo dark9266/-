@@ -18,7 +18,6 @@
     ``re.sub(r"[\\s\\-]", "", normalize_model_number(model_number))``
 
 스코프 외 (각자 custom 인덱스 유지):
-    - worksout (list[dict])
     - converse (dict[str, list[dict]] — 브랜드 필터 + 슬래시 split)
     - stussy (dict[str, list[dict]] — digit prefix 키)
     - patagonia (슬래시 split 기반 split_kream_model_numbers)

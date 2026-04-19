@@ -23,7 +23,7 @@ DB_PATH = DATA_DIR / "kream_db.json"
 
 # 크림 카테고리 매핑 (한글명 → API 파라미터)
 CATEGORIES = {
-    "신발": {"category_id": "34", "keywords": ["nike", "jordan", "adidas", "new balance", "asics", "puma", "converse", "vans", "reebok", "hoka", "salomon", "arc'teryx"]},
+    "신발": {"category_id": "34", "keywords": ["nike", "jordan", "adidas", "new balance", "asics", "puma", "converse", "vans", "reebok", "hoka", "salomon", "arc'teryx", "on running"]},
     "상의": {"category_id": "35", "keywords": ["nike", "adidas", "stussy", "supreme", "the north face", "arc'teryx"]},
     "하의": {"category_id": "36", "keywords": ["nike", "adidas", "stussy", "supreme", "carhartt"]},
     "아우터": {"category_id": "37", "keywords": ["nike", "the north face", "arc'teryx", "supreme", "adidas", "patagonia"]},
