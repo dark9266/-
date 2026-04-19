@@ -122,6 +122,36 @@ class _FakeAdidasHttp:
         return _FakeProduct([_FakeSize(s, True) for s in sizes])
 
 
+class _FakeAdidasHttpNoPdp:
+    """라이브 회귀: search API 가 SKU 키워드 검색을 지원하지 않아
+    `get_product_detail` 이 항상 None 을 반환하는 상태 모사.
+
+    덤프 데이터의 `sizes` (availableSizes) 가 이미 실재고이므로
+    어댑터는 PDP 재호출 없이 매칭을 완주해야 한다.
+    """
+
+    def __init__(self, category_items: dict[str, list[dict]]):
+        self._category_items = category_items
+        self.pdp_calls: list[str] = []
+
+    async def fetch_taxonomy_page(
+        self,
+        *,
+        category: str,
+        page_size: int = 48,
+        page_number: int = 1,
+    ) -> dict:
+        items_all = list(self._category_items.get(category, []))
+        start = (page_number - 1) * page_size
+        end = start + page_size
+        return {"items": items_all[start:end], "totalCount": len(items_all)}
+
+    async def get_product_detail(self, product_id: str):
+        # 라이브 동작: SKU 키워드 검색 실패 → 항상 None
+        self.pdp_calls.append(product_id)
+        return None
+
+
 def _adidas_item(
     product_id: str,
     name: str,
@@ -358,6 +388,45 @@ async def test_pagination_iterates_multiple_pages(bus, kream_db):
     assert len(products) == 3
     pages_called = [c["page_number"] for c in fake_http.calls]
     assert 1 in pages_called and 2 in pages_called
+
+
+# ─── (e-2) SKU 키워드 검색 불가 회귀 — PDP 없이도 매칭 성공 ───
+
+async def test_match_without_pdp_uses_dump_sizes(bus, kream_db):
+    """아디다스 search API 는 SKU 로 상품 조회 불가 (get_product_detail → None).
+
+    덤프 데이터의 availableSizes 를 그대로 실재고로 사용해 매칭 완주해야 한다.
+    """
+    fake_http = _FakeAdidasHttpNoPdp(category_items={})
+    adapter = AdidasAdapter(bus=bus, db_path=kream_db, http_client=fake_http)
+
+    products = [
+        _adidas_item("B75806", "아디다스 삼바 OG 화이트 블랙", price=129000),
+    ]
+    # 덤프 사이즈 == 실재고
+    assert products[0]["sizes"] == ["240", "250", "260", "270"]
+
+    matches, stats = await adapter.match_to_kream(products)
+
+    assert stats.matched == 1, "PDP 불가 상태에서도 덤프 사이즈로 매칭돼야 함"
+    assert len(matches) == 1
+    # 어댑터는 SKU 단위 PDP 재호출을 **하면 안 됨** (search SKU 쿼리 불가)
+    assert fake_http.pdp_calls == []
+    # 덤프 사이즈 그대로 available_sizes 에 주입
+    assert matches[0].available_sizes == ("240", "250", "260", "270")
+
+
+async def test_match_empty_sizes_drops(bus, kream_db):
+    """덤프 sizes 가 비어 있으면 실재고 없음 → drop."""
+    fake_http = _FakeAdidasHttpNoPdp(category_items={})
+    adapter = AdidasAdapter(bus=bus, db_path=kream_db, http_client=fake_http)
+
+    empty = _adidas_item("B75806", "아디다스 삼바 OG")
+    empty["sizes"] = []  # 전 사이즈 품절
+
+    _, stats = await adapter.match_to_kream([empty])
+    assert stats.matched == 0
+    assert stats.soldout_dropped == 1
 
 
 # ─── (f) E2E: 어댑터 → 오케스트레이터 → AlertSent ─────────
