@@ -91,7 +91,7 @@ ruff format src/ tests/          # 포맷
 ### 🗑 폐기 흐름 스캐너 (참조용, 손대지 말 것)
 - `src/reverse_scanner.py` · `src/scanner.py` · `src/tier1_scanner.py` · `src/continuous_scanner.py` — v2 시절 역방향/Tier 구조. 현행 푸시 트랙과 무관. 리팩터링·버그픽스·재활용 제안 금지.
 
-### 크롤러 (22개 소싱처 — 2026-04-14 stussy 추가)
+### 크롤러 (2026-04-19 기준 — Worksout/Carhartt 폐기, On Running 추가. 매칭 판정 대기)
 - `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
 - `src/crawlers/twentynine_cm.py` — 29CM. 검색 API v4/products + HTML 파싱
 - `src/crawlers/nike.py` — 나이키 공식몰. `__NEXT_DATA__` JSON 파싱 (selectedProduct 구조). LAUNCH 상품 자동 스킵
@@ -105,7 +105,7 @@ ruff format src/ tests/          # 포맷
 - `src/crawlers/arcteryx.py` — 아크테릭스 코리아. api.arcteryx.co.kr Laravel REST API. 검색+옵션(사이즈/재고) 조합
 - `src/crawlers/vans.py` — 반스 공식몰. Topick Commerce 플랫폼. 검색 JSON API + HTML data-sku-data 사이즈별 재고 파싱
 - `src/crawlers/wconcept.py` — W컨셉. POST 검색 API (gw-front, DISPLAY-API-KEY) + GET 상세 HTML 파싱 (brazeJson/skuqty)
-- `src/crawlers/worksout.py` — 웍스아웃. REST API 검색(사이즈/재고 포함) + 상세. 모델번호 없음(역방향 이름 매칭)
+- `src/crawlers/on_running.py` — On Running 한국 공식몰. sitemap(/ko-kr/products.xml) 덤프 + JSON-LD SSR 파싱. 신형 11자(3MF10071043) + 구형 dot(61.99025) 이중 SKU. **크림 매칭은 style_code 미부여로 구조적 차단 상태 — 판정 대기**
 - `src/adapters/stussy_adapter.py` — Stussy 한국 공식몰 (kr.stussy.com, Shopify). `/products.json` 페이지네이션. variant.sku digit prefix → 크림 prefix 인덱스 매칭. 다중 후보 시 영문→한글 색상 사전으로 disambiguation. 크림 Stussy 2,389행 풀 활성화 (2026-04-14 추가)
 - `src/adapters/{patagonia,beaker,thehandsome,puma,asics,nike,adidas,thenorthface}_adapter.py` — Phase 3 배치 어댑터들 (직접 httpx/Shopify 기반 푸시 어댑터, crawler 레이어 없이 어댑터에 통합)
 - `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
@@ -155,7 +155,7 @@ ruff format src/ tests/          # 포맷
 | 아크테릭스 | 2 | 2.0초 | ~1,800건 |
 | 반스 | 2 | 1.5초 | ~2,400건 |
 | W컨셉 | 2 | 2.0초 | ~1,800건 |
-| 웍스아웃 | 2 | 2.0초 | ~1,800건 |
+| 온러닝 | 2 | 1.5초 | ~2,400건 |
 
 ## 수수료 계산
 
@@ -299,7 +299,7 @@ ruff format src/ tests/          # 포맷
 
 ### 장애 격리 (서킷브레이커)
 - `registry.py`: 연속 3회 실패 → 30분 비활성화, 자동 재활성화
-- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정), 살로몬(안정), 아크테릭스(안정), 반스(안정), W컨셉(안정), 웍스아웃(안정)
+- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정), 살로몬(안정), 아크테릭스(안정), 반스(안정), W컨셉(안정), 온러닝(스크래핑 안정·매칭 판정 대기)
 
 ## Dev Environment
 
