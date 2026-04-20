@@ -224,7 +224,13 @@ class Database:
 
     async def connect(self) -> None:
         """DB 연결 및 스키마 초기화."""
-        self._db = await aiosqlite.connect(self.db_path, timeout=30.0)
+        # isolation_level=None (autocommit) — 2026-04-18 WAL 재발 대응.
+        # 기본 ""에서는 SELECT 후 read snapshot 이 long-lived conn 에 고정되어
+        # WAL checkpoint 를 무기한 차단. autocommit 시 모든 statement 가 즉시
+        # commit → snapshot 누적 불가 → WAL 자유 회수.
+        self._db = await aiosqlite.connect(
+            self.db_path, timeout=30.0, isolation_level=None
+        )
         self._db.row_factory = aiosqlite.Row
         # WAL 경합 방어 PRAGMA 4종 (src/core/db.py로 통합). 2026-04-18 incident 대응.
         # 기존엔 busy_timeout + journal_mode만 있고 synchronous/wal_autocheckpoint 누락 → writer 경합.

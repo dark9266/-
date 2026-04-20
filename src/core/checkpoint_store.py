@@ -117,7 +117,11 @@ class CheckpointStore:
         """DB 연결 및 테이블 생성 (기존 DB 호환 ALTER 포함)."""
         if self._db is not None:
             return
-        self._db = await aiosqlite.connect(self.db_path, timeout=30.0)
+        # isolation_level=None (autocommit) — 2026-04-18 WAL 재발 대응.
+        # SELECT snapshot 누적으로 WAL checkpoint 영구 차단되던 문제 해소.
+        self._db = await aiosqlite.connect(
+            self.db_path, timeout=30.0, isolation_level=None
+        )
         self._db.row_factory = aiosqlite.Row
         # WAL 경합 방어 PRAGMA 4종 (src/core/db.py로 통합). 2026-04-18 incident 대응.
         await apply_write_pragmas(self._db)

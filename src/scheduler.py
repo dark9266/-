@@ -539,12 +539,28 @@ class Scheduler:
 
     @tasks.loop(minutes=5)
     async def db_health_loop(self) -> None:
-        """WAL 크기 · DB fd 수 · decision_log 정체 3종 헬스핀."""
+        """WAL 크기 · DB fd 수 · decision_log 정체 3종 헬스핀 + 강제 checkpoint.
+
+        2026-04-18 관측: wal_autocheckpoint=1000 만으로는 장시간 read 트랜잭션이
+        섞인 워크로드에서 WAL 이 무한 성장 (35분 240MB → 2h 680MB 투영).
+        매 5분 `PRAGMA wal_checkpoint(TRUNCATE)` 로 강제 회수.
+        """
         try:
             db_path = settings.db_path
 
-            # 1) WAL 파일 크기
+            # 1) WAL 파일 크기 (체크포인트 전)
             wal_path = Path(f"{db_path}-wal")
+            try:
+                wal_mb_before = wal_path.stat().st_size / 1024 / 1024
+            except FileNotFoundError:
+                wal_mb_before = 0.0
+
+            # 2) 강제 체크포인트 — TRUNCATE 모드로 WAL 파일 0바이트까지 회수.
+            #    별도 sync 연결로 실행해 bot.db/checkpoint_store 의 장시간
+            #    트랜잭션과 독립적으로 동작 (busy_timeout 30s 내 자체 종결).
+            ckpt_result = await asyncio.to_thread(_force_wal_checkpoint, db_path)
+
+            # 3) 체크포인트 후 WAL 크기
             try:
                 wal_mb = wal_path.stat().st_size / 1024 / 1024
             except FileNotFoundError:
@@ -552,12 +568,12 @@ class Scheduler:
             if wal_mb > _HEALTH_WAL_WARN_MB:
                 logger.warning("[health] WAL 비대화: %.1fMB", wal_mb)
 
-            # 2) DB fd 수 (Linux /proc 기반 — WSL/리눅스만)
+            # 4) DB fd 수 (Linux /proc 기반 — WSL/리눅스만)
             fd_count = _count_db_fds(db_path)
             if fd_count is not None and fd_count > _HEALTH_FD_WARN:
                 logger.warning("[health] DB fd 누수 의심: %d", fd_count)
 
-            # 3) decision_log 1h 무이벤트 — orchestrator 정체 의심
+            # 5) decision_log 1h 무이벤트 — orchestrator 정체 의심
             stall = _decision_log_stall(db_path, _HEALTH_DECISION_STALL_SEC)
             if stall:
                 logger.warning(
@@ -565,8 +581,8 @@ class Scheduler:
                 )
 
             logger.info(
-                "[health] WAL=%.1fMB fd=%s decision_stall=%s",
-                wal_mb,
+                "[health] WAL=%.1f→%.1fMB ckpt=%s fd=%s decision_stall=%s",
+                wal_mb_before, wal_mb, ckpt_result,
                 fd_count if fd_count is not None else "n/a",
                 stall,
             )
@@ -600,6 +616,23 @@ def _count_db_fds(db_path: str) -> int | None:
     except OSError:
         return None
     return count
+
+
+def _force_wal_checkpoint(db_path: str) -> str:
+    """별도 연결로 `PRAGMA wal_checkpoint(TRUNCATE)` 실행.
+
+    장시간 read 트랜잭션이 있으면 busy 로 돌아오지만, TRUNCATE 자체는
+    best-effort 이라 실패해도 다음 5분 주기에 재시도. 반환값은 진단용 문자열.
+    """
+    try:
+        with sync_connect(db_path, timeout=30.0) as conn:
+            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        # row = (busy, log_pages, checkpointed_pages)
+        if row is None:
+            return "no_result"
+        return f"busy={row[0]} log={row[1]} done={row[2]}"
+    except Exception as e:
+        return f"err:{type(e).__name__}"
 
 
 def _decision_log_stall(db_path: str, seconds: int) -> bool:
