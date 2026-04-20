@@ -105,7 +105,7 @@ ruff format src/ tests/          # 포맷
 - `src/crawlers/arcteryx.py` — 아크테릭스 코리아. api.arcteryx.co.kr Laravel REST API. 검색+옵션(사이즈/재고) 조합
 - `src/crawlers/vans.py` — 반스 공식몰. Topick Commerce 플랫폼. 검색 JSON API + HTML data-sku-data 사이즈별 재고 파싱
 - `src/crawlers/wconcept.py` — W컨셉. POST 검색 API (gw-front, DISPLAY-API-KEY) + GET 상세 HTML 파싱 (brazeJson/skuqty)
-- `src/crawlers/on_running.py` — On Running 한국 공식몰. sitemap(/ko-kr/products.xml) 덤프 + JSON-LD SSR 파싱. 신형 11자(3MF10071043) + 구형 dot(61.99025) 이중 SKU. **크림 매칭은 style_code 미부여로 구조적 차단 상태 — 판정 대기**
+- `src/crawlers/on_running.py` — On Running 한국 공식몰. sitemap(/ko-kr/products.xml) 덤프 + JSON-LD SSR 파싱. 신형 11자(3MF10071043) + 구형 dot(61.99025) 이중 SKU. **2026-04-20 전수 검증: 즉시 매칭 150건 + collect 후보 742건. 어댑터 활성 유지** (크림 PDP Pinia store에서 model_number 정상 제공)
 - `src/adapters/stussy_adapter.py` — Stussy 한국 공식몰 (kr.stussy.com, Shopify). `/products.json` 페이지네이션. variant.sku digit prefix → 크림 prefix 인덱스 매칭. 다중 후보 시 영문→한글 색상 사전으로 disambiguation. 크림 Stussy 2,389행 풀 활성화 (2026-04-14 추가)
 - `src/adapters/{patagonia,beaker,thehandsome,puma,asics,nike,adidas,thenorthface}_adapter.py` — Phase 3 배치 어댑터들 (직접 httpx/Shopify 기반 푸시 어댑터, crawler 레이어 없이 어댑터에 통합)
 - `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
@@ -299,7 +299,7 @@ ruff format src/ tests/          # 포맷
 
 ### 장애 격리 (서킷브레이커)
 - `registry.py`: 연속 3회 실패 → 30분 비활성화, 자동 재활성화
-- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정), 살로몬(안정), 아크테릭스(안정), 반스(안정), W컨셉(안정), 온러닝(스크래핑 안정·매칭 판정 대기)
+- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정), 살로몬(안정), 아크테릭스(안정), 반스(안정), W컨셉(안정), 온러닝(안정·매칭 150건 확정)
 
 ## Dev Environment
 
