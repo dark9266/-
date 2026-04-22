@@ -46,6 +46,7 @@ from src.adapters.nike_adapter import NikeAdapter
 from src.adapters.on_running_adapter import OnRunningAdapter
 from src.adapters.patagonia_adapter import PatagoniaAdapter
 from src.adapters.puma_adapter import PumaAdapter
+from src.adapters.reebok_adapter import ReebokAdapter
 from src.adapters.salomon_adapter import SalomonAdapter
 from src.adapters.stussy_adapter import StussyAdapter
 from src.adapters.thehandsome_adapter import ThehandsomeAdapter
@@ -119,6 +120,7 @@ _ADAPTER_REGISTRY: list[tuple[str, type]] = [
     ("stussy", StussyAdapter),
     ("converse", ConverseAdapter),
     ("on_running", OnRunningAdapter),
+    ("reebok", ReebokAdapter),
     # carhartt: 2026-04-19 폐기 — 한국 공식몰이 Worksout 플랫폼(같은 백엔드)이라
     # 원본 I-code SKU 노출 경로 전무. Playwright WAF 우회 후에도 필드 부재 실증.
     # EU 글로벌 스토어는 KRW 정합성 위반.
