@@ -1,6 +1,7 @@
 ---
 name: code-reviewer
 description: 코드 리뷰 전담 에이전트. 변경된 코드의 품질, 보안, 성능을 검토.
+model: opus
 ---
 
 # Code Reviewer Agent
