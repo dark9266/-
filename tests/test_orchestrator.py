@@ -196,7 +196,10 @@ async def test_candidate_dropped_when_throttle_exhausted(bus, store):
         stats = orch.stats()
         assert stats["candidate_processed"] == 1
         assert stats["candidate_dropped_throttle"] == 2
-        assert called == ["A-1"]
+        # 4-워커 병렬 체제에서 FIFO-to-throttle 순서는 보장되지 않음.
+        # 3건 중 정확히 1건이 처리되었는지만 검사.
+        assert len(called) == 1
+        assert called[0] in {"A-1", "A-2", "A-3"}
         # throttle 통계도 반영
         assert stats["throttle"]["denied_total"] >= 2
     finally:

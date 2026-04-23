@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -454,17 +455,24 @@ class Orchestrator:
         candidate_queue = self._bus.subscribe(CandidateMatched)
         profit_queue = self._bus.subscribe(ProfitFound)
 
+        # 4-worker fanout — 단일 worker 시 snapshot 직렬 처리로 큐 백로그 누적
+        # (3500+ 적체 → 신규/저빈도 어댑터 영구 미도달). throttle 은 공유 토큰
+        # 버킷이라 kream 호출 캡 그대로 유지.
         self._tasks = [
             asyncio.create_task(
                 self._catalog_loop(catalog_queue), name="orchestrator.catalog"
             ),
             asyncio.create_task(
-                self._candidate_loop(candidate_queue), name="orchestrator.candidate"
-            ),
-            asyncio.create_task(
                 self._profit_loop(profit_queue), name="orchestrator.profit"
             ),
         ]
+        for i in range(4):
+            self._tasks.append(
+                asyncio.create_task(
+                    self._candidate_loop(candidate_queue),
+                    name=f"orchestrator.candidate.{i}",
+                )
+            )
 
     async def stop(self) -> None:
         """모든 consumer task 취소 + 대기."""
@@ -661,10 +669,12 @@ class Orchestrator:
             except Exception:  # noqa: BLE001
                 pass
 
+        _t_throttle_start = time.perf_counter()
         if not cache_hit:
             allowed = await self._throttle.acquire_wait(timeout=2.0)
         else:
             allowed = True
+        _t_throttle = time.perf_counter() - _t_throttle_start
 
         if not allowed:
             logger.info(
@@ -699,6 +709,7 @@ class Orchestrator:
         await self._persist_retail_product(event)
 
         result: ProfitFound | None = None
+        _t_handler_start = time.perf_counter()
         try:
             result = await handler(event)
             self._stats["candidate_processed"] += 1
@@ -717,6 +728,13 @@ class Orchestrator:
             )
             await self._mark(ckpt_id)
             return
+        _t_handler = time.perf_counter() - _t_handler_start
+        logger.info(
+            "[stage-timing] src=%s pid=%s throttle=%.3fs handler=%.3fs "
+            "cache_hit=%s profit=%s",
+            event.source, event.kream_product_id, _t_throttle, _t_handler,
+            cache_hit, result is not None,
+        )
         # handler 성공 — dedup 기록 (예외/deferred 경로는 미기록 → replay 허용)
         await self._record_dedup(
             event, "profit" if result is not None else "no_profit"
@@ -917,12 +935,23 @@ class Orchestrator:
             await self._process_catalog(event, ckpt_id)
 
     async def _candidate_loop(self, queue: asyncio.Queue[Event]) -> None:
+        task_name = asyncio.current_task().get_name() if asyncio.current_task() else "?"
+        logger.info("[diag-loop-start] candidate_loop entered queue_id=%s task=%s",
+                    id(queue), task_name)
         while True:
             event = await queue.get()
+            _src = getattr(event, "source", "?")
+            logger.info(
+                "[diag-loop-get] task=%s src=%s type=%s pid=%s qsize_after_get=%d",
+                task_name, _src, type(event).__name__,
+                getattr(event, "kream_product_id", None),
+                queue.qsize(),
+            )
             if not isinstance(event, CandidateMatched):
                 logger.warning(
-                    "candidate_loop: 예상 외 타입 drop: %s",
-                    type(event).__name__,
+                    "candidate_loop: 예상 외 타입 drop: %s src=%s mod=%s.%s",
+                    type(event).__name__, _src,
+                    type(event).__module__, type(event).__qualname__,
                 )
                 continue
             ckpt_id = await self._record(event, _CONSUMER_CANDIDATE)

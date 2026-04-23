@@ -135,10 +135,23 @@ class EventBus:
         event_type = type(event)
         self._published[event_type] += 1
         subs = self._subscribers.get(event_type)
+        _src = getattr(event, "source", "?")
+        import logging
+        _log = logging.getLogger(__name__)
         if not subs:
+            _log.warning(
+                "[diag-bus-publish] NO-SUBSCRIBERS src=%s type=%s evt_type_id=%s",
+                _src, event_type.__name__, id(event_type),
+            )
             return
         for queue in list(subs):
             await queue.put(event)
+            _log.info(
+                "[diag-bus-publish] src=%s type=%s evt_type_id=%s "
+                "target_q_id=%s qsize_after_put=%d",
+                _src, event_type.__name__, id(event_type),
+                id(queue), queue.qsize(),
+            )
 
     def published_count(self, event_type: type[Event]) -> int:
         """타입별 누적 발행 수 (관측/디버깅용)."""

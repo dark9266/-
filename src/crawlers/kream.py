@@ -375,16 +375,36 @@ class KreamCrawler:
             logger.debug("500 스킵리스트 드롭: %s", endpoint)
             return None
 
+        # 직렬화 범인 판별용 계측 (2026-04-21):
+        # - task_name: 어느 worker 가 호출했는지
+        # - sess_id: 세션 공유 여부 (모든 worker 동일 id → 세션 공유)
+        # - http_ms: session.request 순수 구간 (curl_cffi libcurl multi 직렬화 여부)
+        # - db_ms: record_call INSERT+commit 구간 (aiosqlite writer lock 경합 여부)
+        _task = asyncio.current_task()
+        _task_name = _task.get_name() if _task else "?"
+        _sess_id = id(session)
         for attempt in range(max_retries):
             t0 = time.perf_counter()
+            logger.info(
+                "[kream-req-enter] task=%s sess=%s endpoint=%s purpose=%s",
+                _task_name, _sess_id, endpoint, purpose,
+            )
             try:
                 resp = await session.request(
                     method, url, headers=req_headers, params=params,
                     allow_redirects=True,
                 )
                 status = resp.status_code
-                latency_ms = int((time.perf_counter() - t0) * 1000)
+                _t_http = time.perf_counter() - t0
+                latency_ms = int(_t_http * 1000)
+                _t_db_start = time.perf_counter()
                 await record_call(endpoint, method, status, latency_ms, purpose)
+                _db_ms = int((time.perf_counter() - _t_db_start) * 1000)
+                logger.info(
+                    "[kream-req-exit] task=%s sess=%s endpoint=%s "
+                    "http_ms=%d db_ms=%d status=%d",
+                    _task_name, _sess_id, endpoint, latency_ms, _db_ms, status,
+                )
 
                 if 200 <= status < 300:
                     if parse_json:
