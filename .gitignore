@@ -26,3 +26,17 @@ test_log.txt
 # scan-debugger 등 임시 probe 스크립트
 scripts/probe_*.py
 scripts/test_available_sizes.py
+scripts/repro_*.py
+
+# 봇 stdout 회전본 (수십 MB) — 영구 보존 가치 X, 디버깅 끝나면 삭제
+logs/bot.out
+logs/bot.out.prev_*
+
+# Stage 판정 스케줄러 산출물 (run-time artefact)
+logs/stage*.out
+logs/stage*.lock
+logs/stage*_webhook_response.txt
+logs/stage_chain*
+
+# 매 세션마다 sessionId/pid 갱신되는 Claude 스케줄러 lock
+.claude/scheduled_tasks.lock
