@@ -13,6 +13,10 @@ CRASH_LOOP_THRESHOLD=3        # 10분 내 N회 사망 → backoff
 
 cd "$BOT_DIR" || { echo "BOT_DIR not found"; exit 1; }
 
+# venv 활성화 — Windows 작업스케줄러가 빈 PATH로 실행하면 `python` 을 못 찾아 즉사
+# shellcheck disable=SC1091
+source "$BOT_DIR/venv/bin/activate" || { echo "venv activate failed"; exit 1; }
+
 # 단일 인스턴스 가드
 if [ -f "$PIDFILE" ]; then
     OLD=$(cat "$PIDFILE" 2>/dev/null || echo "")
