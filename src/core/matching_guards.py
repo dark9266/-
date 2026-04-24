@@ -38,14 +38,16 @@ COLLAB_KEYWORDS: frozenset[str] = frozenset({
 # 소싱에만 있는 서브타입 → 크림 상품은 일반판인데 소싱은 특별판이라 다른 상품.
 # 예: 소싱="PRM QS" + 크림="07" → 차단.
 SUBTYPE_KEYWORDS: frozenset[str] = frozenset({
-    "prm", "premium", "qs", "retro", "se", "craft",
+    "prm", "premium", "qs", "retro", "레트로", "se", "craft",
     "next", "nature", "lx", "flyknit", "react",
     "gore", "tex", "goretex", "acg",
 })
 
 # 서브타입 동의어 (정규화용)
+# "레트로"(한글) ↔ "retro"(영문): 크림은 한글, 소싱은 영문 사용해 양방향 오차단 발생.
 SUBTYPE_ALIASES: dict[str, str] = {
     "prm": "premium",
+    "레트로": "retro",
 }
 
 # 가격 새너티 배수 — 크림가가 소싱가의 N배 이상이면 차단
