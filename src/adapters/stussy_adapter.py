@@ -126,6 +126,14 @@ _COLOR_KO: dict[str, tuple[str, ...]] = {
     "CHESTNUT": ("체스트넛",),
     "CRIMSON": ("크림슨",),
     "AMBER":   ("앰버",),
+    # 2026-04-24 ambiguous_unresolved 진단으로 추가된 토큰
+    "LEOPARD": ("레오파드",),
+    "APRICOT": ("에이프리콧", "애프리콧"),
+    "PINE":    ("파인",),
+    "ACID":    ("애시드", "애씨드"),
+    "BERRY":   ("베리",),
+    "RINSE":   ("린스드", "린스"),
+    "WASH":    ("워시드", "워시"),
 }
 
 
