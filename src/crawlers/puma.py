@@ -41,8 +41,10 @@ logger = setup_logger("puma_crawler")
 BASE_URL = "https://kr.puma.com"
 GRID_PATH = "/on/demandware.store/Sites-KR-Site/ko_KR/Search-UpdateGrid"
 SEARCH_SHOW_PATH = "/on/demandware.store/Sites-KR-Site/ko_KR/Search-Show"
+VARIATION_PATH = "/on/demandware.store/Sites-KR-Site/ko_KR/Product-Variation"
 GRID_URL = f"{BASE_URL}{GRID_PATH}"
 SEARCH_SHOW_URL = f"{BASE_URL}{SEARCH_SHOW_PATH}"
+VARIATION_URL = f"{BASE_URL}{VARIATION_PATH}"
 
 HEADERS = {
     "Accept": "text/html,application/xhtml+xml",
@@ -159,8 +161,12 @@ def _ga4_item_to_product(item: dict) -> dict | None:
     # 검색 경로로 이동하는 안전 URL 사용 (모델번호 검색 → 1건 매칭).
     url = f"{BASE_URL}{SEARCH_SHOW_PATH}?q={model_number}"
 
+    # SFCC Product-Variation API 는 EAN PID(13자리)만 인식 — style_number(403767-03)
+    # 로 호출 시 500. 그리드 GA4 의 item_variant/item_ean 을 product_id 로 채워서
+    # 어댑터가 PDP 호출에 사용하도록 함.
+    ean_pid = str(item.get("item_variant") or item.get("item_ean") or "").strip()
     return {
-        "product_id": model_number,
+        "product_id": ean_pid or model_number,
         "name": name,
         "brand": brand,
         "model_number": model_number,
@@ -298,33 +304,64 @@ class PumaCrawler:
     async def get_product_detail(
         self, product_id: str
     ) -> RetailProduct | None:
-        """상품 상세 조회.
+        """상품 상세 조회 — SFCC Product-Variation API 로 사이즈별 재고 조회.
 
-        product_id = 정규화 모델번호(``403767-03``). 현재는 검색 결과로
-        대체해 최소 정보만 반환 (사이즈별 재고 없음).
+        product_id = 그리드에서 받은 EAN PID(13자리, 예: ``4069156951099``).
+        Product-Variation 은 EAN PID 만 인식하며 style_number 로 호출 시 500.
+        응답 ``variationAttributes[id=size].values[].selectable`` 로 사이즈별
+        재고 판정 (selectable=true → 재고 있음).
         """
         if not product_id:
             return None
-        results = await self.search_products(product_id, limit=5)
-        if not results:
-            return None
-        target = None
-        for r in results:
-            if r.get("model_number") == product_id:
-                target = r
-                break
-        if target is None:
-            target = results[0]
+        client = await self._get_client()
+        async with self._rate_limiter.acquire():
+            try:
+                resp = await client.get(
+                    VARIATION_URL,
+                    params={"pid": product_id, "quantity": "1"},
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                )
+            except httpx.HTTPError as e:
+                logger.warning("푸마 PDP HTTP 오류: %s (pid=%s)", e, product_id)
+                return None
 
-        sizes: list[RetailSizeInfo] = []  # 그리드 경로에선 제공되지 않음
+        if resp.status_code != 200:
+            logger.warning("푸마 PDP HTTP %d (pid=%s)", resp.status_code, product_id)
+            return None
+
+        try:
+            data = resp.json()
+        except ValueError:
+            logger.warning("푸마 PDP JSON 파싱 실패 (pid=%s)", product_id)
+            return None
+
+        product = (data or {}).get("product") or {}
+        if not product.get("available") or not product.get("readyToOrder"):
+            return None
+
+        sizes: list[RetailSizeInfo] = []
+        for attr in product.get("variationAttributes", []) or []:
+            if attr.get("id") != "size":
+                continue
+            for v in attr.get("values", []) or []:
+                if v.get("selectable"):
+                    sizes.append(
+                        RetailSizeInfo(
+                            size=str(v.get("displayValue") or "").strip(),
+                            is_available=True,
+                        )
+                    )
+
+        name = re.sub(r"<[^>]+>", " ", str(product.get("productName") or "")).strip()
+        master_id = str(product.get("masterID") or "")
         return RetailProduct(
             source="puma",
-            product_id=target["product_id"],
-            name=target["name"],
-            model_number=target["model_number"],
-            brand=target["brand"],
-            url=target["url"],
-            image_url=target.get("image_url", ""),
+            product_id=product_id,
+            name=name,
+            model_number=master_id,
+            brand="Puma",
+            url=str(product.get("selectedProductUrl") or BASE_URL),
+            image_url="",
             sizes=sizes,
             fetched_at=datetime.now(),
         )
