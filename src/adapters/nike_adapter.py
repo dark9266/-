@@ -34,10 +34,12 @@ logger = logging.getLogger(__name__)
 
 
 # ─── 기본 카탈로그 카테고리 (나이키 KR Wall 경로) ────────────
+# `jordan` 슬러그는 301 → 루트 홈 리다이렉트로 Jordan 신발 0건 → 다른 카테고리
+# Wall 로 오염됨. nike.com/kr Jordan 카테고리는 hash suffix (`-37eefz...`) 필수.
 DEFAULT_CATEGORIES: dict[str, str] = {
     "men-shoes": "남성 신발",
     "women-shoes": "여성 신발",
-    "jordan": "조던",
+    "jordan-shoes-37eefzy7ok": "조던 신발",
 }
 
 # LAUNCH 판정 키 — 드로우 전용 상품 스킵
