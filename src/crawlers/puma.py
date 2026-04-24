@@ -348,7 +348,8 @@ class PumaCrawler:
                     sizes.append(
                         RetailSizeInfo(
                             size=str(v.get("displayValue") or "").strip(),
-                            is_available=True,
+                            price=0,
+                            in_stock=True,
                         )
                     )
 
