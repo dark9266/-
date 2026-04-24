@@ -39,7 +39,9 @@ CRASH_COUNT=0
 LAST_CRASH=0
 
 while true; do
-    EXISTING=$(pgrep -f "python main.py" | head -1)
+    # -fx (exact full cmdline) — 부모 셸/검색명령 false positive 회피.
+    # 봇 단독 사망을 정확히 감지하기 위해 cmdline 정확 매칭만 인정.
+    EXISTING=$(pgrep -fx 'python main\.py' | head -1)
 
     if [ -n "$EXISTING" ]; then
         log "attach existing main.py pid=$EXISTING"
