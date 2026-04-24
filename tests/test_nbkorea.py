@@ -151,6 +151,24 @@ class TestNormalizeModel:
     def test_remove_space(self):
         assert _normalize_nb_model("M2002 RXD") == "M2002RXD"
 
+    def test_strip_parenthesized_color(self):
+        """NB 공식몰은 `U740WM2 (WHITE SILVER METALLIC)` 형태로
+        display_name 을 노출. 괄호와 그 안의 색상명은 model 의 일부가
+        아니므로 정규화 단계에서 제거되어야 함. 미제거 시 크림 매칭
+        전부 실패 (실측: catalog_dump_items 의 80%+ 가 이 오염 형식)."""
+        assert _normalize_nb_model("U740WM2 (WHITE SILVER METALLIC)") == "U740WM2"
+        assert _normalize_nb_model("MS327FE (SEA SALT)") == "MS327FE"
+        assert _normalize_nb_model("M1906REH (HARBOR GREY)") == "M1906REH"
+
+    def test_strip_multiple_parens(self):
+        """`P350 (남성, 2E) (농구화)` 같은 다중 괄호도 전부 제거."""
+        assert _normalize_nb_model("P350 (남성, 2E) (농구화)") == "P350"
+
+    def test_slash_priority_over_parens(self):
+        """기존 `/` 분리 규칙 유지 — slash 뒤 토큰이 우선, 괄호 제거는 그 다음."""
+        assert _normalize_nb_model("NB Rover / SD2510BK") == "SD2510BK"
+        assert _normalize_nb_model("NB Rover / SD2510BK (BLACK)") == "SD2510BK"
+
 
 # ===== 레지스트리 등록 =====
 

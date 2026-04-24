@@ -77,17 +77,24 @@ _URL_STYLE_RE = re.compile(
 _NB_MODEL_RE = re.compile(r'\b[A-Z]{1,4}\d{3,5}[A-Z0-9]{0,4}\b')
 
 
-def _normalize_nb_model(model: str) -> str:
-    """모델번호 정규화 — 대문자 변환, 공백/하이픈 제거.
+_PAREN_COLOR_RE = re.compile(r"\s*\([^)]*\)")
 
-    실제 ``data-display-name`` 은 ``NB Rover / SD2510BK`` 처럼 "표시명 /
-    스타일코드" 포맷(신발). ``/`` 뒤 토큰만 뽑아 정규화한다. 의류/잡화
-    카테고리는 ``/`` 구분자가 없어 한글 한 덩어리만 오므로 결과가 NB
-    모델번호 패턴을 만족하지 않아 상위에서 폐기한다.
+
+def _normalize_nb_model(model: str) -> str:
+    """모델번호 정규화 — slash 분리, 괄호 제거, 대문자/공백/하이픈 제거.
+
+    실제 ``data-display-name`` 은 두 형식:
+    1. ``NB Rover / SD2510BK`` — "표시명 / 스타일코드" (신발 일부)
+    2. ``U740WM2 (WHITE SILVER METALLIC)`` — "스타일코드 (색상명)" (대부분)
+
+    ``/`` 뒤 토큰을 우선 취한 뒤 괄호와 그 안쪽을 전부 제거한다. 의류/잡화
+    카테고리는 ``/`` 도 괄호도 없는 한글 한 덩어리라 결과가 NB 모델번호
+    패턴을 만족하지 않아 상위에서 폐기된다.
     """
     if not model:
         return ""
     tail = model.rsplit("/", 1)[-1]
+    tail = _PAREN_COLOR_RE.sub("", tail)
     return tail.strip().upper().replace(" ", "").replace("-", "")
 
 

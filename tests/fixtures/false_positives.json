@@ -116,6 +116,23 @@
       "status": "fixed"
     },
     {
+      "id": "nbkorea_parenthesized_color_pollution",
+      "description": "NB 공식몰 display_name `U740WM2 (WHITE SILVER METALLIC)` 을 그대로 model_no 로 덤프해 모든 매칭 실패. _normalize_nb_model 이 괄호 미제거.",
+      "type": "model_normalization",
+      "input": {
+        "source": "nbkorea",
+        "raw_display_name": "U740WM2 (WHITE SILVER METALLIC)",
+        "wrong_normalized": "U740WM2(WHITESILVERMETALLIC)",
+        "right_normalized": "U740WM2"
+      },
+      "expected": "strip_parens_and_inner",
+      "root_cause": "nbkorea.com 대부분 상품이 `U740WM2 (WHITE SILVER METALLIC)` 형식. slash 분리만으로는 괄호가 남아 kream strip key 와 불일치. 실측: 덤프 153건 중 35건(23%)이 괄호 제거로 회복.",
+      "fix": "src/crawlers/nbkorea.py::_normalize_nb_model 에 `re.sub(r'\\s*\\([^)]*\\)', '', tail)` 추가. slash 분리 다음 단계에서 괄호와 그 안쪽 전체 제거.",
+      "verification": "tests/test_nbkorea.py::TestNormalizeModel::test_strip_parenthesized_color",
+      "bug_date": "2026-04-24",
+      "status": "fixed"
+    },
+    {
       "id": "vans_trailing_digit_variant_miss",
       "description": "Vans retail 11자 SKU(VN000D83IZQ)가 크림 12자(VN000D83IZQ1) 에 매칭 실패. 2025 신상 시리즈부터 크림이 trailing '1' 을 붙여 저장하는데 vans.co.kr 은 11자로만 노출.",
       "type": "adapter_match",
