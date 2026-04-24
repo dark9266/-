@@ -13,7 +13,6 @@ from src.crawlers.eql import (
     _parse_search_html,
 )
 
-
 # ---- 모델번호 추출 ----
 
 
@@ -119,17 +118,17 @@ DETAIL_HTML_FIXTURE = """
 <input type="hidden" id="godNm" value="WMNS NIKE FIRST SIGHT NOIR HQ2409-001">
 <input type="hidden" id="brndNm" value="NIKE"/>
 
-<input name="sizeItmNo" id="sizeItmNoIT001" value="IT001"
-       onlineUsefulInvQty="4"/>
-<input name="sizeItmNm" id="sizeItmNm240" value="240"/>
-
-<input name="sizeItmNo" id="sizeItmNoIT002" value="IT002"
-       onlineUsefulInvQty="0"/>
-<input name="sizeItmNm" id="sizeItmNm250" value="250"/>
-
-<input name="sizeItmNo" id="sizeItmNoIT003" value="IT003"
-       onlineUsefulInvQty="2"/>
-<input name="sizeItmNm" id="sizeItmNm260" value="260"/>
+<ul class="size-options">
+  <li name="godOptionSelect2" optValCd="240" data-itmnm="240" value="IT001" index="1">
+    <button type="button" class="option">240</button>
+  </li>
+  <li name="godOptionSelect2" optValCd="250" data-itmnm="250" value="IT002" index="2">
+    <button type="button" class="option disabled">250</button>
+  </li>
+  <li name="godOptionSelect2" optValCd="260" data-itmnm="260" value="IT003" index="3">
+    <button type="button" class="option">260</button>
+  </li>
+</ul>
 """
 
 
@@ -142,7 +141,7 @@ class TestParseDetailSizes:
         rows = _parse_detail_sizes(DETAIL_HTML_FIXTURE)
         assert rows[0]["size"] == "240"
         assert rows[0]["in_stock"] is True
-        assert rows[0]["qty"] == 4
+        assert rows[0]["qty"] == 1
 
         assert rows[1]["size"] == "250"
         assert rows[1]["in_stock"] is False
@@ -150,7 +149,7 @@ class TestParseDetailSizes:
 
         assert rows[2]["size"] == "260"
         assert rows[2]["in_stock"] is True
-        assert rows[2]["qty"] == 2
+        assert rows[2]["qty"] == 1
 
     def test_empty_html(self):
         assert _parse_detail_sizes("") == []

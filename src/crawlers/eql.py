@@ -70,10 +70,13 @@ _DETAIL_PRICE_RE = re.compile(r'id="lastSalePrc"\s+value="(\d+)"')
 _DETAIL_NAME_RE = re.compile(r'id="godNm"\s+value="([^"]*)"')
 _DETAIL_BRAND_RE = re.compile(r'id="brndNm"\s+value="([^"]*)"')
 
-# 사이즈 파싱: sizeItmNo (onlineUsefulInvQty) + sizeItmNm (value) 쌍
+# 사이즈 파싱 (2026-04-24 PDP HTML 구조 변경 반영):
+#   <li name="godOptionSelect2" data-itmnm="240" value="IT...">
+#     <button class="option [disabled]">240</button>
+#   </li>
+# disabled 클래스 = 품절. 정확한 재고 수량은 노출 X (in_stock boolean 만).
 _SIZE_PAIR_RE = re.compile(
-    r'name="sizeItmNo"[^>]*onlineUsefulInvQty="(\d+)"[^>]*>\s*'
-    r'<input\s[^>]*name="sizeItmNm"[^>]*value="([^"]*)"',
+    r'<li[^>]*name="godOptionSelect\d+"[^>]*data-itmnm\s*=\s*"([^"]+)"[^>]*>(.*?)</li>',
     re.DOTALL,
 )
 
@@ -152,16 +155,19 @@ def _parse_search_html(html: str) -> list[dict]:
 def _parse_detail_sizes(html: str) -> list[dict]:
     """상세 HTML에서 사이즈/재고 파싱.
 
-    sizeItmNo (onlineUsefulInvQty) + sizeItmNm (value) 쌍.
-    반환: list[dict] (size, in_stock, qty)
+    <li name="godOptionSelectN" data-itmnm="..."> ... <button class="option [disabled]">
+    구조. disabled 클래스 유무로 in_stock 판정. qty 는 0/1 boolean 정수.
     """
     rows: list[dict] = []
-    for qty_str, size_val in _SIZE_PAIR_RE.findall(html):
-        qty = int(qty_str)
+    for size_val, content in _SIZE_PAIR_RE.findall(html):
+        size = size_val.strip()
+        if not size:
+            continue
+        in_stock = "disabled" not in content
         rows.append({
-            "size": size_val.strip(),
-            "in_stock": qty > 0,
-            "qty": qty,
+            "size": size,
+            "in_stock": in_stock,
+            "qty": 1 if in_stock else 0,
         })
     return rows
 
