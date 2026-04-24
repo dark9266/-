@@ -52,6 +52,24 @@ def _strip_key(model_number: str) -> str:
     return re.sub(r"[\s\-]", "", normalize_model_number(model_number))
 
 
+def _strip_key_variants(model_number: str) -> list[str]:
+    """크림/retail SKU 포맷 차이 보정 — retail 11자 → 크림 12자 trailing "1".
+
+    vans.co.kr 은 `VN000D83IZQ` (11자) 로 노출하지만 2025 신상 시리즈는
+    크림에서 `VN000D83IZQ1` (12자, trailing "1") 로 저장된다 (실측
+    `docs/diagnostics/coverage_*.md`). exact 매칭 실패 시 "+1" 변형을
+    fallback 으로 시도. prefix 유사성 기반 fuzzy 가 아니라 **크림 저장
+    포맷의 결정적 변형**이라 1:1 대응.
+    """
+    base = _strip_key(model_number)
+    if not base:
+        return []
+    variants = [base]
+    if len(base) == 11 and base.startswith("VN"):
+        variants.append(base + "1")
+    return variants
+
+
 def _keyword_set(text: str) -> set[str]:
     """매칭 가드용 소문자 키워드 집합."""
     if not text:
@@ -252,8 +270,8 @@ class VansAdapter:
                 stats.no_model_number += 1
                 continue
 
-            key = _strip_key(model_no)
-            if not key:
+            variants = _strip_key_variants(model_no)
+            if not variants:
                 stats.no_model_number += 1
                 continue
 
@@ -270,7 +288,11 @@ class VansAdapter:
             except Exception:
                 logger.debug("[vans] dump_ledger 실패 (비치명)")
 
-            kream_row = kream_index.get(key)
+            kream_row = None
+            for key in variants:
+                kream_row = kream_index.get(key)
+                if kream_row is not None:
+                    break
             if kream_row is None:
                 pending_collect.append(self._build_collect_row(item, model_no))
                 continue

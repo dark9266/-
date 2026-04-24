@@ -114,6 +114,22 @@
       "fix": "src/crawlers/on_running.py::_URL_SKU_RE 가 카테고리 토큰 뒤 SKU만 캡처 + is_valid_sku가 11자리 고정 검증.",
       "bug_date": "2026-04-19",
       "status": "fixed"
+    },
+    {
+      "id": "vans_trailing_digit_variant_miss",
+      "description": "Vans retail 11자 SKU(VN000D83IZQ)가 크림 12자(VN000D83IZQ1) 에 매칭 실패. 2025 신상 시리즈부터 크림이 trailing '1' 을 붙여 저장하는데 vans.co.kr 은 11자로만 노출.",
+      "type": "adapter_match",
+      "input": {
+        "source": "vans",
+        "retail_model": "VN000D83IZQ",
+        "kream_model": "VN000D83IZQ1"
+      },
+      "expected": "match",
+      "root_cause": "vans_adapter 의 _strip_key 가 exact 만 시도 — retail 11자/크림 12자 포맷 차이 미보정. 79건 덤프 매칭 누수.",
+      "fix": "src/adapters/vans_adapter.py::_strip_key_variants 추가 — 11자 VN* 에 대해 '+1' fallback 시도 (결정적 포맷 변환, fuzzy 아님).",
+      "verification": "tests/test_vans_adapter.py::test_match_trailing_digit_variant",
+      "bug_date": "2026-04-24",
+      "status": "fixed"
     }
   ]
 }

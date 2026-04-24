@@ -395,3 +395,38 @@ async def test_end_to_end_through_orchestrator(bus, kream_db, tmp_path):
     finally:
         await orch.stop()
         await store.close()
+
+
+# ─── (f) 11자 retail SKU → 12자 크림 trailing-1 variant 매칭 ─
+
+async def test_match_trailing_digit_variant(bus, tmp_path):
+    """retail 11자(`VN000D83IZQ`) → 크림 12자(`VN000D83IZQ1`) fallback 매칭.
+
+    vans.co.kr 은 11자 SKU 로 노출하지만 2025 신상은 크림에서 trailing "1"
+    을 붙여 12자로 저장됨 (실측 data/diag/coverage_*.md). exact 매칭 실패
+    시 "+1" variant 를 fallback 으로 시도해야 한다.
+    """
+    path = tmp_path / "kream.db"
+    _init_kream_db(
+        str(path),
+        rows=[
+            {
+                "product_id": "777",
+                "name": "반스 슈퍼 로우 프로 레드",
+                "model_number": "VN000D83IZQ1",
+                "brand": "Vans",
+            },
+        ],
+    )
+    fake_http = _FakeVansHttp(keyword_items={})
+    adapter = VansAdapter(
+        bus=bus,
+        db_path=str(path),
+        http_client=fake_http,
+    )
+    products = [_vans_item("VN000D83IZQ", "슈퍼 로우 프로")]
+    matches, stats = await adapter.match_to_kream(products)
+    assert stats.matched == 1, f"trailing-1 fallback 실패: {stats.as_dict()}"
+    assert stats.collected_to_queue == 0
+    assert len(matches) == 1
+    assert matches[0].kream_product_id == 777
