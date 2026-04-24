@@ -107,6 +107,11 @@ class _DefaultNbkoreaHttp:
             self._crawler = nbkorea_crawler
         return self._crawler
 
+    async def get_product_detail(self, product_id: str):
+        """fetch_in_stock_sizes 헬퍼 인터페이스 충족 — 실 크롤러로 위임."""
+        crawler = await self._get_crawler()
+        return await crawler.get_product_detail(product_id)
+
     async def fetch_category_catalog(
         self, categories: dict[str, str], max_items_per_category: int = 200
     ) -> list[dict]:

@@ -282,7 +282,9 @@ class TheNorthFaceAdapter:
                 continue
 
             crawler = await self._get_http()
-            pid = str(item.get("product_id") or model_no or "")
+            # crawler.get_product_detail 은 style(NJ1DR95B) 기반 /product/{model} 호출.
+            # item["product_id"] 는 내부 PK(4000xxxxxx)라 잘못된 URL 생성됨.
+            pid = model_no
             available_sizes = await fetch_in_stock_sizes(
                 crawler, pid, source_tag="thenorthface"
             )
