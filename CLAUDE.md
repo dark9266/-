@@ -44,9 +44,15 @@
 
 ### ✅ 매 세션 시작 헬스체크 4종 (생략 금지)
 1. 봇 프로세스 살아있나 (`ps -ef | grep python.*main`)
-2. 마지막 알림 24h 내 (`alert_sent.fired_at`)
-3. 크림 일일 호출 KREAM_DAILY_CAP 이하 (`kream_api_calls` 24h, .env 기준)
-4. 파이프라인 활동 — `decision_log` 최근 2h 내 `dedup_recent|prefilter_unprofitable|profit_emitted|alert_sent` 합 > 0 (※ `kream_collect_queue` 는 미등재 신상 보조 채널이라 공백 정상)
+2. 마지막 알림 24h 내 (`alert_sent.fired_at > strftime('%s','now')-86400`)
+3. 크림 일일 호출 KREAM_DAILY_CAP 이하 (`kream_api_calls` 24h, ts > strftime('%s','now')-86400)
+4. 파이프라인 활동 — `decision_log` 최근 2h 내 `dedup_recent|prefilter_unprofitable|profit_emitted|alert_sent` 합 > 0 (`ts > strftime('%s','now')-7200`)
+
+**🔴 SQL 주의 (2026-04-26 진단 실수)**:
+- `decision_log.ts`, `alert_sent.fired_at`, `kream_api_calls.ts` = **epoch float** (예: `1777186341.19`).
+- ❌ **`WHERE ts > datetime('now','-N hours')` 금지** — `datetime()` 결과는 text "2026-04-26..." 라 epoch '1777...' 와 string 비교 시 항상 False (`'1' < '2'`).
+- ✅ 항상 `WHERE ts > strftime('%s','now')-N` 사용 (N=초 단위).
+- ※ `bot_state.updated_at`, `bot_logs.ts`, `kream_products.updated_at` 등은 ISO datetime — `datetime()` 비교 OK. 컬럼별로 INSERT 형식 확인.
 
 **1개라도 FAIL → 매칭/신규 작업 착수 금지, 복구 먼저.**
 
@@ -54,6 +60,12 @@
 - `src/adapters/*_adapter.py` (22곳) → `src/core/event_bus` → `src/core/orchestrator` → `kream_collect_queue` → 알림
 - 축 ② 보조: `tier2_monitor.py` 역방향 hot 130건 60초 폴링 (폐기 X, 재포지셔닝)
 - 아래 "v2 Architecture" 섹션은 **참조용 구조 설명**이지 현행 메인 아님.
+
+### UI 봇 트랙 (2026-04-26 시작, 22 소싱처 안정화와 병행)
+- **목표**: 현 크림봇 → Electron 데스크톱 UI 봇 전환 (시작/중지 + 모드 + 보관판매 + 자동경쟁)
+- **Phase A** (UI 골격) → **Phase B** (보관판매 등록, 벌크 계정 한정 — POST 예외) → **Phase C** (자동경쟁)
+- 상세: 메모리 `project_ui_bot_track.md` / `project_phase_b_storage_sale.md` / `project_phase_c_auto_compete.md` / `feedback_ui_bot_triggers.md`
+- UI는 봇 코어 안 건드림 → 트랙 1 (소싱처 안정화) 과 병행 가능
 
 ## Commands
 
@@ -199,11 +211,11 @@ ruff format src/ tests/          # 포맷
 | `live-tester` | 크롤러 실서버 e2e 검증 | 크롤러/어댑터 수정 후 실동작 검증 |
 | `profit-analyzer` | 수익 계산/수수료 검증 | 수수료·시그널·하드플로어 변경 시 **필수** |
 
-**JIT 대기 (소싱처 확장 단계 활성화)**:
-| 에이전트 | 역할 |
+**JIT 대기 (트리거 시 활성화)**:
+| 에이전트 | 활성 트리거 |
 |---------|------|
-| `api-prober` | 소싱처 API 탐색 + 최적 기법 판별 |
-| `source-analyzer` | 소싱처 종합 분석 — 덤프/재고/매칭 방식 판별 |
+| `api-prober` | (1) 소싱처 신규 추가 진입 시 / (2) **UI 봇 Phase B0 진입 시 (크림 보관판매 endpoint 탐색) — 의무** / (3) Phase C 가격 갱신 endpoint 탐색 시 |
+| `source-analyzer` | 소싱처 종합 분석 — 덤프/재고/매칭 방식 판별 (api-prober 후속) |
 
 **폐기 (2026-04-16)**: security-guard, catalog-dumper, delta-engine-builder, pipeline-builder, runtime-sentinel, verify-agent, kream-monitor, coverage-analyzer, queue-inspector — 직접 실행이 더 빠른 단순 작업이거나 사용 단계 미도달.
 
@@ -252,7 +264,8 @@ ruff format src/ tests/          # 포맷
 - **GET 허용**: 검색, 상세, 재고 등 모든 읽기 요청
 - **POST 허용**: 검색/필터/GraphQL 쿼리 등 읽기 목적 요청만
 - **POST 금지**: 주문/결제/로그인/장바구니/위시리스트 등 상태 변경
-- PUT/DELETE 요청 금지
+- **POST 금지 예외 (2026-04-26 추가)**: UI 봇 Phase B 보관판매 등록 + Phase C 가격 자동 갱신 — **벌크 계정 한정**, **본인 거래 자동화 한정**, 안전장치 8종 (`project_phase_b_storage_sale.md` 참조) 필수. 메인 계정/외부 사용자 영향 0건. 위반 시 BAN/손해 직결 → `code-reviewer` + `profit-analyzer` 의무 검증.
+- PUT/DELETE 요청 금지 (Phase C 가격 갱신 PATCH는 위 예외에 포함)
 - API 호출 간 최소 1~2초 딜레이
 
 ### 크롤링 안전
