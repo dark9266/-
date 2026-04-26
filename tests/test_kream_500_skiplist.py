@@ -48,7 +48,10 @@ def test_mixed_fresh_and_expired_counts_fresh_only():
     ep = "/products/mixed"
     now = time.monotonic()
     old = now - kream_mod._500_BLACKLIST_TTL_SEC - 10
-    kream_mod._500_failures[ep] = [old, old, now - 5, now - 3]  # 2 fresh < threshold(3)
+    # threshold 미만 fresh 만 (threshold-1 개) — old 는 만료라 카운트 X
+    fresh_count = kream_mod._500_FAILURE_THRESHOLD - 1
+    fresh = [now - (i + 1) for i in range(fresh_count)]
+    kream_mod._500_failures[ep] = [old, old] + fresh
     assert kream_mod._is_500_blacklisted(ep, now=now) is False
     # 여기에 fresh 1회 더 추가하면 threshold 도달
     kream_mod._record_500_failure(ep, now=now)
@@ -56,8 +59,7 @@ def test_mixed_fresh_and_expired_counts_fresh_only():
 
 
 def test_different_endpoints_isolated():
-    kream_mod._record_500_failure("/products/a")
-    kream_mod._record_500_failure("/products/a")
-    kream_mod._record_500_failure("/products/a")
+    for _ in range(kream_mod._500_FAILURE_THRESHOLD):
+        kream_mod._record_500_failure("/products/a")
     assert kream_mod._is_500_blacklisted("/products/a") is True
     assert kream_mod._is_500_blacklisted("/products/b") is False

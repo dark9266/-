@@ -91,7 +91,12 @@ async def _random_delay() -> None:
 # 2026-04-13: 동일 엔드포인트(주로 삭제/비공개 상품)가 반복 500 반환하며
 # max_retries*3 만큼 cap 을 낭비하는 현상 방지.
 # threshold 회 이상 500 관측되면 TTL 동안 즉시 None 반환 (재시도 X).
-_500_FAILURE_THRESHOLD: int = 3
+# 2026-04-26: threshold 3 → 2 단축. 4/26 진단 — `/products/{id}` endpoint
+# 90분 장애 동안 786회 5xx (62%) 누수. threshold 3 이라 endpoint 당
+# 평균 3회 재시도 후 격리됐고, threshold 2 면 ~33% 호출 절약.
+# false positive (정상 endpoint 일시 5xx 1회) 위험 vs 호출 예산 절약 trade-off.
+# TTL 60 분 후 자동 회복이라 false positive 비용 제한적.
+_500_FAILURE_THRESHOLD: int = 2
 _500_BLACKLIST_TTL_SEC: int = 3600  # 60 분
 _500_failures: dict[str, list[float]] = {}  # endpoint → [ts, ts, ...]
 
@@ -426,7 +431,11 @@ class KreamCrawler:
                             status, endpoint,
                         )
                         return None
-                    wait = (2 ** attempt) * 3
+                    # 2026-04-26: 5xx 백오프 base 3s → 1s. 4/26 90분 장애 시
+                    # 백오프 누적 (3+6+12=21s/호출) 이 큐 적체 가속. 1s base 면
+                    # 1+2+4=7s 로 단축. 5xx 는 클라이언트 부하 X (서버측 장애)
+                    # 라 backoff 자체를 길게 둘 이득 적음.
+                    wait = 2 ** attempt
                     logger.warning("서버 에러 %d — %d초 후 재시도 (%d/%d)", status, wait, attempt + 1, max_retries)
                     await asyncio.sleep(wait)
                     continue
