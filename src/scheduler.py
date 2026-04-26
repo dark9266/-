@@ -68,16 +68,13 @@ class Scheduler:
             self.adapter_health_loop.start()
         if not self.db_health_loop.is_running():
             self.db_health_loop.start()
-        if settings.v2_reverse_disabled:
-            logger.warning(
-                "[v2] price_refresher/spike_detector 비활성 "
-                "(V2_REVERSE_DISABLED=true) — DB 쓰기 경합 방지"
-            )
-        else:
-            if not self.refresh_loop.is_running():
-                self.refresh_loop.start()
-            if not self.spike_loop.is_running():
-                self.spike_loop.start()
+        # 갱신 루프는 V2_REVERSE_DISABLED 와 무관하게 항상 가동.
+        # reverse/continuous_scanner 폐기 후 47k 갱신은 price_refresher + spike_detector 가 단독 담당.
+        # v2 reverse 와 묶인 비활성 상태에서는 last_volume_check NULL 98%+ 누적으로 prefilter_low_volume 폭주.
+        if not self.refresh_loop.is_running():
+            self.refresh_loop.start()
+        if not self.spike_loop.is_running():
+            self.spike_loop.start()
 
         # 스캔 캐시 정리
         if hasattr(self.bot, 'scanner') and hasattr(self.bot.scanner, 'scan_cache'):

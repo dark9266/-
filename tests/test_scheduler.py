@@ -332,8 +332,10 @@ class TestSchedulerStartStop:
         scheduler.spike_loop.start.assert_called_once()
         scheduler.continuous_loop.start.assert_called_once()
 
-    def test_scheduler_start_skips_v2_loops_when_disabled(self, monkeypatch):
-        """v2_reverse_disabled=True → tier1/tier2/continuous/refresh/spike 미가동, daily+collect 만 가동."""
+    def test_scheduler_start_skips_v2_reverse_only_when_disabled(self, monkeypatch):
+        """v2_reverse_disabled=True → tier1/tier2/continuous 만 미가동.
+        refresh/spike 는 47k 갱신 메커니즘이라 v2_reverse 와 분리되어 항상 가동.
+        """
         from src import scheduler as scheduler_mod
 
         monkeypatch.setattr(scheduler_mod.settings, "v2_reverse_disabled", True)
@@ -354,8 +356,8 @@ class TestSchedulerStartStop:
         scheduler.tier1_loop.start.assert_not_called()
         scheduler.tier2_loop.start.assert_not_called()
         scheduler.continuous_loop.start.assert_not_called()
-        scheduler.refresh_loop.start.assert_not_called()
-        scheduler.spike_loop.start.assert_not_called()
+        scheduler.refresh_loop.start.assert_called_once()
+        scheduler.spike_loop.start.assert_called_once()
         scheduler.daily_report.start.assert_called_once()
         scheduler.collect_loop.start.assert_called_once()
 
