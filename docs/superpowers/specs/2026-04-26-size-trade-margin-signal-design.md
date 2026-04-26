@@ -1,7 +1,7 @@
 # 사이즈별 체결가 + Dual-Scenario 마진 시그널 설계
 
-**작성일**: 2026-04-26
-**상태**: Phase 3 (자동 할인) 일부 TBD — api-prober 결과 대기
+**작성일**: 2026-04-26 / 마지막 갱신: 2026-04-27
+**상태**: 6건 라이브 검증 완료. 보수 추정 알고리즘 확정. Plan 작성 대기 중.
 
 ## Context
 
@@ -180,33 +180,53 @@ def calculate_recommendation(
 class SourceDiscountConstants(BaseSettings):
     """결제 페이지 GET 차단으로 자동 추출 불가 → 사용자 평균값"""
     card_instant_discount_won: int = 0  # 카드 즉시할인 (사용자 보유 카드별 평균)
+    point_use_max_rate: float = 0.0     # 적립금 사용 한도 (예: 무신사 0.07)
+    user_point_balance: int = 0          # 사용자 보유 적립금 (수동 입력 또는 마이페이지 GET)
 
 source_discount_constants: dict[str, SourceDiscountConstants] = {
     "musinsa": SourceDiscountConstants(
-        card_instant_discount_won=4000,  # 카카오페이 × 페이머니/BC카드 평균 (사용자 보유 시)
+        card_instant_discount_won=4000,    # 카카오페이 × 페이머니/BC카드 평균 (사용자 보유 시)
+        point_use_max_rate=0.07,            # 무신사 적립금 7% 한도 (goods API maxUsePointRate)
+        user_point_balance=14147,           # 사용자 입력 (마이페이지 GET 시 자동 갱신)
     ),
     "29cm": SourceDiscountConstants(card_instant_discount_won=0),  # 사용자 검토
     # ... 사용자 추후 확정
 }
 ```
 
+**제외 — 1회성 보너스 (반영 X)**:
+- 무신사머니 첫 결제 보너스 (8,720원 같은) → 사용자 본인 1회성, 봇 자동 반영 X
+- 신규 가입 쿠폰 → 1회성, 미반영
+- 이벤트 한정 적립 부스트 (생일 쿠폰 등) → 사용자 직접 인지, 봇 미반영
+
+**근거**: 1회성 보너스 자동 반영 시 마진 추정 과대 → 사용자 알림 신뢰도 손실. 반복 적용 가능한 할인만 자동 반영 원칙.
+
 ⚠️ **이 상수는 사용자 보유 카드 상황 반영 필요**. 사용자가 사용 안 하는 결제수단은 0 으로. 보수적 추정 우선.
 
 #### 보정가 계산
 ```python
 def adjusted_retail_price(retail_product: RetailProduct, source: str) -> dict:
-    """자동 추출 + 상수 적용한 보정가."""
+    """자동 추출 + 상수 적용한 보정가. 반복 적용 가능 할인만 반영 (1회성 X)."""
     base = retail_product.price  # = couponPrice or salePrice (이미 자동 적용)
-    save_point = retail_product.save_point or 0  # 적립 (신규 필드)
-    card_discount = source_discount_constants[source].card_instant_discount_won
+    save_point = retail_product.save_point or 0  # 구매 시 적립 (이번 거래 비용 차감)
     
-    adjusted = base - card_discount - save_point
+    consts = source_discount_constants[source]
+    card_discount = consts.card_instant_discount_won
+    
+    # 적립금 사용 한도 (보유 적립 × 한도율, 단 base 의 한도율 초과 X)
+    point_use = min(
+        int(consts.user_point_balance * consts.point_use_max_rate),
+        int(base * consts.point_use_max_rate),
+    )
+    
+    adjusted = base - card_discount - save_point - point_use
     return {
         "adjusted": adjusted,
         "breakdown": {
             "base": base,
             "card_discount": card_discount,
             "save_point": save_point,
+            "point_use": point_use,
         }
     }
 ```
@@ -345,6 +365,118 @@ class SizeProfitResult:
 - **시한 쿠폰 = "있음" 알림만** + 사용자 수동 발급/적용
 
 ---
+
+## 2026-04-27 라이브 검증 결과 (6건)
+
+### 6건 실 결제 vs 봇 추정 비교
+
+| # | 상품 | 정가 | 봇 추정 (낙관) | 봇 추정 (보수) | 실 결제 | 갭 (보수) |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | adidas EVO SL (6011260) | 219,000 | 214,010 | ~ 207,000 | 189,900 | +17k |
+| 2 | adidas KD1517 (6121682) | 159,000 | 142,280 | 142,400 | **142,400** | **0 ✅** |
+| 3 | Nike Jordan 1 Low (5870697) | 179,000 | 159,806 | ~ 152,000 | 140,990 | +11k |
+| 4 | Nike AWF 재킷 (6131130) | 135,000 | 131,000 | ~ 124,000 | 122,900 | **1.1k ✅** |
+| 5 | Nike 샥스 Z W 타투 (5797225) | 159,000 | 142,392 | ~ 136,000 | 126,300 | +10k |
+| 6 | Nike 샥스 Z W 블랙 (5797223) | 159,000 | 127,753 | ~ 136,000 | 135,000 | **1.5k ✅** |
+
+### ⭐ 결정적 발견
+
+**같은 모델 다른 색상에 쿠폰 적용 다름**:
+- 5797225 (타투): 나이키 2주년 -15,900 적용됨 → 126,300원
+- 5797223 (블랙): 정기 -6,360만 적용됨 → 135,000원
+
+→ **마이페이지 "max 보유 쿠폰 자동 적용" 가정 = 거짓 알림 위험**.
+
+낙관 추정 채택 시 5797223 케이스: 봇 127,753 / 실 135,000 = **봇이 마진 7,247원 큰 척 → 거짓 알림**.
+
+### ⭐ 보수 추정 알고리즘 채택
+
+```python
+def adjusted_price(api, user, mypage_data):
+    base = api['couponPrice']
+    
+    # ① 정기 쿠폰만 자동 적용 (모든 상품 적용 가정 — 보수)
+    regular_coupons = [c for c in mypage_data['general_coupons']
+                       if c.is_regular and not c.expired()]
+    if regular_coupons:
+        base -= max(regular_coupons, key=lambda c: c.amount).amount
+    
+    # ② 시한 쿠폰 = 정보만 표시 (시그널 영향 X)
+    # → embed 에 "추가 가능: -X원 (시한 쿠폰)" 표시
+    
+    # ③ 적립금 사용 (isRestictedUsePoint 체크)
+    if not api['isRestictedUsePoint']:
+        base -= min(user.balance, int(base * api['maxUsePointRate']))
+    
+    # ④ 선할인 (isPrePoint 별도 체크)
+    if api['isPrePoint']:
+        base -= int(base * user.grade_save_rate)
+    
+    # ⑤ 카드 max (7개 룰 자동 매칭)
+    base -= best_card_discount(base, user.cards)
+    
+    return base
+```
+
+→ **봇 추정 ≥ 실 결제** 항상 보장 = ① 정확성 축 (거짓 알림 0) 부합.
+→ 사용자 결제 시 시한 쿠폰 catch 가능 시 보너스 마진 (예상보다 더 남음).
+
+### 알림 embed 표시 (보수 추정 + 시한 정보)
+
+```
+[Nike 샥스 Z W (HQ7540-500)] 270mm
+시그널: BUY (정기 쿠폰 -6k 기준)
+추천: ★★
+
+🟢 보수 마진 추정 (안정 보장)
+   소싱: ~136,000원 (정기쿠폰 + 적립 + 카드)
+   체결가 등록: +X원 ✅
+
+💡 추가 마진 가능 (시한/카테고리 조건부)
+   - 나이키 2주년 -15,900원 (만료 23h)
+     → 적용 시 추가 +Y원
+   
+거래량 7d 5건
+[크림 보기] [무신사 보기]
+```
+
+### 사용자 정보 입력 받음 (이번 세션)
+
+- LV.4 브론즈, 1% 적립
+- 보유 적립금: 14,147원
+- 카드 보유: **모든 카드사 거의 다** (7개 룰 전부 활성)
+- 카드 즉시할인 7개 룰 표:
+  1. 무신사페이 × BC카드: -4,000원 (10만원↑)
+  2. 무신사페이 × 농협카드: -3,000원 (8만원↑)
+  3. 토스페이 × 삼성카드: -5,000원 (15만원↑)
+  4. 토스페이 × 롯데카드: -3,000원 (8만원↑)
+  5. 토스페이 × 계좌: -3,000원 (8만원↑)
+  6. 카카오페이 × 우리카드: -3,000원 (7만원↑)
+  7. 카카오페이 × 페이머니: -4,000원 (10만원↑)
+
+### isRestictedUsePoint / isPrePoint 플래그 검증
+
+- `isRestictedUsePoint=True` → 적립금 사용 X (5870697, 6131130 케이스 검증)
+- `isPrePoint=True` → 선할인 가능 (별도 메커니즘, isRestictedUsePoint 와 분리)
+- `isLimitedCoupon` 플래그는 신뢰 X (False 인데 시한 쿠폰 적용된 케이스 다수)
+
+### 무신사 ToS 검토 결과
+
+- 매크로 사용 = **즉시 탈퇴** 명시 (무신사 공지)
+- 쿠폰 부정 획득 = 1년 정지
+- 결제 페이지 시뮬레이션 = 영구 X (메인 계정 BAN 위험)
+- 마이페이지 GET (1시간 1회) = **안전권** (정상 사용자 행동)
+- 자동 발급/결제 = 영구 X
+
+### 진행 상태
+
+- ✅ Spec 작성 + commit (`69a3252`)
+- ✅ Spec 보강 (api-prober 결과 + 6건 검증) — 본 갱신
+- ✅ 보수 추정 알고리즘 확정
+- ⏳ Spec 최종 commit (다음 세션)
+- ⏳ writing-plans skill 호출 → 단계별 plan
+- ⏳ Phase 1 (Dual-Anchor) 구현 진입
+
 
 ## 핵심 파일 경로
 
