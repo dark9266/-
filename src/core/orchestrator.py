@@ -302,10 +302,18 @@ class Orchestrator:
             )
             await db.commit()
         except aiosqlite.Error:
-            logger.debug(
+            logger.warning(
                 "decision_log 쓰기 실패 (비치명): stage=%s reason=%s",
                 stage,
                 reason,
+                exc_info=True,
+            )
+        except Exception:
+            logger.warning(
+                "decision_log 쓰기 unexpected 예외: stage=%s reason=%s",
+                stage,
+                reason,
+                exc_info=True,
             )
 
     async def _is_dedup_recent(
