@@ -43,3 +43,6 @@ logs/stage_chain*
 
 # Superpowers brainstorming workspace
 .superpowers/
+
+# Git worktrees (isolated branch workspaces)
+.worktrees/
