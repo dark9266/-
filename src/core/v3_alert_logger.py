@@ -87,6 +87,7 @@ class V3AlertLogger:
             "kream_sell_price": event.kream_sell_price,
             "retail_price": event.retail_price,
             "size": event.size,
+            "color_name": getattr(event, "color_name", "") or "",
             "url": event.url,
         }
         try:

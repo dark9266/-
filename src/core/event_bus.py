@@ -43,6 +43,9 @@ class CandidateMatched(Event):
     runtime 핸들러가 크림 size_prices 와 교집합을 계산해 실재 판매 가능한
     사이즈만 수익 계산 대상에 포함시킨다. 비어 있으면 교집합 가드 미적용
     (기존 listing-only 어댑터 하위호환).
+
+    `color_name` 은 사이트→크림 색상 disambiguation 결과 (한글). 색상별
+    fan-out 어댑터에서만 채움. 미구현 어댑터는 ""(미표시).
     """
 
     source: str
@@ -52,6 +55,7 @@ class CandidateMatched(Event):
     size: str
     url: str
     available_sizes: tuple = ()
+    color_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,7 @@ class ProfitFound(Event):
     volume_7d: int
     url: str
     size_profits: tuple = ()
+    color_name: str = ""
 
 
 @dataclass(frozen=True)

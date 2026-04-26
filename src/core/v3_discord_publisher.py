@@ -86,6 +86,9 @@ def _build_embed(event: ProfitFound, product: dict | None = None) -> dict:
     ]
     if brand:
         description_lines.append(f"**브랜드:** {brand}")
+    color_name = getattr(event, "color_name", "") or ""
+    if color_name:
+        description_lines.append(f"**🎨 색상:** {color_name}")
     description_lines.append(
         f"**순수익:** **{event.net_profit:,}원** (ROI {event.roi:.1f}%)"
     )

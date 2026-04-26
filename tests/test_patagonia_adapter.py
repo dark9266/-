@@ -398,3 +398,252 @@ async def test_dump_catalog_handles_http_failure(bus, kream_db):
     event, catalog = await adapter.dump_catalog()
     assert event.product_count == 0
     assert catalog == []
+
+
+# ─── (g) 색상별 fan-out + tooltip 매칭 — 정확성 1순위 ─────
+
+
+def _mk_color_item(
+    pcode: str,
+    name: str,
+    color_variants: list[dict],
+    sizes: list[dict],
+    price: int = 169000,
+) -> dict:
+    """색상 메타 + 색상별 사이즈 그룹 fixture helper."""
+    style = extract_style_code(pcode)
+    pid = f"ID_{pcode}"
+    return {
+        "product_id": pid,
+        "pcode": pcode,
+        "style_code": style,
+        "model_number": style,
+        "name": name,
+        "name_kr": "",
+        "brand": "Patagonia",
+        "price": price,
+        "original_price": price,
+        "url": f"https://www.patagonia.co.kr/shop/goodsView/{pid}",
+        "image_url": "",
+        "is_sold_out": False,
+        "is_specialty_only": False,
+        "color_variants": color_variants,
+        "sizes": sizes,
+    }
+
+
+def _row(pid: str, color_kr: str) -> dict:
+    return {
+        "product_id": pid,
+        "name": f"파타고니아 다운 스웨터 후디 {color_kr}",
+        "model_number": "84702",
+        "brand": "Patagonia",
+    }
+
+
+@pytest.fixture
+def kream_db_84702(tmp_path):
+    """84702 14색상 등록 — 실제 크림 DB 데이터 mirror."""
+    path = tmp_path / "kream84702.db"
+    _init_kream_db(
+        str(path),
+        rows=[
+            _row("193126", "블랙"),
+            _row("591409", "포지 그레이"),
+            _row("742892", "플럼멧 퍼플"),
+            _row("742886", "케스케이드 그린"),
+            _row("697212", "아마니타 레드"),
+            _row("439666", "씨버드 그레이"),
+            _row("432807", "뉴 네이비"),
+            _row("422515", "레드테일 러스트"),
+            _row("231657", "베이슨 그린"),
+            _row("744686", "피논 그린"),
+            _row("742890", "클레멘트 블루"),
+            _row("432814", "파인 니들 그린"),
+            _row("407009", "패시지 블루"),
+            _row("268828", "포지 그레이"),  # 시즌 중복 — Forge Grey 두 row
+        ],
+    )
+    return str(path)
+
+
+async def test_color_fanout_blk_soldout_only_feg_alerted(bus, kream_db_84702):
+    """84702 — Forge Grey XXL 재고만 있고 Black 전 사이즈 품절 → 포지 그레이 알림만, 블랙 차단."""
+    adapter = PatagoniaAdapter(
+        bus=bus,
+        db_path=kream_db_84702,
+        http_client=_FakePatagoniaHttp(catalog=[]),
+    )
+    item = _mk_color_item(
+        pcode="84702Q7",
+        name="Men's Down Sweater Hoody",
+        price=399200,
+        color_variants=[
+            {"code": "FEG", "tooltip": "Forge Grey w/Forge Grey"},
+            {"code": "BLK", "tooltip": "Black"},
+        ],
+        sizes=[
+            # FEG: XXL 만 재고
+            {"size": "XS", "stock": 0, "in_stock": False, "color": "FEG"},
+            {"size": "S",  "stock": 0, "in_stock": False, "color": "FEG"},
+            {"size": "M",  "stock": 0, "in_stock": False, "color": "FEG"},
+            {"size": "L",  "stock": 0, "in_stock": False, "color": "FEG"},
+            {"size": "XL", "stock": 0, "in_stock": False, "color": "FEG"},
+            {"size": "XXL","stock": 2, "in_stock": True,  "color": "FEG"},
+            # BLK: 전 사이즈 품절
+            {"size": "XS", "stock": 0, "in_stock": False, "color": "BLK"},
+            {"size": "S",  "stock": 0, "in_stock": False, "color": "BLK"},
+            {"size": "M",  "stock": 0, "in_stock": False, "color": "BLK"},
+            {"size": "L",  "stock": 0, "in_stock": False, "color": "BLK"},
+            {"size": "XL", "stock": 0, "in_stock": False, "color": "BLK"},
+            {"size": "XXL","stock": 0, "in_stock": False, "color": "BLK"},
+        ],
+    )
+    matches, stats = await adapter.match_to_kream([item])
+    # 포지 그레이 = 시즌 중복 2개 등록 → 모두 발행 (≤AMBIGUOUS_THRESHOLD)
+    assert stats.matched == 2
+    assert stats.matched_by_color == 2
+    assert stats.ambiguous_color_unresolved == 0
+    assert stats.unknown_color_code == 0
+    # 모두 포지 그레이 + XXL — 블랙(193126) 절대 발행 안 됨
+    pids = {m.kream_product_id for m in matches}
+    assert 193126 not in pids, "블랙(193126) 잘못 발행 — 색상 매칭 버그"
+    assert pids == {591409, 268828}
+    for m in matches:
+        assert m.color_name == "포지 그레이"
+        assert m.available_sizes == ("XXL",)
+
+
+async def test_color_fanout_both_colors_in_stock(bus, kream_db_84702):
+    """84702 — Forge Grey + Cascade Green 둘 다 재고 → 색상별 별개 알림."""
+    adapter = PatagoniaAdapter(
+        bus=bus,
+        db_path=kream_db_84702,
+        http_client=_FakePatagoniaHttp(catalog=[]),
+    )
+    item = _mk_color_item(
+        pcode="84702Q7",
+        name="Men's Down Sweater Hoody",
+        color_variants=[
+            {"code": "FEG", "tooltip": "Forge Grey w/Forge Grey"},
+            {"code": "CASG", "tooltip": "Cascade Green"},
+        ],
+        sizes=[
+            {"size": "M", "stock": 1, "in_stock": True, "color": "FEG"},
+            {"size": "L", "stock": 2, "in_stock": True, "color": "CASG"},
+        ],
+    )
+    matches, _ = await adapter.match_to_kream([item])
+    by_color = {m.color_name: m for m in matches}
+    # 포지 그레이는 시즌 중복 2개 모두 발행
+    assert "포지 그레이" in by_color
+    assert "케스케이드 그린" in by_color
+    # 케스케이드 그린은 단일 후보 (742886) → exact 매칭
+    cas = by_color["케스케이드 그린"]
+    assert cas.kream_product_id == 742886
+    assert cas.available_sizes == ("L",)
+
+
+async def test_color_unknown_tooltip_skipped(bus, kream_db_84702):
+    """사이트 tooltip 이 사전에 없는 색상 → unknown_color_code +1, 발행 안 됨."""
+    adapter = PatagoniaAdapter(
+        bus=bus,
+        db_path=kream_db_84702,
+        http_client=_FakePatagoniaHttp(catalog=[]),
+    )
+    item = _mk_color_item(
+        pcode="84702Q7",
+        name="Men's Down Sweater Hoody",
+        color_variants=[
+            {"code": "MJVK", "tooltip": "Mojave Khaki"},  # 사전 미등록
+        ],
+        sizes=[
+            {"size": "M", "stock": 1, "in_stock": True, "color": "MJVK"},
+        ],
+    )
+    matches, stats = await adapter.match_to_kream([item])
+    assert matches == []
+    assert stats.matched == 0
+    assert stats.unknown_color_code == 1
+
+
+async def test_color_no_hits_when_tooltip_kr_absent_in_kream(bus, tmp_path):
+    """사이트 색상 사전엔 있으나 크림 row 의 한글명에 해당 토큰 없음 → unknown."""
+    path = tmp_path / "amb.db"
+    _init_kream_db(
+        str(path),
+        rows=[
+            {"product_id": "1001", "name": "파타고니아 자켓 케스케이드 그린",
+             "model_number": "11111", "brand": "Patagonia"},
+            {"product_id": "1002", "name": "파타고니아 자켓 베이슨 그린",
+             "model_number": "11111", "brand": "Patagonia"},
+            {"product_id": "1003", "name": "파타고니아 자켓 피논 그린",
+             "model_number": "11111", "brand": "Patagonia"},
+            {"product_id": "1004", "name": "파타고니아 자켓 파인 니들 그린",
+             "model_number": "11111", "brand": "Patagonia"},
+        ],
+    )
+    adapter = PatagoniaAdapter(
+        bus=bus,
+        db_path=str(path),
+        http_client=_FakePatagoniaHttp(catalog=[]),
+    )
+    # tooltip "Forge Grey" → ("포지 그레이",) — kream 4개 모두 그린 계열 → 0 hit → unknown
+    item = _mk_color_item(
+        pcode="11111R5",
+        name="Test Multi-Green",
+        color_variants=[
+            {"code": "FEG", "tooltip": "Forge Grey w/Forge Grey"},
+        ],
+        sizes=[
+            {"size": "M", "stock": 1, "in_stock": True, "color": "FEG"},
+        ],
+    )
+    matches, stats = await adapter.match_to_kream([item])
+    assert matches == []
+    assert stats.matched == 0
+    assert stats.unknown_color_code == 1
+
+
+async def test_color_single_candidate_extracts_suffix(bus, kream_db):
+    """후보 1개 (24142 Houdini 블랙) → color_name 자동 추출 OK."""
+    adapter = PatagoniaAdapter(
+        bus=bus,
+        db_path=kream_db,
+        http_client=_FakePatagoniaHttp(catalog=[]),
+    )
+    item = _mk_color_item(
+        pcode="24142R5",
+        name="Houdini Jacket",
+        color_variants=[{"code": "BLK", "tooltip": "Black"}],
+        sizes=[{"size": "M", "stock": 1, "in_stock": True, "color": "BLK"}],
+    )
+    matches, _ = await adapter.match_to_kream([item])
+    assert len(matches) == 1
+    assert matches[0].kream_product_id == 501
+    assert matches[0].color_name == "블랙"  # _extract_color_suffix 로 추출
+
+
+# ─── (h) tooltip 정규화 단위 테스트 ─────────────────────────
+
+
+def test_normalize_color_tooltip():
+    from src.adapters.patagonia_adapter import _normalize_color_tooltip
+    assert _normalize_color_tooltip("Black") == "BLACK"
+    assert _normalize_color_tooltip("Forge Grey w/Forge Grey") == "FORGE GREY"
+    # 콜라보 패턴 — 콜론 뒤만
+    assert _normalize_color_tooltip("Bee You: New Navy") == "NEW NAVY"
+    # HTML escape 일괄 복원 (&apos;/&amp;/&quot; 등)
+    assert _normalize_color_tooltip("&apos;73 Skyline Black") == "'73 SKYLINE BLACK"
+    assert _normalize_color_tooltip("Salt &amp; Pepper") == "SALT & PEPPER"
+    assert _normalize_color_tooltip("&quot;Test&quot;") == '"TEST"'
+    assert _normalize_color_tooltip("") == ""
+
+
+def test_extract_color_suffix():
+    from src.adapters.patagonia_adapter import _extract_color_suffix
+    assert _extract_color_suffix("파타고니아 다운 스웨터 후디 블랙") == "블랙"
+    assert _extract_color_suffix("파타고니아 다운 스웨터 후디 포지 그레이") == "포지 그레이"
+    # 사전에 없는 색상은 빈 문자열
+    assert _extract_color_suffix("파타고니아 R5 자켓 라일락") == ""
+    assert _extract_color_suffix("") == ""

@@ -6,7 +6,10 @@
       "id": "like_short_model_match",
       "description": "25-002가 CU9225-002에 LIKE 매칭되는 오매칭",
       "type": "model_match",
-      "input": {"retail_model": "25-002", "kream_model": "CU9225-002"},
+      "input": {
+        "retail_model": "25-002",
+        "kream_model": "CU9225-002"
+      },
       "expected": "no_match",
       "bug_date": "2026-04-05",
       "status": "fixed"
@@ -15,7 +18,10 @@
       "id": "low_profit_alert_sent",
       "description": "+954원 ROI 0.7% 상품이 알림 발송됨",
       "type": "signal",
-      "input": {"net_profit": 954, "volume_7d": 10},
+      "input": {
+        "net_profit": 954,
+        "volume_7d": 10
+      },
       "expected_signal": "비추천",
       "expected_alert": false,
       "bug_date": "2026-04-05",
@@ -25,7 +31,10 @@
       "id": "offline_product_passed",
       "description": "오프라인 전용 상품이 필터 통과",
       "type": "offline_filter",
-      "input": {"page_text": "오프라인 전용 상품", "has_buy_button": false},
+      "input": {
+        "page_text": "오프라인 전용 상품",
+        "has_buy_button": false
+      },
       "expected": "skip",
       "bug_date": "2026-04-05"
     },
@@ -33,7 +42,10 @@
       "id": "zero_volume_alert",
       "description": "7일 거래량 0건 상품이 알림 발송됨",
       "type": "signal",
-      "input": {"net_profit": 50000, "volume_7d": 0},
+      "input": {
+        "net_profit": 50000,
+        "volume_7d": 0
+      },
       "expected_signal": "비추천",
       "expected_alert": false,
       "bug_date": "2026-04-05",
@@ -147,6 +159,44 @@
       "verification": "tests/test_vans_adapter.py::test_match_trailing_digit_variant",
       "bug_date": "2026-04-24",
       "status": "fixed"
+    },
+    {
+      "id": "patagonia_color_disambig_84702_blk_misalert",
+      "description": "84702 Down Sweater Hoody — 사이트 Forge Grey XXL 만 재고인데 알림이 Black(pid=193126)로 잘못 발행. 어댑터 _load_kream_index setdefault 가 14개 색상 중 첫 row(블랙)만 인덱스 등록 + available_sizes 가 색상 정보 폐기.",
+      "type": "color_match",
+      "input": {
+        "source": "patagonia",
+        "model_no": "84702",
+        "site_in_stock": [
+          {
+            "color": "FEG",
+            "tooltip": "Forge Grey w/Forge Grey",
+            "size": "XXL",
+            "stock": 2
+          }
+        ],
+        "site_sold_out": [
+          {
+            "color": "BLK",
+            "tooltip": "Black"
+          }
+        ],
+        "kream_rows_for_84702": 14
+      },
+      "expected": {
+        "alerted_kream_product_id_must_not_be": 193126,
+        "alerted_kream_product_id_should_be_in": [
+          591409,
+          268828
+        ],
+        "alert_color_name": "포지 그레이",
+        "available_sizes": [
+          "XXL"
+        ]
+      },
+      "bug_date": "2026-04-26",
+      "status": "fixed",
+      "fix_commit": "pending"
     }
   ]
 }

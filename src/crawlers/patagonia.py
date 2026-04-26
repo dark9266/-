@@ -175,6 +175,31 @@ def _parse_price(raw: Any) -> int:
         return 0
 
 
+def parse_color_variants(options_block: dict) -> list[dict]:
+    """`options.colors` 배열 → [{code, tooltip}, ...].
+
+    어댑터 색상별 fan-out + tooltip 한글 매핑용. tooltip 은 사이트 표기
+    영문 풀네임 (예: "Forge Grey w/Forge Grey", "Black"). 색상별 사이즈
+    재고는 동일 product 의 ``sizes`` 리스트 (parse_sizes_from_options) 에
+    color 필드로 함께 들어 있어 어댑터가 그룹화해 사용한다.
+    """
+    out: list[dict] = []
+    if not isinstance(options_block, dict):
+        return out
+    raw = options_block.get("colors") or []
+    if not isinstance(raw, list):
+        return out
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        code = str(c.get("code") or "").strip()
+        tooltip = str(c.get("tooltip") or "").strip()
+        if not code:
+            continue
+        out.append({"code": code, "tooltip": tooltip})
+    return out
+
+
 def _parse_product(raw: dict) -> dict:
     """API raw product → 어댑터/스캐너 공용 dict."""
     pcode = str(raw.get("pcode") or "").strip()
@@ -182,7 +207,9 @@ def _parse_product(raw: dict) -> dict:
     pid = str(raw.get("id") or "").strip()
     sell = _parse_price(raw.get("sellprice") or raw.get("dcprice"))
     list_price = _parse_price(raw.get("listprice") or raw.get("sellprice"))
-    sizes = parse_sizes_from_options(raw.get("options") or {})
+    options = raw.get("options") or {}
+    sizes = parse_sizes_from_options(options)
+    color_variants = parse_color_variants(options)
     url = f"{BASE_URL}{VIEW_PATH}/{pid}" if pid else ""
     return {
         "product_id": pid,
@@ -199,6 +226,7 @@ def _parse_product(raw: dict) -> dict:
         "is_sold_out": is_soldout(raw),
         "is_specialty_only": bool(raw.get("is_specialty_only")),
         "sizes": sizes,
+        "color_variants": color_variants,
     }
 
 
@@ -332,6 +360,7 @@ __all__ = [
     "_parse_product",
     "extract_style_code",
     "is_soldout",
+    "parse_color_variants",
     "parse_sizes_from_options",
     "patagonia_crawler",
     "split_kream_model_numbers",

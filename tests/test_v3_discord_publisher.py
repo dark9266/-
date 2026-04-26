@@ -15,7 +15,12 @@ from src.core.event_bus import ProfitFound
 from src.core.v3_discord_publisher import V3DiscordPublisher, wrap_handler
 
 
-def _make_event(signal: str, net_profit: int = 50_000, roi: float = 30.0) -> ProfitFound:
+def _make_event(
+    signal: str,
+    net_profit: int = 50_000,
+    roi: float = 30.0,
+    color_name: str = "",
+) -> ProfitFound:
     return ProfitFound(
         source="musinsa",
         kream_product_id=1234,
@@ -28,6 +33,7 @@ def _make_event(signal: str, net_profit: int = 50_000, roi: float = 30.0) -> Pro
         signal=signal,
         volume_7d=15,
         url="https://example.com/p/1",
+        color_name=color_name,
     )
 
 
@@ -159,3 +165,38 @@ async def test_wrap_handler_skips_publish_on_dedup():
     wrapped = wrap_handler(_inner_dedup, pub)  # type: ignore[arg-type]
     await wrapped(_make_event("강력매수"))
     assert captured == []
+
+
+# ─── (g) color_name embed 표시 — 사용자 매수 결정 가속 ──────
+
+
+async def test_embed_shows_color_name_when_present():
+    """color_name 이 채워지면 embed description 에 '🎨 색상' 줄 노출."""
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send)
+    await pub.publish(_make_event("강력매수", color_name="포지 그레이"))
+
+    assert len(captured) == 1
+    desc = captured[0]["description"]
+    assert "🎨 색상" in desc
+    assert "포지 그레이" in desc
+
+
+async def test_embed_omits_color_line_when_empty():
+    """기존 어댑터 (color_name='') 호환 — 색상 줄 미표시."""
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send)
+    await pub.publish(_make_event("강력매수"))  # color_name 미지정 → ""
+
+    assert len(captured) == 1
+    desc = captured[0]["description"]
+    assert "🎨 색상" not in desc
+    assert "색상" not in desc

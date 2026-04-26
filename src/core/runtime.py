@@ -416,6 +416,7 @@ class V3Runtime:
                 volume_7d=volume_7d,
                 url=event.url,
                 size_profits=tuple(size_profits),
+                color_name=event.color_name,
             )
 
         return _handler

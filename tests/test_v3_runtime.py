@@ -369,6 +369,39 @@ async def test_v3_logger_append_and_dedup(tmp_path):
     assert len(lines) == 1
     rec = json.loads(lines[0])
     assert rec["model_no"] == "CW2288-111"
+    # color_name 키 항상 존재 (빈 값일지라도) — 후속 분석/그레이드 안정성
+    assert "color_name" in rec
+    assert rec["color_name"] == ""
+
+
+async def test_v3_logger_payload_includes_color_name(tmp_path):
+    """ProfitFound.color_name 가 채워지면 JSONL payload 에 그대로 기록."""
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+    log_path = tmp_path / "v3_alerts.jsonl"
+    alogger = V3AlertLogger(db, log_path)
+
+    event = ProfitFound(
+        source="patagonia",
+        kream_product_id=591409,
+        model_no="84702",
+        size="",
+        retail_price=399_200,
+        kream_sell_price=510_000,
+        net_profit=71_390,
+        roi=17.9,
+        signal="강력매수",
+        volume_7d=2,
+        url="https://www.patagonia.co.kr/shop/goodsView/0000002830",
+        color_name="포지 그레이",
+    )
+    sent = await alogger.log(event)
+    assert isinstance(sent, AlertSent)
+
+    rec = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[0])
+    assert rec["color_name"] == "포지 그레이"
+    assert rec["kream_product_id"] == 591409
+    assert rec["source"] == "patagonia"
 
 
 # ─── (f) 기동 예외 격리 — _safe_start_v3 ──────────────────
