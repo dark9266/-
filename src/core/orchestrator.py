@@ -172,10 +172,15 @@ REASON_HANDLER_EXCEPTION = "handler_exception"
 REASON_DEDUP_CHECKPOINT = "dedup_checkpoint"
 REASON_DEDUP_RECENT = "dedup_recent"
 REASON_PREFILTER_UNPROFITABLE = "prefilter_unprofitable"
+REASON_PREFILTER_LOW_VOLUME = "prefilter_low_volume"
 
 # Pre-filter KREAM 가격 상승 여유 — 마지막 관측 sell_now_price 가 이만큼
 # 상승해도 min_profit 미달이면 차단. 일반 변동성(±20%) 고려.
 PREFILTER_UPSIDE_BUFFER_RATIO = 0.20
+
+# 거래량 게이트 기본값. handler 의 min_volume_7d 와 동일 (runtime.py:84).
+# 숨은 보석 정책상 1 고정 — 변경 금지 (CLAUDE.md INVARIANT).
+PREFILTER_MIN_VOLUME_7D_DEFAULT = 1
 
 
 class Orchestrator:
@@ -217,6 +222,7 @@ class Orchestrator:
             "candidate_deferred": 0,
             "candidate_dedup_skipped": 0,
             "candidate_prefilter_blocked": 0,
+            "candidate_prefilter_low_volume": 0,
             "profit_processed": 0,
             "profit_failed": 0,
             "alert_duplicated": 0,
@@ -328,6 +334,43 @@ class Orchestrator:
                 kream_product_id,
             )
             return False
+
+    async def _prefilter_volume_blocks(self, event: CandidateMatched) -> bool:
+        """`kream_products.volume_7d` 가 게이트 미만이면 차단.
+
+        handler 가 어차피 거부할 저거래 후보를 throttle/snapshot 호출 이전에
+        잘라내 예산 절약 (adidas 12k+ throttle_exhausted root cause).
+
+        fail-open:
+            - row 없음 (DB 미수집 신상) → 통과 (handler 가 실시간 fetch 후 판정)
+            - DB 장애 → 통과 (기존 파이프라인 유지)
+
+        주의: stale DB 가능성 있어 row 있고 volume_7d=0 인 경우만 strict
+        차단. handler 의 실시간 게이트와 결과 동치 (둘 다 거래량 0 거부).
+        """
+        from src.config import settings
+
+        min_volume = getattr(
+            settings, "alert_min_volume_7d", PREFILTER_MIN_VOLUME_7D_DEFAULT
+        )
+        if min_volume <= 0:
+            return False
+        try:
+            db = self._checkpoints._require_db()  # noqa: SLF001
+            async with db.execute(
+                "SELECT volume_7d FROM kream_products WHERE product_id = ?",
+                (str(event.kream_product_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        except aiosqlite.Error:
+            return False
+        if not row:
+            return False
+        try:
+            volume_7d = int(row[0] or 0)
+        except (TypeError, ValueError):
+            return False
+        return volume_7d < min_volume
 
     async def _prefilter_blocks(
         self, event: CandidateMatched
@@ -642,7 +685,22 @@ class Orchestrator:
             await self._mark(ckpt_id)
             return
 
-        # pre-filter 게이트 — 로컬 kream_price_history 로 tentative profit
+        # pre-filter 게이트 ① — 거래량 게이트 (kream_products.volume_7d).
+        # adidas root cause: cold tier 라 kream_price_history 0건 → 기존
+        # prefilter fail-open → throttle 12k+ 소비 후 handler 에서 거부.
+        # DB volume_7d=0 인 케이스만 strict 차단 (handler 와 결과 동치).
+        if await self._prefilter_volume_blocks(event):
+            self._stats["candidate_prefilter_low_volume"] += 1
+            await self.log_decision(
+                "candidate", DECISION_BLOCK, REASON_PREFILTER_LOW_VOLUME,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
+            await self._mark(ckpt_id)
+            return
+
+        # pre-filter 게이트 ② — 로컬 kream_price_history 로 tentative profit
         # 계산. 명백한 손실(+20% 상승 여유에도 min_profit 미달)이면
         # API 호출 이전에 차단. 실측: 4,320/일 throttle 예산으로 10건/일
         # profit 발견(hit rate 0.23%) → 4,310 token 이 무수익 후보에 낭비.

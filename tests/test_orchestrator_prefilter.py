@@ -24,6 +24,7 @@ from src.core.event_bus import (
     ProfitFound,
 )
 from src.core.orchestrator import (
+    REASON_PREFILTER_LOW_VOLUME,
     REASON_PREFILTER_UNPROFITABLE,
     Orchestrator,
 )
@@ -80,6 +81,25 @@ async def _seed_kream_price(store: CheckpointStore, pid: int, sell_now: int) -> 
         "INSERT INTO kream_price_history (product_id, size, sell_now_price) "
         "VALUES (?, ?, ?)",
         (str(pid), "ALL", sell_now),
+    )
+    await db.commit()
+
+
+async def _seed_kream_product(
+    store: CheckpointStore, pid: int, volume_7d: int
+) -> None:
+    """kream_products 시드 — volume gate 테스트용 단일 row 주입."""
+    db = store._require_db()  # noqa: SLF001
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS kream_products (
+            product_id TEXT PRIMARY KEY,
+            volume_7d INTEGER DEFAULT 0
+        )"""
+    )
+    await db.execute(
+        "INSERT OR REPLACE INTO kream_products (product_id, volume_7d) "
+        "VALUES (?, ?)",
+        (str(pid), volume_7d),
     )
     await db.commit()
 
@@ -275,5 +295,121 @@ async def test_prefilter_runs_before_throttle(bus, store):
         # prefilter 차단 → throttle 도달 X
         assert stats.get("candidate_prefilter_blocked", 0) == 1
         assert stats.get("candidate_dropped_throttle", 0) == 0
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
+# 6) volume gate — kream_products.volume_7d=0 이면 차단 (adidas root cause)
+# ----------------------------------------------------------------------
+async def test_volume_gate_blocks_zero_volume(bus, store):
+    orch = Orchestrator(bus, store, _throttle())
+    await orch.start()
+    await _seed_kream_product(store, pid=42, volume_7d=0)
+
+    call_count = {"n": 0}
+
+    async def catalog_handler(event: CatalogDumped) -> AsyncIterator[CandidateMatched]:
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event: CandidateMatched) -> ProfitFound | None:
+        call_count["n"] += 1
+        return None
+
+    async def profit_handler(event: ProfitFound) -> AlertSent | None:
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    try:
+        cand = _candidate(pid=42, retail_price=100_000)
+        ckpt = await store.record(cand, consumer="candidate")
+        await orch._process_candidate(cand, ckpt)
+
+        assert call_count["n"] == 0, "거래량 0 후보는 handler 도달 전 차단"
+        stats = orch.stats()
+        assert stats.get("candidate_prefilter_low_volume", 0) == 1
+        assert stats.get("candidate_dropped_throttle", 0) == 0
+
+        db = store._require_db()  # noqa: SLF001
+        async with db.execute(
+            "SELECT reason FROM decision_log WHERE kream_product_id = 42"
+        ) as cur:
+            reasons = [r[0] for r in await cur.fetchall()]
+        assert REASON_PREFILTER_LOW_VOLUME in reasons
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
+# 7) volume gate — volume_7d>=1 이면 통과 (이후 prefilter_blocks 위임)
+# ----------------------------------------------------------------------
+async def test_volume_gate_passes_with_volume(bus, store):
+    orch = Orchestrator(bus, store, _throttle())
+    await orch.start()
+    await _seed_kream_product(store, pid=42, volume_7d=5)
+    # kream_price_history 비워두면 prefilter_blocks 도 fail-open → handler 도달
+    call_count = {"n": 0}
+
+    async def catalog_handler(event: CatalogDumped) -> AsyncIterator[CandidateMatched]:
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event: CandidateMatched) -> ProfitFound | None:
+        call_count["n"] += 1
+        return None
+
+    async def profit_handler(event: ProfitFound) -> AlertSent | None:
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    try:
+        cand = _candidate(pid=42, retail_price=100_000)
+        ckpt = await store.record(cand, consumer="candidate")
+        await orch._process_candidate(cand, ckpt)
+
+        assert call_count["n"] == 1
+        assert orch.stats().get("candidate_prefilter_low_volume", 0) == 0
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
+# 8) volume gate — kream_products row 없으면 fail-open (신상 보호)
+# ----------------------------------------------------------------------
+async def test_volume_gate_fails_open_on_missing_row(bus, store):
+    orch = Orchestrator(bus, store, _throttle())
+    await orch.start()
+    # kream_products 비움. 신상 = DB 미수집 → 통과해야 handler 가 실시간 fetch
+    call_count = {"n": 0}
+
+    async def catalog_handler(event: CatalogDumped) -> AsyncIterator[CandidateMatched]:
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event: CandidateMatched) -> ProfitFound | None:
+        call_count["n"] += 1
+        return None
+
+    async def profit_handler(event: ProfitFound) -> AlertSent | None:
+        return None
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    try:
+        cand = _candidate(pid=999, retail_price=100_000)
+        ckpt = await store.record(cand, consumer="candidate")
+        await orch._process_candidate(cand, ckpt)
+
+        assert call_count["n"] == 1
+        assert orch.stats().get("candidate_prefilter_low_volume", 0) == 0
     finally:
         await orch.stop()
