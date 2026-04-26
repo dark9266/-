@@ -45,14 +45,17 @@
 ### ✅ 매 세션 시작 헬스체크 4종 (생략 금지)
 1. 봇 프로세스 살아있나 (`ps -ef | grep python.*main`)
 2. 마지막 알림 24h 내 (`alert_sent.fired_at > strftime('%s','now')-86400`)
-3. 크림 일일 호출 KREAM_DAILY_CAP 이하 (`kream_api_calls` 24h, ts > strftime('%s','now')-86400)
+3. 크림 일일 호출 KREAM_DAILY_CAP 이하 (`kream_api_calls` 24h, ts > datetime('now','-1 day'))
 4. 파이프라인 활동 — `decision_log` 최근 2h 내 `dedup_recent|prefilter_unprofitable|profit_emitted|alert_sent` 합 > 0 (`ts > strftime('%s','now')-7200`)
 
-**🔴 SQL 주의 (2026-04-26 진단 실수)**:
-- `decision_log.ts`, `alert_sent.fired_at`, `kream_api_calls.ts` = **epoch float** (예: `1777186341.19`).
-- ❌ **`WHERE ts > datetime('now','-N hours')` 금지** — `datetime()` 결과는 text "2026-04-26..." 라 epoch '1777...' 와 string 비교 시 항상 False (`'1' < '2'`).
-- ✅ 항상 `WHERE ts > strftime('%s','now')-N` 사용 (N=초 단위).
-- ※ `bot_state.updated_at`, `bot_logs.ts`, `kream_products.updated_at` 등은 ISO datetime — `datetime()` 비교 OK. 컬럼별로 INSERT 형식 확인.
+**🔴 SQL 주의 (2026-04-26 진단 실수 — 컬럼별 타입 다름, 혼용 금지)**:
+- **epoch float** (예: `1777186341.19`): `decision_log.ts`, `alert_sent.fired_at`
+  - ✅ `WHERE ts > strftime('%s','now')-N` (N=초 단위)
+  - ❌ `WHERE ts > datetime('now','-N hours')` 금지 — text "2026-04-26..." 와 epoch '1777...' string 비교 시 항상 False (`'1' < '2'`)
+- **TEXT datetime** (예: `'2026-04-26 08:36:26'`): `kream_api_calls.ts`, `bot_state.updated_at`, `bot_logs.ts`, `kream_products.updated_at`
+  - ✅ `WHERE ts > datetime('now','-1 day')`
+  - ❌ `WHERE ts > strftime('%s','now')-86400` 금지 — text '2026...' > number 1777... string 비교 시 항상 True → 전 row 반환 (false high count)
+- **컬럼별 `SELECT typeof(ts), ts FROM <table> LIMIT 1` 로 먼저 확인 후 쿼리 작성.**
 
 **1개라도 FAIL → 매칭/신규 작업 착수 금지, 복구 먼저.**
 
