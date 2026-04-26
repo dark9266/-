@@ -40,3 +40,6 @@ logs/stage_chain*
 
 # 매 세션마다 sessionId/pid 갱신되는 Claude 스케줄러 lock
 .claude/scheduled_tasks.lock
+
+# Superpowers brainstorming workspace
+.superpowers/
