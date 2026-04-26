@@ -28,9 +28,11 @@ JSON 직렬화하고, 복원 시 `event_type` 문자열로 클래스를 찾아 `
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
+import sqlite3
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -141,7 +143,11 @@ class CheckpointStore:
         return self._db
 
     async def record(self, event: object, consumer: str) -> int:
-        """이벤트를 체크포인트 테이블에 저장 (status=pending) 후 id 반환."""
+        """이벤트를 체크포인트 테이블에 저장 (status=pending) 후 id 반환.
+
+        SQLite lock contention 시 5회 exponential backoff retry
+        (2026-04-26 진단: candidate handler 의 'database is locked' 다발).
+        """
         if not dataclasses.is_dataclass(event) or isinstance(event, type):
             raise TypeError(
                 f"record requires a dataclass instance, got {type(event).__name__}"
@@ -150,40 +156,72 @@ class CheckpointStore:
         event_type = type(event).__name__
         payload = json.dumps(dataclasses.asdict(event), ensure_ascii=False)
         created_at = time.time()
-        cursor = await db.execute(
-            "INSERT INTO event_checkpoint "
-            "(event_type, payload, created_at, consumed_at, consumer, "
-            " status, attempts, last_reason) "
-            "VALUES (?, ?, ?, NULL, ?, 'pending', 0, NULL)",
-            (event_type, payload, created_at, consumer),
-        )
-        await db.commit()
-        checkpoint_id = cursor.lastrowid
-        await cursor.close()
-        assert checkpoint_id is not None
-        return int(checkpoint_id)
+        last_err: Exception | None = None
+        for delay in (0.0, 0.05, 0.15, 0.4, 1.0):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                cursor = await db.execute(
+                    "INSERT INTO event_checkpoint "
+                    "(event_type, payload, created_at, consumed_at, consumer, "
+                    " status, attempts, last_reason) "
+                    "VALUES (?, ?, ?, NULL, ?, 'pending', 0, NULL)",
+                    (event_type, payload, created_at, consumer),
+                )
+                await db.commit()
+                checkpoint_id = cursor.lastrowid
+                await cursor.close()
+                assert checkpoint_id is not None
+                return int(checkpoint_id)
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower():
+                    raise
+                last_err = e
+        raise last_err  # type: ignore[misc]
 
     async def mark_consumed(self, checkpoint_id: int) -> None:
         """해당 체크포인트를 정상 처리 완료로 표시."""
         db = self._require_db()
-        await db.execute(
-            "UPDATE event_checkpoint "
-            "SET consumed_at = ?, status = 'consumed' "
-            "WHERE id = ?",
-            (time.time(), checkpoint_id),
-        )
-        await db.commit()
+        last_err: Exception | None = None
+        for delay in (0.0, 0.05, 0.15, 0.4, 1.0):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                await db.execute(
+                    "UPDATE event_checkpoint "
+                    "SET consumed_at = ?, status = 'consumed' "
+                    "WHERE id = ?",
+                    (time.time(), checkpoint_id),
+                )
+                await db.commit()
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower():
+                    raise
+                last_err = e
+        raise last_err  # type: ignore[misc]
 
     async def mark_deferred(self, checkpoint_id: int, reason: str) -> None:
         """일시 거부 — recover 때 재시도 대상으로 남긴다."""
         db = self._require_db()
-        await db.execute(
-            "UPDATE event_checkpoint "
-            "SET status = 'deferred', last_reason = ? "
-            "WHERE id = ?",
-            (reason, checkpoint_id),
-        )
-        await db.commit()
+        last_err: Exception | None = None
+        for delay in (0.0, 0.05, 0.15, 0.4, 1.0):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                await db.execute(
+                    "UPDATE event_checkpoint "
+                    "SET status = 'deferred', last_reason = ? "
+                    "WHERE id = ?",
+                    (reason, checkpoint_id),
+                )
+                await db.commit()
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower():
+                    raise
+                last_err = e
+        raise last_err  # type: ignore[misc]
 
     async def mark_failed(self, checkpoint_id: int, reason: str) -> None:
         """영구 실패로 표시."""

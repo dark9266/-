@@ -283,24 +283,39 @@ class Orchestrator:
         흐름을 차단해서는 안 되므로 예외는 debug 로그로 흘린다.
         """
         try:
+            import asyncio as _asyncio
+            import sqlite3 as _sqlite3
             import time as _time
             db = self._checkpoints._require_db()  # noqa: SLF001
-            await db.execute(
-                """INSERT INTO decision_log
-                    (ts, stage, decision, reason, source, kream_product_id, model_no, extra)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    _time.time(),
-                    stage,
-                    decision,
-                    reason,
-                    source,
-                    kream_product_id,
-                    model_no,
-                    extra,
-                ),
-            )
-            await db.commit()
+            last_err: Exception | None = None
+            for delay in (0.0, 0.05, 0.15, 0.4, 1.0):
+                if delay > 0:
+                    await _asyncio.sleep(delay)
+                try:
+                    await db.execute(
+                        """INSERT INTO decision_log
+                            (ts, stage, decision, reason, source, kream_product_id, model_no, extra)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            _time.time(),
+                            stage,
+                            decision,
+                            reason,
+                            source,
+                            kream_product_id,
+                            model_no,
+                            extra,
+                        ),
+                    )
+                    await db.commit()
+                    last_err = None
+                    break
+                except _sqlite3.OperationalError as e:
+                    if "locked" not in str(e).lower():
+                        raise
+                    last_err = e
+            if last_err is not None:
+                raise last_err
         except aiosqlite.Error:
             logger.warning(
                 "decision_log 쓰기 실패 (비치명): stage=%s reason=%s",
