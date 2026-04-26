@@ -284,11 +284,25 @@ def _parse_pdp_sizes(html_text: str) -> list[TnfSizeInfo]:
         sold = sku.get("isSoldOut", False)
         qty = sku.get("quantity", 0)
         for opt_id in sku.get("selectedOptions") or []:
-            label = size_map.get(opt_id)
+            raw = size_map.get(opt_id)
+            if not raw:
+                continue
+            label = _normalize_size_label(raw)
             if label and label not in seen:
                 seen.add(label)
                 sizes.append(TnfSizeInfo(size=label, in_stock=not sold and qty > 0))
     return sizes
+
+
+_SIZE_PREFIX_NUM_RE = re.compile(r"^\d{3}(?=[A-Za-z])")
+
+
+def _normalize_size_label(label: str) -> str:
+    """노스페이스 PDP는 `090S`/`095M`/`100L` 처럼 신장 prefix를 붙여 반환.
+    크림 DB 사이즈는 `S`/`M`/`L` 단일 토큰이라 교집합이 0 → 후보 drop.
+    뒤에 알파벳이 따라올 때만 숫자 3자리 prefix 제거 (신발 `230`/`270` 보존).
+    """
+    return _SIZE_PREFIX_NUM_RE.sub("", label).strip()
 
 
 # ─── 크롤러 클래스 ───────────────────────────────────────

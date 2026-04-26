@@ -22,7 +22,11 @@ from src.core.event_bus import (
     ProfitFound,
 )
 from src.core.orchestrator import Orchestrator
-from src.crawlers.thenorthface import parse_listing_html
+from src.crawlers.thenorthface import (
+    _normalize_size_label,
+    _parse_pdp_sizes,
+    parse_listing_html,
+)
 
 # ─── DB 헬퍼 ──────────────────────────────────────────────
 
@@ -490,3 +494,49 @@ async def test_end_to_end_through_orchestrator(bus, kream_db, tmp_path):
     finally:
         await orch.stop()
         await store.close()
+
+
+# ─── 사이즈 정규화 (PDP `090S`/`095M` → 크림 `S`/`M`) ─────────
+
+
+def test_normalize_size_label_strips_apparel_height_prefix():
+    """의류 PDP 사이즈는 신장 prefix(3자리) + 사이즈 라벨로 옴."""
+    assert _normalize_size_label("090S") == "S"
+    assert _normalize_size_label("095M") == "M"
+    assert _normalize_size_label("100L") == "L"
+    assert _normalize_size_label("085XS") == "XS"
+    assert _normalize_size_label("110XXL") == "XXL"
+
+
+def test_normalize_size_label_preserves_shoe_sizes():
+    """신발은 prefix 없는 순수 3자리(`230`/`270`) — 통째로 보존."""
+    assert _normalize_size_label("230") == "230"
+    assert _normalize_size_label("270") == "270"
+    assert _normalize_size_label("285") == "285"
+
+
+def test_normalize_size_label_passthrough_for_plain_labels():
+    """이미 깨끗한 라벨은 그대로 (공백 trim 만)."""
+    assert _normalize_size_label("M") == "M"
+    assert _normalize_size_label("XXL") == "XXL"
+    assert _normalize_size_label("FREE") == "FREE"
+    assert _normalize_size_label("  L  ") == "L"
+
+
+def test_parse_pdp_sizes_normalizes_apparel_labels():
+    """PDP HTML 통합 — apparel 사이즈가 정규화돼서 크림 교집합과 매칭 가능."""
+    html = (
+        '<div data-product-options="['
+        '{&quot;type&quot;:&quot;SIZE&quot;,'
+        '&quot;values&quot;:{&quot;1&quot;:&quot;090S&quot;,'
+        '&quot;2&quot;:&quot;095M&quot;,&quot;3&quot;:&quot;100L&quot;}}'
+        ']"></div>'
+        '<div data-sku-data="['
+        '{&quot;isSoldOut&quot;:false,&quot;quantity&quot;:5,&quot;selectedOptions&quot;:[1]},'
+        '{&quot;isSoldOut&quot;:false,&quot;quantity&quot;:3,&quot;selectedOptions&quot;:[2]},'
+        '{&quot;isSoldOut&quot;:true,&quot;quantity&quot;:0,&quot;selectedOptions&quot;:[3]}'
+        ']"></div>'
+    )
+    sizes = _parse_pdp_sizes(html)
+    label_to_stock = {s.size: s.in_stock for s in sizes}
+    assert label_to_stock == {"S": True, "M": True, "L": False}
