@@ -36,8 +36,8 @@ from src.crawlers import (  # noqa: F401, E402
     twentynine_cm,
     vans,
     wconcept,
-    worksout,
 )
+# worksout 폐기 (project_worksout_platform_permanent_dropped.md, 2026-04-19)
 from src.dashboard import queries
 
 BASE_DIR = Path(__file__).resolve().parent

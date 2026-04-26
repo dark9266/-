@@ -438,15 +438,12 @@ class TestReadOnly:
         """`_conn()` 은 `mode=ro` URI 로 연결하므로 INSERT 가 실패해야 한다."""
         from src.dashboard import queries
 
-        conn = queries._conn()
-        try:
+        with queries._conn() as conn:
             with pytest.raises(sqlite3.OperationalError):
                 conn.execute(
                     "INSERT INTO kream_api_calls(endpoint, method) VALUES (?, ?)",
                     ("/x", "GET"),
                 )
-        finally:
-            conn.close()
 
     def test_health_queries_dont_mutate(self, temp_db):
         """헬스핀 쿼리 4종 호출 후에도 DB 행 수가 불변."""
