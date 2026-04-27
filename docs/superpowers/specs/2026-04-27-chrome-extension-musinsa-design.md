@@ -9,14 +9,21 @@
 
 ## 1. 목적
 
-무신사 결제 페이지·상품 상세 페이지(PDP)에서 노출되는 모든 할인·쿠폰 정보를 Chrome 확장이 100% catch → 봇 백엔드(FastAPI) → SQLite 저장 → `profit_calculator`가 매칭되는 catch row를 **추정이 아니라 그대로 정확 계산에 사용**.
+무신사 **결제 페이지에서만 노출되는** 카드 즉시할인·시한 쿠폰·자동 매칭 쿠폰·실측 결제가를 Chrome 확장이 100% catch → 봇 백엔드(FastAPI) → SQLite 저장 → `profit_calculator`가 매칭되는 catch row를 **추정이 아니라 그대로 정확 계산에 사용**.
 
-**현재 한계**:
-- 봇은 정기 쿠폰만 적용한 보수 추정 사용 (메모 결정사항). 카드 즉시할인·시한 쿠폰·자동 매칭 쿠폰은 결제 페이지에서만 노출되어 catch 불가능.
-- 결과: 봇 추정 ≥ 실제 결제 보장은 되나, 같은 모델인데 실제 +10~17k 추가 할인 가능한 케이스가 알림에서 누락됨 (검증 6건 중 4건이 갭 +10k↑).
+**PDP는 범위 외 — 봇 어댑터(`musinsa_httpx.py`)가 이미 catch 중**:
+- `__NEXT_DATA__.pageProps.meta.data` 의 `goodsNm/normalPrice/salePrice/couponPrice/isLimitedCoupon` 은 모든 사용자 동일 → SSR fetch로 봇이 이미 수집 중. PDP catch는 redundant.
+- 색상/사이즈 옵션은 별도 API `/api2/goods/{id}/options` 호출 → 봇 어댑터 이미 호출 중.
+- 따라서 Chrome 확장의 PDP scan은 폐기. 결제 페이지 전용.
+
+**현재 한계 (확장이 메우는 정보)**:
+- 카드 즉시할인 7개 = 결제 페이지에서 사용자가 카드 toggle 시에만 노출
+- 사용자별 등급 쿠폰 = 로그인 + 결제 진입 시점에만 적용
+- 시한 쿠폰 / 자동 매칭 쿠폰 적용 후 결제가 = 결제 페이지에서만
+- 결과: 봇은 위 정보 catch 불가능 → 보수 추정. 검증 6건 중 4건이 +10k↑ 갭.
 
 **개선 효과**:
-- catch한 카드 즉시할인·시한 쿠폰을 **추정 없이 그 데이터 그대로** 적용 → 정확 계산 → 추가 수익 발굴 ↑.
+- 사용자 결제 페이지 진입 시 확장이 위 정보 100% catch → `final_price` 그대로 사용 → 정확 계산 → 추가 수익 발굴 ↑.
 - catch 데이터 없으면 현재 보수 추정 그대로 (거짓 알림 0 유지).
 
 **불변 원칙 (이 spec이 약화시키지 않음)**:
@@ -28,6 +35,7 @@
 
 - ❌ 자동 결제 / 자동 카트 add / 자동 쿠폰 발급 — 매크로 = BAN 위험. 영구 X.
 - ❌ 카드 자동 toggle 시뮬레이션 — 7개 카드 catch는 사용자 본인 클릭으로만.
+- ❌ **PDP scan** — 봇 어댑터가 이미 동일 정보 수집 중. 확장은 결제 페이지 전용.
 - ❌ 무신사 외 소싱처 — Phase 1은 무신사 단독. 골격은 22 소싱처 확장 가능하게 짜되 구현은 Phase 2 (나이키), Phase 3 (29cm), Phase 4 (그 외) 점진.
 - ❌ 모바일 — 메모 결정사항 (데스크톱 Chrome만).
 - ❌ Firefox/Safari — Chrome 확장 단독 (Manifest V3).
@@ -94,19 +102,24 @@
 
 ## 5. Catch 항목 — 데이터로 정확 계산 (추정 X)
 
-**원칙**: 확장이 잡은 항목은 모두 결제 페이지/PDP에 노출된 실제 값. 봇은 이를 추정·평균·보수 처리 없이 그대로 수익 계산식에 대입.
+**원칙**: 확장이 잡은 항목은 모두 결제 페이지에 노출된 실제 값. 봇은 이를 추정·평균·보수 처리 없이 그대로 수익 계산식에 대입.
 
 ### 5.0 매칭 검증 (catch 적용 전 필수 게이트)
 - catch row 적용 전, 봇이 매칭한 상품의 (모델번호·색상·사이즈)가 catch 시점 페이지의 (native_id·color_code·size_code)와 일치하는지 검증.
 - 불일치 시 catch row 미적용 → 보수 추정 그대로 (거짓 알림 방어).
-- 사이즈는 catch 시점 페이지에 노출되면 함께 저장 (§6.2 size_code 필드).
+- 사이즈는 결제 페이지에 노출되면 함께 저장 (§6.2 size_code 필드).
 
+### 5.1 결제 페이지 전용 (PDP는 범위 외)
 
-### 5.1 PDP (`https://www.musinsa.com/products/{goodsNo}`)
-- 발급 가능 쿠폰 list (`brazeJson` / `skuqty` payload 안에 포함)
-- 자동 매칭 쿠폰 (상품 단위)
-- 등급할인 (LV.4 브론즈 1% 적립 등)
-- 색상별 옵션 (color code)
+PDP scan 폐기 — 봇 어댑터(`musinsa_httpx.py`)가 `__NEXT_DATA__` SSR JSON + `/api2/goods/{id}/options` API 로 이미 동일 정보 수집 중.
+
+Chrome 확장은 **결제 페이지에서만 노출되는 정보**만 catch:
+- 카드 즉시할인 7개 (사용자 카드 toggle 시 결제가 변동 catch)
+- 시한 쿠폰 적용 후 결제가
+- 자동 매칭 쿠폰 적용 후 결제가
+- 페이 옵션별 결제가 (무신사페이/토스페이/카카오페이)
+- 적립금 차감
+- 최종 결제가 (`final_price`)
 
 ### 5.2 결제 페이지 (`https://www.musinsa.com/order/...` — manifest V3 host_permissions)
 - 카드 즉시할인 7개 (사용자가 카드 toggle 시 변동되는 결제가 catch)
@@ -175,10 +188,9 @@ Content-Type: application/json
 
 ### 6.4 봇 통합 (profit_calculator hook) — 데이터 그대로 적용 (추정 X)
 - 매칭 후보 결정 시점에서 `coupon_catches` lookup (sourcing + native_id + color_code + size_code).
-- 매칭 row 있음 → payload의 **실측 결제가**(`final_price`)를 그대로 매입가로 사용. 카드 즉시할인·시한 쿠폰·자동 매칭 쿠폰을 따로 합산하지 않음 (이미 final_price에 반영됨).
-- 매칭 row 없음 → 현재 보수 추정 그대로 (변경 X).
-- 색상은 일치 + 사이즈만 mismatch인 경우: 동일 native_id+color_code의 `size_code='NONE'` (PDP catch) row가 있으면 그것 사용. 없으면 catch 미적용 → 보수 추정.
-- catch 만료 정책: `captured_at + 7일` 지난 row는 lookup에서 제외 (시한 쿠폰 만료 + 카드 즉시할인 룰 변경 대비). 결제 페이지 catch는 24시간 내 우선 적용.
+- 매칭 row 있음 (page_type='checkout') → payload의 **실측 결제가**(`final_price`)를 그대로 매입가로 사용. 카드 즉시할인·시한 쿠폰·자동 매칭 쿠폰을 따로 합산하지 않음 (이미 final_price에 반영됨).
+- 매칭 row 없음 또는 page_type='pdp' → 현재 보수 추정 그대로 (변경 X). PDP row는 본 spec 범위에서 무시 (코드/스키마는 미래 use case 위해 보존).
+- catch 만료 정책: `captured_at + 7일` 지난 row는 lookup에서 제외. 카드 즉시할인 룰 변경 대비.
 
 ---
 
