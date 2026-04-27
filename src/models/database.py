@@ -212,6 +212,26 @@ CREATE INDEX IF NOT EXISTS idx_event_ckpt_pending
     ON event_checkpoint(consumer, consumed_at);
 CREATE INDEX IF NOT EXISTS idx_event_ckpt_created
     ON event_checkpoint(created_at);
+
+-- Chrome 확장 catch row (Phase 1: 무신사·29cm 결제 페이지 실측 결제가)
+-- 키 = (sourcing, native_id, color_code, size_code, page_type)
+-- profit_calculator.apply_catch_to_buy_price() 가 lookup 후 retail_price 갱신.
+CREATE TABLE IF NOT EXISTS coupon_catches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sourcing TEXT NOT NULL,
+    native_id TEXT NOT NULL,
+    color_code TEXT NOT NULL,
+    size_code TEXT NOT NULL,
+    page_type TEXT NOT NULL CHECK (page_type IN ('pdp', 'checkout')),
+    payload TEXT NOT NULL,
+    captured_at REAL NOT NULL,
+    UNIQUE(sourcing, native_id, color_code, size_code, page_type)
+);
+CREATE INDEX IF NOT EXISTS idx_coupon_lookup
+    ON coupon_catches(sourcing, native_id, color_code, size_code);
+-- expiry scan index (DELETE WHERE captured_at < cutoff, TTL 3일)
+CREATE INDEX IF NOT EXISTS idx_coupon_captured
+    ON coupon_catches(captured_at);
 """
 
 

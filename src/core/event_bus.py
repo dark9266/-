@@ -80,6 +80,9 @@ class ProfitFound(Event):
     url: str
     size_profits: tuple = ()
     color_name: str = ""
+    # Phase 1.5 — Chrome 확장 catch 적용 흔적
+    catch_applied: bool = False
+    original_retail: int | None = None
 
 
 @dataclass(frozen=True)

@@ -5,8 +5,10 @@
 """
 
 import math
+from dataclasses import dataclass
 
 from src.config import settings
+from src.coupon_store import lookup_catch
 from src.models.product import (
     AutoScanOpportunity,
     AutoScanSizeProfit,
@@ -341,3 +343,54 @@ def format_profit_summary(opportunity: ProfitOpportunity) -> str:
         )
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Chrome Extension catch hook — 추가만, 기존 흐름 수정 X (Phase 1.5)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CatchAppliedPrice:
+    buy_price: int
+    catch_applied: bool
+    catch_source: str | None = None  # 'checkout' | None
+
+
+async def apply_catch_to_buy_price(
+    *,
+    sourcing: str,
+    native_id: str,
+    color_code: str,
+    size_code: str,
+    original_price: int,
+    db_path: str | None = None,
+) -> CatchAppliedPrice:
+    """매칭 검증(색·사이즈 일치) 통과한 결제 페이지 catch row 적용.
+
+    PDP 정보는 봇 어댑터가 SSR fetch + 옵션 API 로 수집 중 →
+    확장의 PDP catch 는 폐기. 이 hook 은 결제 페이지 catch (page_type='checkout')만 적용.
+
+    - checkout catch + final_price > 0 → final_price 그대로 사용
+    - 그 외 (catch 없음, color/size mismatch, page_type='pdp') → original_price 그대로
+
+    매칭 1순위 원칙: catch 데이터는 매칭 후단(가격 계산) 보강일 뿐.
+    매칭 단계 (모델번호·색상·사이즈 동일성 검증) 은 호출자가 책임.
+    """
+    catch = await lookup_catch(
+        sourcing, native_id, color_code, size_code, db_path=db_path
+    )
+    if catch is None or catch.page_type != "checkout":
+        return CatchAppliedPrice(buy_price=original_price, catch_applied=False)
+
+    final = catch.payload.get("final_price")
+    if isinstance(final, (int, float)) and final > 0:
+        # 무신사 결제가는 정수 won. JSON 직렬화 시 174000.0 float 가능 →
+        # round() 로 정수화.
+        return CatchAppliedPrice(
+            buy_price=round(final),
+            catch_applied=True,
+            catch_source="checkout",
+        )
+
+    return CatchAppliedPrice(buy_price=original_price, catch_applied=False)

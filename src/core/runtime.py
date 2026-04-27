@@ -68,7 +68,11 @@ from src.core.orchestrator import Orchestrator
 from src.core.v3_alert_logger import V3AlertLogger, build_profit_handler
 from src.core.v3_discord_publisher import V3DiscordPublisher, wrap_handler
 from src.models.product import Signal
-from src.profit_calculator import calculate_size_profit, determine_signal
+from src.profit_calculator import (
+    apply_catch_to_buy_price,
+    calculate_size_profit,
+    determine_signal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -359,8 +363,29 @@ class V3Runtime:
             if kream_sell_price <= 0 or event.retail_price <= 0:
                 return None
 
+            # Phase 1.5 — Chrome 확장 catch 데이터 적용 (있으면 실측가, 없으면 정가).
+            # 매칭 검증 (color_name 일치) 은 lookup_catch SQL 단계에서 처리.
+            catch_price = await apply_catch_to_buy_price(
+                sourcing=event.source,
+                native_id=event.model_no,
+                color_code=event.color_name or "NONE",
+                size_code="NONE",
+                original_price=event.retail_price,
+            )
+            effective_retail = catch_price.buy_price
+            if catch_price.catch_applied:
+                logger.info(
+                    "[v3] catch 적용: pid=%s model=%s color=%s %d → %d (source=%s)",
+                    event.kream_product_id,
+                    event.model_no,
+                    event.color_name or "-",
+                    event.retail_price,
+                    effective_retail,
+                    catch_price.catch_source,
+                )
+
             result = calculate_size_profit(
-                retail_price=event.retail_price,
+                retail_price=effective_retail,
                 kream_sell_price=kream_sell_price,
                 in_stock=True,
                 bid_count=0,
@@ -387,7 +412,7 @@ class V3Runtime:
                 if sell_px <= 0:
                     continue
                 per = calculate_size_profit(
-                    retail_price=event.retail_price,
+                    retail_price=effective_retail,
                     kream_sell_price=sell_px,
                     in_stock=True,
                     bid_count=0,
@@ -408,7 +433,7 @@ class V3Runtime:
                 kream_product_id=event.kream_product_id,
                 model_no=event.model_no,
                 size=event.size,
-                retail_price=event.retail_price,
+                retail_price=effective_retail,
                 kream_sell_price=kream_sell_price,
                 net_profit=result.net_profit,
                 roi=result.roi,
@@ -417,6 +442,8 @@ class V3Runtime:
                 url=event.url,
                 size_profits=tuple(size_profits),
                 color_name=event.color_name,
+                catch_applied=catch_price.catch_applied,
+                original_retail=event.retail_price if catch_price.catch_applied else None,
             )
 
         return _handler

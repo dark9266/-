@@ -89,6 +89,8 @@ class V3AlertLogger:
             "size": event.size,
             "color_name": getattr(event, "color_name", "") or "",
             "url": event.url,
+            "catch_applied": bool(getattr(event, "catch_applied", False)),
+            "original_retail": getattr(event, "original_retail", None),
         }
         try:
             self._append_jsonl(payload)

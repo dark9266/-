@@ -94,14 +94,25 @@ def _build_embed(event: ProfitFound, product: dict | None = None) -> dict:
     )
     description = "\n".join(description_lines)
 
+    catch_applied = getattr(event, "catch_applied", False)
+    original_retail = getattr(event, "original_retail", None)
+    if catch_applied and original_retail:
+        price_value = (
+            f"💡 실측 결제가 **{event.retail_price:,}원**\n"
+            f"   _(정가 {original_retail:,}원, 확장 catch)_\n"
+            f"크림 즉시판매 **{event.kream_sell_price:,}원**\n"
+            f"차액 **{event.kream_sell_price - event.retail_price:,}원**"
+        )
+    else:
+        price_value = (
+            f"소싱가 **{event.retail_price:,}원**\n"
+            f"크림 즉시판매 **{event.kream_sell_price:,}원**\n"
+            f"차액 **{event.kream_sell_price - event.retail_price:,}원**"
+        )
     fields: list[dict] = [
         {
             "name": "💰 가격",
-            "value": (
-                f"소싱가 **{event.retail_price:,}원**\n"
-                f"크림 즉시판매 **{event.kream_sell_price:,}원**\n"
-                f"차액 **{event.kream_sell_price - event.retail_price:,}원**"
-            ),
+            "value": price_value,
             "inline": True,
         },
         {
