@@ -9,15 +9,18 @@
 
 ## 1. 목적
 
-무신사 결제 페이지·상품 상세 페이지(PDP)에서 노출되는 모든 할인·쿠폰 정보를 Chrome 확장이 100% catch → 봇 백엔드(FastAPI) → SQLite 저장 → `profit_calculator`가 매칭되는 catch row를 적용해 수익 추정 정확도/커버리지 향상.
+무신사 결제 페이지·상품 상세 페이지(PDP)에서 노출되는 모든 할인·쿠폰 정보를 Chrome 확장이 100% catch → 봇 백엔드(FastAPI) → SQLite 저장 → `profit_calculator`가 매칭되는 catch row를 **추정이 아니라 그대로 정확 계산에 사용**.
 
 **현재 한계**:
 - 봇은 정기 쿠폰만 적용한 보수 추정 사용 (메모 결정사항). 카드 즉시할인·시한 쿠폰·자동 매칭 쿠폰은 결제 페이지에서만 노출되어 catch 불가능.
 - 결과: 봇 추정 ≥ 실제 결제 보장은 되나, 같은 모델인데 실제 +10~17k 추가 할인 가능한 케이스가 알림에서 누락됨 (검증 6건 중 4건이 갭 +10k↑).
 
 **개선 효과**:
-- catch한 카드 즉시할인·시한 쿠폰을 추정에 반영 → 추가 수익 발굴 ↑.
-- 보수 추정 원칙 유지: catch 데이터 없으면 현재 알고리즘 그대로 (거짓 알림 0).
+- catch한 카드 즉시할인·시한 쿠폰을 **추정 없이 그 데이터 그대로** 적용 → 정확 계산 → 추가 수익 발굴 ↑.
+- catch 데이터 없으면 현재 보수 추정 그대로 (거짓 알림 0 유지).
+
+**불변 원칙 (이 spec이 약화시키지 않음)**:
+- **소싱처 제품의 사이즈·컬러 매칭 정확성이 여전히 1순위.** catch 데이터 도입은 매칭 후단(가격 계산) 보강일 뿐, 매칭 단계 (모델번호·색상·사이즈 동일성 검증) 자체는 그대로. 매칭이 틀리면 catch 데이터도 무의미.
 
 ---
 
@@ -89,7 +92,15 @@
 
 ---
 
-## 5. Catch 항목 (무신사 PDP + 결제 페이지)
+## 5. Catch 항목 — 데이터로 정확 계산 (추정 X)
+
+**원칙**: 확장이 잡은 항목은 모두 결제 페이지/PDP에 노출된 실제 값. 봇은 이를 추정·평균·보수 처리 없이 그대로 수익 계산식에 대입.
+
+### 5.0 매칭 검증 (catch 적용 전 필수 게이트)
+- catch row 적용 전, 봇이 매칭한 상품의 (모델번호·색상·사이즈)가 catch 시점 페이지의 (native_id·color_code·size_code)와 일치하는지 검증.
+- 불일치 시 catch row 미적용 → 보수 추정 그대로 (거짓 알림 방어).
+- 사이즈는 catch 시점 페이지에 노출되면 함께 저장 (§6.2 size_code 필드).
+
 
 ### 5.1 PDP (`https://www.musinsa.com/products/{goodsNo}`)
 - 발급 가능 쿠폰 list (`brazeJson` / `skuqty` payload 안에 포함)
@@ -115,9 +126,10 @@
 ## 6. 데이터 흐름 + 저장 키
 
 ### 6.1 매칭 키 (확정)
-- **(sourcing, native_id, color_code)** — 색상까지 정확 매칭된 catch만 저장.
-- 색상 매칭 실패 = catch 폐기 (평균 fallback X — "실제 매칭이 중요" 사용자 결정사항).
-- 무신사 예: `sourcing="musinsa", native_id="5874434", color_code="BLACK"`
+- **(sourcing, native_id, color_code, size_code)** — 색상·사이즈까지 정확 매칭된 catch만 저장.
+- 색상 또는 사이즈 매칭 실패 = catch 폐기 (평균/추정 fallback X — "실제 매칭이 중요" 사용자 결정사항).
+- 사이즈가 페이지에 노출되지 않는 경우 (PDP 단계 일부) `size_code='NONE'` 저장 → 봇 적용 시 동일 native_id+color_code의 NONE row를 size 무관 폴백으로 사용 가능. 단 결제 페이지 catch는 사이즈 노출 시 반드시 저장.
+- 무신사 예: `sourcing="musinsa", native_id="5874434", color_code="BLACK", size_code="270"`
 
 ### 6.2 SQLite 스키마
 ```sql
@@ -126,13 +138,14 @@ CREATE TABLE coupon_catches (
     sourcing TEXT NOT NULL,           -- 'musinsa' | 'nike' | '29cm' | ...
     native_id TEXT NOT NULL,          -- goodsNo / styleColor / ...
     color_code TEXT NOT NULL,         -- 색상 코드 (없으면 'NONE')
+    size_code TEXT NOT NULL,          -- 사이즈 코드 (페이지 미노출 시 'NONE')
     page_type TEXT NOT NULL,          -- 'pdp' | 'checkout'
-    payload TEXT NOT NULL,            -- JSON (catch 항목 raw)
+    payload TEXT NOT NULL,            -- JSON (catch 항목 raw, 결제가/할인 실측값)
     captured_at REAL NOT NULL,        -- epoch float (decision_log 일관성)
-    UNIQUE(sourcing, native_id, color_code, page_type)
+    UNIQUE(sourcing, native_id, color_code, size_code, page_type)
 );
 CREATE INDEX idx_coupon_lookup
-    ON coupon_catches(sourcing, native_id, color_code);
+    ON coupon_catches(sourcing, native_id, color_code, size_code);
 ```
 
 ### 6.3 POST endpoint
@@ -160,11 +173,12 @@ Content-Type: application/json
 }
 ```
 
-### 6.4 봇 통합 (profit_calculator hook)
-- 매칭 후보 결정 시점에서 `coupon_catches` lookup (sourcing + native_id + color_code)
-- 매칭 row 있음 → payload의 카드 즉시할인·시한 쿠폰·자동 매칭 쿠폰 합계를 추정 가격에서 차감
-- 매칭 row 없음 → 현재 보수 추정 그대로 (변경 X)
-- catch 만료 정책: `captured_at + 7일` 지난 row는 lookup에서 제외 (시한 쿠폰 만료 대비)
+### 6.4 봇 통합 (profit_calculator hook) — 데이터 그대로 적용 (추정 X)
+- 매칭 후보 결정 시점에서 `coupon_catches` lookup (sourcing + native_id + color_code + size_code).
+- 매칭 row 있음 → payload의 **실측 결제가**(`final_price`)를 그대로 매입가로 사용. 카드 즉시할인·시한 쿠폰·자동 매칭 쿠폰을 따로 합산하지 않음 (이미 final_price에 반영됨).
+- 매칭 row 없음 → 현재 보수 추정 그대로 (변경 X).
+- 색상은 일치 + 사이즈만 mismatch인 경우: 동일 native_id+color_code의 `size_code='NONE'` (PDP catch) row가 있으면 그것 사용. 없으면 catch 미적용 → 보수 추정.
+- catch 만료 정책: `captured_at + 7일` 지난 row는 lookup에서 제외 (시한 쿠폰 만료 + 카드 즉시할인 룰 변경 대비). 결제 페이지 catch는 24시간 내 우선 적용.
 
 ---
 
@@ -274,6 +288,8 @@ export default {
 - 무신사 결제 페이지 정확한 URL 패턴 (`/order/...` 변형) — 사용자 PC에서 확인
 - 카드 toggle 시 결제가 변동을 어느 DOM/네트워크 시점에 catch 할지 — 무신사 결제 페이지 분석 단계에서 확정
 - 색상 코드가 native_id에 이미 포함된 경우 (예: 나이키 `DV1748-001`) color_code 별도 필드 처리 방식
+- 사이즈 코드 형식 표준화 — 무신사 `270` vs 크림 `270mm` vs 의류 `M/L` 등 정규화 룰 (소싱처별 매칭 정확성 1순위 유지)
+- PDP catch (size_code=NONE) 폴백을 결제 페이지 catch가 1건이라도 있을 때 끄는 정책 (정확성 우선) vs 폭넓게 쓰는 정책 (커버리지 우선) 중 선택
 
 ---
 
