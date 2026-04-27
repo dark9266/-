@@ -432,10 +432,22 @@ class Orchestrator:
             return False, 0
 
         from src.config import settings
-        from src.profit_calculator import calculate_kream_fees
+        from src.profit_calculator import apply_catch_to_buy_price, calculate_kream_fees
+
+        # Phase 1.5 — Chrome 확장 catch 적용 (prefilter 도 catch 후 평가).
+        # candidate_handler 보다 먼저 호출되므로 prefilter 가 정가 기준으로
+        # 미리 차단하면 catch hook 무력화 → prefilter 도 동일하게 catch 적용.
+        catch_price = await apply_catch_to_buy_price(
+            sourcing=event.source,
+            native_id=event.model_no,
+            color_code=event.color_name or "NONE",
+            size_code="NONE",
+            original_price=event.retail_price,
+        )
+        effective_retail = catch_price.buy_price
 
         fees = calculate_kream_fees(last_sell)
-        tentative = last_sell - event.retail_price - fees["total_fees"]
+        tentative = last_sell - effective_retail - fees["total_fees"]
         upside = int(last_sell * PREFILTER_UPSIDE_BUFFER_RATIO)
         min_profit = getattr(settings, "alert_min_profit", 10_000)
         if tentative + upside < min_profit:
