@@ -87,6 +87,11 @@ def format_profit_alert(opportunity: ProfitOpportunity) -> discord.Embed:
         size_lines += "\n*... 상위 10개만 표시*"
     embed.add_field(name="사이즈별 수익", value=size_lines, inline=False)
 
+    # Phase 1 — 체결가 등록 시 마진 (정보 표시, 시그널 영향 X)
+    dual_lines = _format_dual_anchor_lines(opportunity.size_profits)
+    if dual_lines:
+        embed.add_field(name="체결가 등록 시 마진", value=dual_lines, inline=False)
+
     # 거래 활성도
     trade_info = (
         f"**7일 거래량:** {kp.volume_7d}건\n"
@@ -130,6 +135,23 @@ def _format_size_table(size_profits: list[SizeProfitResult]) -> str:
             f"{sp.net_profit:>+7,} {sp.roi:>5.1f}% {stock:>2}"
         )
 
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def _format_dual_anchor_lines(size_profits: list[SizeProfitResult]) -> str:
+    """체결가 등록 시 마진 라인 (사이즈별)."""
+    lines = ["```"]
+    lines.append(f"{'사이즈':>5} {'체결가':>9} {'마진':>9} {'ROI':>6}")
+    lines.append("-" * 35)
+    for sp in size_profits[:10]:  # 1024자 제한 보호 (상위 10개)
+        if sp.kream_last_sale_price > 0:
+            lines.append(
+                f"{sp.size:>5} {sp.kream_last_sale_price:>8,} "
+                f"{sp.net_profit_last_sale:>+8,} {sp.roi_last_sale:>5.1f}%"
+            )
+        else:
+            lines.append(f"{sp.size:>5} {'N/A':>9} {'N/A':>9} {'-':>6}")
     lines.append("```")
     return "\n".join(lines)
 
