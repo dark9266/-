@@ -212,3 +212,31 @@ class TestAnalyzeOpportunity:
         assert result is not None
         # 85,000원(nike)이 최저가로 선택되어야 함
         assert result.size_profits[0].retail_price == 85_000
+
+
+# ---------------------------------------------------------------------------
+# Task 1 — SizeProfitResult dual-anchor 필드
+# ---------------------------------------------------------------------------
+
+
+def test_size_profit_result_has_dual_anchor_fields():
+    """SizeProfitResult 가 체결가/즉시구매가 dual-anchor 필드 보유."""
+    from src.models.product import SizeProfitResult
+
+    result = SizeProfitResult(
+        size="270",
+        retail_price=80000,
+        kream_sell_price=102000,
+        sell_fee=9482,
+        inspection_fee=0,
+        kream_shipping_fee=0,
+        seller_shipping_fee=3000,
+        total_cost=92482,
+        net_profit=9518,
+        roi=11.9,
+    )
+    # 신규 필드 — 기본값 0
+    assert result.kream_last_sale_price == 0
+    assert result.kream_buy_now_price == 0
+    assert result.net_profit_last_sale == 0
+    assert result.roi_last_sale == 0.0

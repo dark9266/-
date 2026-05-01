@@ -76,17 +76,22 @@ class SizeProfitResult:
 
     size: str
     retail_price: int  # 구매가
-    kream_sell_price: int  # 크림 즉시판매가
+    kream_sell_price: int  # 크림 즉시판매가 (시그널 게이트 기준)
     sell_fee: int  # 크림 판매 수수료 (부가세 포함)
     inspection_fee: int  # 검수비
     kream_shipping_fee: int  # 크림 배송비
     seller_shipping_fee: int  # 사업자 택배비
-    total_cost: int  # 총 비용
-    net_profit: int  # 순수익
-    roi: float  # 수익률 (%)
+    total_cost: int  # 총 비용 (즉시판매가 기준)
+    net_profit: int  # 순수익 (즉시판매가 기준, 시그널 게이트)
+    roi: float  # 수익률 % (즉시판매가 기준)
     signal: Signal = Signal.NOT_RECOMMENDED
     in_stock: bool = True
     bid_count: int = 0
+    # Phase 1 — Dual-Anchor 표시 (시그널 게이트 영향 X)
+    kream_last_sale_price: int = 0  # 마지막 체결가 (등록판매 시 도달 가격, 정보 표시용)
+    kream_buy_now_price: int = 0  # 즉시구매가 (등록판매 상한 참고)
+    net_profit_last_sale: int = 0  # 체결가 등록 시 순수익
+    roi_last_sale: float = 0.0  # 체결가 등록 시 ROI %
 
 
 @dataclass
