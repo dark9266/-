@@ -314,6 +314,27 @@ def test_analyze_opportunity_propagates_last_sale():
 
 
 # ---------------------------------------------------------------------------
+# Task 5 — 시그널 게이트 보존 회귀 테스트
+# ---------------------------------------------------------------------------
+
+
+def test_signal_gate_unchanged_with_dual_anchor():
+    """체결가 매우 높아도 sell_now 기준 NOT_RECOMMENDED 면 결과 유지."""
+    from src.profit_calculator import calculate_size_profit, determine_signal
+
+    # sell_now 기준 net_profit < 5k → NOT_RECOMMENDED
+    result = calculate_size_profit(
+        retail_price=95000,
+        kream_sell_price=102000,
+        kream_last_sale_price=300000,  # 체결가 비현실적으로 높음
+    )
+    sig = determine_signal(result.net_profit, volume_7d=10)
+    assert sig.name == "NOT_RECOMMENDED"
+    # 체결가 기준으로는 마진 큼 — 단 시그널은 영향 X (보수)
+    assert result.net_profit_last_sale > 100000
+
+
+# ---------------------------------------------------------------------------
 # Task 1 — SizeProfitResult dual-anchor 필드
 # ---------------------------------------------------------------------------
 
