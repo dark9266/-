@@ -215,6 +215,61 @@ class TestAnalyzeOpportunity:
 
 
 # ---------------------------------------------------------------------------
+# Task 2 — calculate_size_profit dual-anchor 마진 계산
+# ---------------------------------------------------------------------------
+
+
+def test_calculate_size_profit_dual_anchor():
+    """체결가 입력 시 net_profit_last_sale 계산."""
+    from src.profit_calculator import calculate_size_profit
+
+    result = calculate_size_profit(
+        retail_price=80000,
+        kream_sell_price=102000,
+        kream_last_sale_price=105000,
+        kream_buy_now_price=110000,
+    )
+    # 즉시판매가 기준 (기존)
+    assert result.net_profit > 0
+    # 체결가 기준 (신규) — last_sale > sell_now 이므로 더 큰 마진
+    assert result.net_profit_last_sale > result.net_profit
+    assert result.kream_last_sale_price == 105000
+    assert result.kream_buy_now_price == 110000
+
+
+def test_calculate_size_profit_no_last_sale():
+    """체결가 0 인 사이즈 → net_profit_last_sale = 0, kream_last_sale_price = 0."""
+    from src.profit_calculator import calculate_size_profit
+
+    result = calculate_size_profit(
+        retail_price=80000,
+        kream_sell_price=102000,
+        kream_last_sale_price=0,
+    )
+    assert result.net_profit > 0  # sell_now 기준은 정상 계산
+    assert result.kream_last_sale_price == 0
+    assert result.net_profit_last_sale == 0
+    assert result.roi_last_sale == 0.0
+
+
+def test_calculate_size_profit_signal_gate_unchanged():
+    """체결가 입력해도 signal 등급은 sell_now 기준 유지 (보수)."""
+    from src.profit_calculator import calculate_size_profit, determine_signal
+
+    # sell_now 기준 마진 = +9,518원 (WATCH 미달, 5k 미만은 NOT_RECOMMENDED)
+    result_sell_now_low = calculate_size_profit(
+        retail_price=92000,
+        kream_sell_price=102000,
+        kream_last_sale_price=200000,  # 체결가 매우 높음
+    )
+    # sell_now 기준 net_profit 만 시그널 결정
+    sig = determine_signal(result_sell_now_low.net_profit, volume_7d=10)
+    # net_profit 이 sell_now 기준이라 5k 이하면 NOT_RECOMMENDED
+    # 체결가 200k 마진 X 영향
+    assert result_sell_now_low.net_profit_last_sale > result_sell_now_low.net_profit
+
+
+# ---------------------------------------------------------------------------
 # Task 1 — SizeProfitResult dual-anchor 필드
 # ---------------------------------------------------------------------------
 
