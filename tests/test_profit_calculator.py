@@ -212,3 +212,151 @@ class TestAnalyzeOpportunity:
         assert result is not None
         # 85,000원(nike)이 최저가로 선택되어야 함
         assert result.size_profits[0].retail_price == 85_000
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — calculate_size_profit dual-anchor 마진 계산
+# ---------------------------------------------------------------------------
+
+
+def test_calculate_size_profit_dual_anchor():
+    """체결가 입력 시 net_profit_last_sale 계산."""
+    from src.profit_calculator import calculate_size_profit
+
+    result = calculate_size_profit(
+        retail_price=80000,
+        kream_sell_price=102000,
+        kream_last_sale_price=105000,
+        kream_buy_now_price=110000,
+    )
+    # 즉시판매가 기준 (기존)
+    assert result.net_profit > 0
+    # 체결가 기준 (신규) — last_sale > sell_now 이므로 더 큰 마진
+    assert result.net_profit_last_sale > result.net_profit
+    assert result.kream_last_sale_price == 105000
+    assert result.kream_buy_now_price == 110000
+
+
+def test_calculate_size_profit_no_last_sale():
+    """체결가 0 인 사이즈 → net_profit_last_sale = 0, kream_last_sale_price = 0."""
+    from src.profit_calculator import calculate_size_profit
+
+    result = calculate_size_profit(
+        retail_price=80000,
+        kream_sell_price=102000,
+        kream_last_sale_price=0,
+    )
+    assert result.net_profit > 0  # sell_now 기준은 정상 계산
+    assert result.kream_last_sale_price == 0
+    assert result.net_profit_last_sale == 0
+    assert result.roi_last_sale == 0.0
+
+
+def test_calculate_size_profit_signal_gate_unchanged():
+    """체결가 입력해도 signal 등급은 sell_now 기준 유지 (보수)."""
+    from src.profit_calculator import calculate_size_profit, determine_signal
+
+    # sell_now 기준 마진 = +9,518원 (WATCH 미달, 5k 미만은 NOT_RECOMMENDED)
+    result_sell_now_low = calculate_size_profit(
+        retail_price=92000,
+        kream_sell_price=102000,
+        kream_last_sale_price=200000,  # 체결가 매우 높음
+    )
+    # sell_now 기준 net_profit 만 시그널 결정
+    sig = determine_signal(result_sell_now_low.net_profit, volume_7d=10)
+    # net_profit 이 sell_now 기준이라 5k 이하면 NOT_RECOMMENDED
+    # 체결가 200k 마진 X 영향
+    assert result_sell_now_low.net_profit_last_sale > result_sell_now_low.net_profit
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — analyze_opportunity propagates last_sale_price
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_opportunity_propagates_last_sale():
+    """analyze_opportunity 가 KreamSizePrice.last_sale_price 를 SizeProfitResult 까지 전달."""
+    from src.profit_calculator import analyze_opportunity
+    from src.models.product import (
+        KreamProduct, KreamSizePrice, RetailProduct, RetailSizeInfo,
+    )
+
+    kp = KreamProduct(
+        product_id="123",
+        name="Test",
+        model_number="TEST-001",
+        size_prices=[
+            KreamSizePrice(
+                size="270",
+                sell_now_price=102000,
+                last_sale_price=105000,
+                buy_now_price=110000,
+                bid_count=3,
+            ),
+        ],
+        volume_7d=10,
+    )
+    rp = RetailProduct(
+        source="test",
+        product_id="r1",
+        name="Test",
+        model_number="TEST-001",
+        sizes=[RetailSizeInfo(size="270", price=80000, in_stock=True)],
+    )
+
+    op = analyze_opportunity(kp, [rp])
+    assert op is not None
+    assert len(op.size_profits) == 1
+    sp = op.size_profits[0]
+    assert sp.kream_last_sale_price == 105000
+    assert sp.kream_buy_now_price == 110000
+    assert sp.net_profit_last_sale > 0
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — 시그널 게이트 보존 회귀 테스트
+# ---------------------------------------------------------------------------
+
+
+def test_signal_gate_unchanged_with_dual_anchor():
+    """체결가 매우 높아도 sell_now 기준 NOT_RECOMMENDED 면 결과 유지."""
+    from src.profit_calculator import calculate_size_profit, determine_signal
+
+    # sell_now 기준 net_profit < 5k → NOT_RECOMMENDED
+    result = calculate_size_profit(
+        retail_price=95000,
+        kream_sell_price=102000,
+        kream_last_sale_price=300000,  # 체결가 비현실적으로 높음
+    )
+    sig = determine_signal(result.net_profit, volume_7d=10)
+    assert sig.name == "NOT_RECOMMENDED"
+    # 체결가 기준으로는 마진 큼 — 단 시그널은 영향 X (보수)
+    assert result.net_profit_last_sale > 100000
+
+
+# ---------------------------------------------------------------------------
+# Task 1 — SizeProfitResult dual-anchor 필드
+# ---------------------------------------------------------------------------
+
+
+def test_size_profit_result_has_dual_anchor_fields():
+    """SizeProfitResult 가 체결가/즉시구매가 dual-anchor 필드 보유."""
+    from src.models.product import SizeProfitResult
+
+    result = SizeProfitResult(
+        size="270",
+        retail_price=80000,
+        kream_sell_price=102000,
+        sell_fee=9482,
+        inspection_fee=0,
+        kream_shipping_fee=0,
+        seller_shipping_fee=3000,
+        total_cost=92482,
+        net_profit=9518,
+        roi=11.9,
+    )
+    # 신규 필드 — 기본값 0
+    assert result.kream_last_sale_price == 0
+    assert result.kream_buy_now_price == 0
+    assert result.net_profit_last_sale == 0
+    assert result.roi_last_sale == 0.0

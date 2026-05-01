@@ -61,14 +61,21 @@ def calculate_size_profit(
     kream_sell_price: int,
     in_stock: bool = True,
     bid_count: int = 0,
+    kream_last_sale_price: int = 0,
+    kream_buy_now_price: int = 0,
 ) -> SizeProfitResult:
     """단일 사이즈의 수익 계산.
+
+    시그널 게이트는 sell_now (즉시판매가) 기준 — 보수 정책.
+    last_sale (체결가) 는 등록판매 시 도달 가능 마진의 정보 표시용.
 
     Args:
         retail_price: 리테일 사이트 구매가 (할인 적용된 실구매가)
         kream_sell_price: 크림 즉시판매가
         in_stock: 해당 사이즈 재고 여부
         bid_count: 구매 입찰 수
+        kream_last_sale_price: 마지막 체결가 (등록판매 시 도달 가격, 정보 표시용)
+        kream_buy_now_price: 즉시구매가 (등록판매 상한 참고)
 
     Returns:
         SizeProfitResult
@@ -78,6 +85,17 @@ def calculate_size_profit(
     total_cost = retail_price + fees["total_fees"]
     net_profit = kream_sell_price - total_cost
     roi = (net_profit / retail_price * 100) if retail_price > 0 else 0.0
+
+    # Phase 1 — 체결가 등록 시 마진 (정보 표시용, 시그널 영향 X)
+    net_profit_last_sale = 0
+    roi_last_sale = 0.0
+    if kream_last_sale_price > 0:
+        fees_last = calculate_kream_fees(kream_last_sale_price)
+        total_cost_last = retail_price + fees_last["total_fees"]
+        net_profit_last_sale = kream_last_sale_price - total_cost_last
+        roi_last_sale = (
+            (net_profit_last_sale / retail_price * 100) if retail_price > 0 else 0.0
+        )
 
     return SizeProfitResult(
         size="",  # 호출자가 설정
@@ -92,6 +110,10 @@ def calculate_size_profit(
         roi=round(roi, 1),
         in_stock=in_stock,
         bid_count=bid_count,
+        kream_last_sale_price=kream_last_sale_price,
+        kream_buy_now_price=kream_buy_now_price,
+        net_profit_last_sale=net_profit_last_sale,
+        roi_last_sale=round(roi_last_sale, 1),
     )
 
 
@@ -170,6 +192,8 @@ def analyze_opportunity(
             kream_sell_price=ksp.sell_now_price,
             in_stock=in_stock,
             bid_count=ksp.bid_count,
+            kream_last_sale_price=ksp.last_sale_price or 0,
+            kream_buy_now_price=ksp.buy_now_price or 0,
         )
         result.size = ksp.size
         result.signal = determine_signal(result.net_profit, kream_product.volume_7d)
