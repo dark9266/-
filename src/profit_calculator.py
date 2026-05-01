@@ -192,6 +192,8 @@ def analyze_opportunity(
             kream_sell_price=ksp.sell_now_price,
             in_stock=in_stock,
             bid_count=ksp.bid_count,
+            kream_last_sale_price=ksp.last_sale_price or 0,
+            kream_buy_now_price=ksp.buy_now_price or 0,
         )
         result.size = ksp.size
         result.signal = determine_signal(result.net_profit, kream_product.volume_7d)

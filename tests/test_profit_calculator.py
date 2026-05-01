@@ -270,6 +270,50 @@ def test_calculate_size_profit_signal_gate_unchanged():
 
 
 # ---------------------------------------------------------------------------
+# Task 3 — analyze_opportunity propagates last_sale_price
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_opportunity_propagates_last_sale():
+    """analyze_opportunity 가 KreamSizePrice.last_sale_price 를 SizeProfitResult 까지 전달."""
+    from src.profit_calculator import analyze_opportunity
+    from src.models.product import (
+        KreamProduct, KreamSizePrice, RetailProduct, RetailSizeInfo,
+    )
+
+    kp = KreamProduct(
+        product_id="123",
+        name="Test",
+        model_number="TEST-001",
+        size_prices=[
+            KreamSizePrice(
+                size="270",
+                sell_now_price=102000,
+                last_sale_price=105000,
+                buy_now_price=110000,
+                bid_count=3,
+            ),
+        ],
+        volume_7d=10,
+    )
+    rp = RetailProduct(
+        source="test",
+        product_id="r1",
+        name="Test",
+        model_number="TEST-001",
+        sizes=[RetailSizeInfo(size="270", price=80000, in_stock=True)],
+    )
+
+    op = analyze_opportunity(kp, [rp])
+    assert op is not None
+    assert len(op.size_profits) == 1
+    sp = op.size_profits[0]
+    assert sp.kream_last_sale_price == 105000
+    assert sp.kream_buy_now_price == 110000
+    assert sp.net_profit_last_sale > 0
+
+
+# ---------------------------------------------------------------------------
 # Task 1 — SizeProfitResult dual-anchor 필드
 # ---------------------------------------------------------------------------
 
