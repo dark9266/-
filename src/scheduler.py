@@ -340,6 +340,8 @@ class Scheduler:
     @tasks.loop(minutes=10)
     async def refresh_loop(self) -> None:
         """거래량 기반 우선순위 시세 갱신."""
+        if not settings.price_refresher_enabled:
+            return
         if not hasattr(self.bot, '_kream_refresher') or not self.bot._kream_refresher:
             return
 

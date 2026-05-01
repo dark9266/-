@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     # 44 keywords × 1 page × 24 runs = 1,056 calls/day (기존 5×4=880 대비 +20%).
     realtime_collect_pages_per_keyword: int = 1    # 수집 시 키워드당 페이지 수
     realtime_refresh_batch_size: int = 50          # 1회 시세 갱신 배치 크기
+    price_refresher_enabled: bool = False          # hot 시세 30분 갱신 루프 (INVARIANT 위반 + 캡 초과 주범, 2026-05-01 기본 OFF)
 
     # v2 연속 배치 스캔
     continuous_scan_interval_minutes: int = 5      # 배치 주기
