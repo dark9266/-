@@ -68,8 +68,39 @@ def _lookup_kream_product(db_path: str, kream_product_id: int) -> dict | None:
         return None
 
 
+def _lookup_retail_sources(db_path: str, model_no: str) -> list[dict]:
+    """모델번호 → 매입처별 (source, url, price) 리스트. 가장 싼 가격 우선.
+
+    retail_price_history 비어있어도 retail_products url 은 표시 (가격은 None).
+    kream_delta 자체 row 는 제외.
+    """
+    try:
+        with sync_connect(db_path, read_only=True, timeout=2.0) as conn:
+            rows = conn.execute(
+                """
+                SELECT rp.source, rp.url,
+                       (SELECT MIN(price) FROM retail_price_history h
+                        WHERE h.source=rp.source AND h.product_id=rp.product_id
+                          AND h.in_stock=1 AND h.price>0) AS min_price
+                FROM retail_products rp
+                WHERE rp.model_number=? AND rp.source!='kream_delta' AND rp.url!=''
+                """,
+                (model_no,),
+            ).fetchall()
+        result = [dict(r) for r in rows]
+        result.sort(key=lambda r: (r["min_price"] is None, r["min_price"] or 0))
+        return result
+    except Exception as e:
+        logger.debug("[v3_discord] retail_products 조회 실패: %s", e)
+        return []
+
+
 def _build_embed(event: ProfitFound, product: dict | None = None) -> dict:
-    color = _SIGNAL_COLOR.get(event.signal, 0x5865F2)
+    is_kream_delta = event.source == "kream_delta"
+    if is_kream_delta:
+        color = 0xFFD700  # 노랑 — 크림 내부 호가 차익 (스나이프 매물 가능)
+    else:
+        color = _SIGNAL_COLOR.get(event.signal, 0x5865F2)
     emoji = _SIGNAL_EMOJI.get(event.signal, "")
 
     name = (product or {}).get("name") or event.model_no
@@ -96,7 +127,15 @@ def _build_embed(event: ProfitFound, product: dict | None = None) -> dict:
 
     catch_applied = getattr(event, "catch_applied", False)
     original_retail = getattr(event, "original_retail", None)
-    if catch_applied and original_retail:
+    if is_kream_delta:
+        # kream_delta = 크림 자체 sell_now_price MIN. 외부 매입가 아님.
+        price_value = (
+            f"크림 즉시판매 호가 **{event.retail_price:,}원**\n"
+            f"평균 체결가 **{event.kream_sell_price:,}원**\n"
+            f"차액 **{event.kream_sell_price - event.retail_price:,}원**\n"
+            f"⚡ 스나이프 매물 (즉시 매수당할 수 있음)"
+        )
+    elif catch_applied and original_retail:
         price_value = (
             f"💡 실측 결제가 **{event.retail_price:,}원**\n"
             f"   _(정가 {original_retail:,}원, 확장 catch)_\n"
@@ -151,14 +190,37 @@ def _build_embed(event: ProfitFound, product: dict | None = None) -> dict:
                 {"name": "📐 사이즈별 수익", "value": value, "inline": False}
             )
 
+    retail_sources = (product or {}).get("retail_sources") or []
+    if retail_sources:
+        lines: list[str] = []
+        for r in retail_sources[:5]:
+            src = r.get("source") or ""
+            url = r.get("url") or ""
+            price = r.get("min_price")
+            if not url or not src:
+                continue
+            if price:
+                lines.append(f"[{src} {price:,}원]({url})")
+            else:
+                lines.append(f"[{src}]({url})")
+        if lines:
+            fields.append(
+                {"name": "🛒 매입처 (싼 순)", "value": " · ".join(lines), "inline": False}
+            )
+
+    if event.source == "kream_delta":
+        link_value = f"[크림]({kream_url})"
+    else:
+        link_value = f"[크림]({kream_url}) | [{event.source}]({event.url})"
     fields.append(
         {
             "name": "🔗 링크",
-            "value": f"[크림]({kream_url}) | [{event.source}]({event.url})",
+            "value": link_value,
             "inline": False,
         }
     )
 
+    footer_label = "크림 내부 차익" if is_kream_delta else "외부 매입처 매수"
     embed: dict = {
         "title": title,
         "description": description,
@@ -166,7 +228,7 @@ def _build_embed(event: ProfitFound, product: dict | None = None) -> dict:
         "fields": fields,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "footer": {
-            "text": f"{event.source} • 크림 ID: {event.kream_product_id}"
+            "text": f"{footer_label} • {event.source} • 크림 ID: {event.kream_product_id}"
         },
     }
     if event.url:
@@ -226,6 +288,9 @@ class V3DiscordPublisher:
         product = None
         if self._db_path:
             product = _lookup_kream_product(self._db_path, event.kream_product_id)
+            retail_sources = _lookup_retail_sources(self._db_path, event.model_no)
+            if retail_sources:
+                product = (product or {}) | {"retail_sources": retail_sources}
         embed = _build_embed(event, product)
 
         # 1순위: discord.py bot 채널 직접 send (기존 profit 채널 재사용)

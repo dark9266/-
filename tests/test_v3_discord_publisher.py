@@ -200,3 +200,93 @@ async def test_embed_omits_color_line_when_empty():
     desc = captured[0]["description"]
     assert "🎨 색상" not in desc
     assert "색상" not in desc
+
+
+# ─── (h) kream_delta misleading 라벨 정정 — SD2401SG 70k 케이스 ────
+
+
+def _make_kream_delta_event(signal: str = "매수") -> ProfitFound:
+    return ProfitFound(
+        source="kream_delta",
+        kream_product_id=877904,
+        model_no="SD2401SG",
+        size="270",
+        retail_price=70_000,
+        kream_sell_price=134_000,
+        net_profit=49_406,
+        roi=70.6,
+        signal=signal,
+        volume_7d=5,
+        url="https://kream.co.kr/products/877904",
+        color_name="",
+    )
+
+
+async def test_kream_delta_label_clarifies_internal_quote():
+    """source='kream_delta' 일 때 '소싱가' 대신 '크림 즉시판매 호가' + 스나이프 경고."""
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send)
+    await pub.publish(_make_kream_delta_event())
+
+    assert len(captured) == 1
+    price_field = next(f for f in captured[0]["fields"] if f["name"] == "💰 가격")
+    assert "크림 즉시판매 호가" in price_field["value"]
+    assert "평균 체결가" in price_field["value"]
+    assert "⚡ 스나이프 매물" in price_field["value"]
+    assert "소싱가" not in price_field["value"]
+
+
+async def test_kream_delta_color_yellow():
+    """kream_delta 알림은 노란색 (0xFFD700) — 스나이프성 매물 시각 구분."""
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send)
+    await pub.publish(_make_kream_delta_event(signal="강력매수"))
+
+    assert captured[0]["color"] == 0xFFD700
+
+
+async def test_external_source_keeps_signal_color():
+    """외부 매입처 (kream_delta 아님) 는 시그널별 기존 색상 유지."""
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send)
+    await pub.publish(_make_event("강력매수"))  # source='musinsa'
+
+    assert captured[0]["color"] == 0xFF0000
+
+
+async def test_kream_delta_footer_label():
+    """kream_delta footer 에 '크림 내부 차익' 명시."""
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send)
+    await pub.publish(_make_kream_delta_event())
+
+    assert "크림 내부 차익" in captured[0]["footer"]["text"]
+
+
+async def test_external_source_footer_label():
+    """외부 매입처 footer 는 '외부 매입처 매수'."""
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send)
+    await pub.publish(_make_event("강력매수"))
+
+    assert "외부 매입처 매수" in captured[0]["footer"]["text"]
