@@ -26,7 +26,7 @@ class KreamFees(BaseSettings):
     base_fee: int = 2500  # 기본료 (원)
     sell_fee_rate: float = 0.06  # 등급 수수료율 6%
     vat_rate: float = 0.1  # 부가세 10%
-    inspection_fee: int = 0  # 검수비 (무료)
+    inspection_fee: int = 2500  # 검수비 (실 정산서 확인 — 2026-05-02)
     kream_shipping_fee: int = 0  # 크림 배송비 (무료)
 
 

@@ -41,7 +41,7 @@ def calculate_kream_fees(sell_price: int) -> dict:
     fee_subtotal = fees.base_fee + sell_price * fees.sell_fee_rate
     sell_fee = round(fee_subtotal * (1 + fees.vat_rate))
 
-    inspection_fee = fees.inspection_fee  # 0원 (무료)
+    inspection_fee = fees.inspection_fee  # 2,500원 (실 정산서 확인)
     kream_shipping_fee = fees.kream_shipping_fee  # 0원 (무료)
     seller_shipping_fee = settings.shipping_cost_to_kream  # 판매자 배송비
 
