@@ -1,0 +1,3 @@
+[19:13:26] WARNING  discord.client: PyNaCl is not installed, voice will NOT be supported
+[19:13:26] WARNING  discord.client: davey is not installed, voice will NOT be supported
+❌ 이미 실행 중 (PID 777). 중복 실행 차단.
