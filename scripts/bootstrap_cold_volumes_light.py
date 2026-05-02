@@ -19,10 +19,13 @@ import asyncio
 import sys
 
 import aiosqlite
+from dotenv import load_dotenv
 
-from src.config import settings
-from src.core.kream_budget import BUDGET, kream_purpose
-from src.crawlers.kream import kream_crawler
+load_dotenv()  # src.core.kream_budget import 전에 호출 — KREAM_DAILY_CAP 반영
+
+from src.config import settings  # noqa: E402
+from src.core.kream_budget import BUDGET, kream_purpose  # noqa: E402
+from src.crawlers.kream import kream_crawler  # noqa: E402
 
 
 def _format_duration(seconds: float) -> str:
