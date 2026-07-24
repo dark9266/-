@@ -985,6 +985,140 @@ async def test_process_profit_expired_source_stock_blocks_and_marks_failed(bus, 
         await orch.stop()
 
 
+async def test_process_profit_expired_source_stock_releases_candidate_dedup(bus, store):
+    """1c-5r R1: 만료 차단 시 candidate dedup 해제 — 후속 재검증 후보가 즉시 처리."""
+    import dataclasses as _dc
+
+    orch = Orchestrator(bus, store, _throttle())
+
+    candidate_calls: list[CandidateMatched] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        candidate_calls.append(event)
+        return None
+
+    async def profit_handler(event):
+        return AlertSent(
+            alert_id=1,
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=time.time(),
+        )
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        # 사전조건: 라이브 세션이 candidate 단계에서 "profit" outcome 으로 dedup 기록
+        # (_record_dedup(event, "profit") → 알림 직전 크래시 시나리오).
+        cand = _sample_candidate(kream_pid=777, retail_price=100000)
+        await orch._record_dedup(cand, "profit")
+
+        db = store._require_db()
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM kream_candidate_dedup "
+            "WHERE kream_product_id = ? AND retail_price = ?",
+            (777, 100000),
+        )
+        (before_count,) = await cur.fetchone()
+        assert before_count == 1, "사전조건: dedup 기록돼 있어야 함"
+
+        # 재생된 ProfitFound — source_stock 만료.
+        expired = _dc.replace(
+            _sample_profit(kream_pid=777, retail_price=100000),
+            source_stock_expires_at=time.time() - 100,
+        )
+        ckpt = await store.record(expired, consumer="profit")
+        await orch._process_profit(expired, ckpt)
+
+        cur2 = await db.execute(
+            "SELECT COUNT(*) FROM kream_candidate_dedup "
+            "WHERE kream_product_id = ? AND retail_price = ?",
+            (777, 100000),
+        )
+        (after_count,) = await cur2.fetchone()
+        assert after_count == 0, "만료 차단 시 dedup 행이 해제돼야 함"
+
+        # 동일 (pid, price) 후속 candidate — dedup_recent 없이 즉시 handler 도달
+        cand2 = _sample_candidate(kream_pid=777, retail_price=100000)
+        ckpt2 = await store.record(cand2, consumer="candidate")
+        await orch._process_candidate(cand2, ckpt2)
+
+        assert len(candidate_calls) == 1, "dedup 해제 후 후속 candidate 는 즉시 처리돼야 함"
+        assert orch.stats().get("candidate_dedup_skipped", 0) == 0
+    finally:
+        await orch.stop()
+
+
+async def test_process_profit_expired_uses_original_retail_when_catch_applied(bus, store):
+    """1c-5r R1: catch 적용 시 dedup 키는 original_retail(원 retail_price) 기준."""
+    import dataclasses as _dc
+
+    orch = Orchestrator(bus, store, _throttle())
+
+    orch.on_catalog_dumped(lambda event: _empty_async_iter())
+    orch.on_candidate_matched(lambda event: _none_awaitable())
+    orch.on_profit_found(lambda event: _alert_awaitable(event))
+
+    await orch.start()
+    try:
+        # candidate dedup 은 원 retail_price(catch 적용 전, 120000) 로 기록됨.
+        cand = _sample_candidate(kream_pid=888, retail_price=120000)
+        await orch._record_dedup(cand, "profit")
+
+        db = store._require_db()
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM kream_candidate_dedup "
+            "WHERE kream_product_id = ? AND retail_price = ?",
+            (888, 120000),
+        )
+        (before_count,) = await cur.fetchone()
+        assert before_count == 1
+
+        # ProfitFound.retail_price 는 catch 적용 후 결제 최종가(90000) —
+        # original_retail(120000) 이 원 dedup 키를 보존.
+        expired = _dc.replace(
+            _sample_profit(kream_pid=888, retail_price=90000),
+            catch_applied=True,
+            original_retail=120000,
+            source_stock_expires_at=time.time() - 100,
+        )
+        ckpt = await store.record(expired, consumer="profit")
+        await orch._process_profit(expired, ckpt)
+
+        cur2 = await db.execute(
+            "SELECT COUNT(*) FROM kream_candidate_dedup "
+            "WHERE kream_product_id = ? AND retail_price = ?",
+            (888, 120000),
+        )
+        (after_count,) = await cur2.fetchone()
+        assert after_count == 0, "catch 적용 시 original_retail 기준으로 dedup 해제돼야 함"
+    finally:
+        await orch.stop()
+
+
+async def _empty_async_iter():
+    if False:
+        yield  # pragma: no cover
+
+
+async def _none_awaitable():
+    return None
+
+
+async def _alert_awaitable(event):
+    return AlertSent(
+        alert_id=1, kream_product_id=event.kream_product_id,
+        signal=event.signal, fired_at=time.time(),
+    )
+
+
 async def test_process_profit_zero_expires_at_sends_normally(bus, store):
     """source_stock_expires_at=0.0(게이트 면제, 기본값) → 기존대로 알림 발송."""
     orch = Orchestrator(bus, store, _throttle())

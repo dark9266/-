@@ -233,6 +233,19 @@ class OnRunningAdapter:
         from src.core.kream_index import get_kream_index
         return get_kream_index(self._db_path).get()
 
+    @staticmethod
+    def _match_key_for_item(item: dict) -> str | None:
+        """item → 크림 매칭 키 (없으면 None). 1c-5r R2 winner 선별 전용 —
+        메인 루프의 통계 부수효과 없이 key 만 재계산한다."""
+        if not item.get("available", False):
+            return None
+        sku_raw = str(item.get("sku") or "").strip().upper()
+        if not sku_raw or not is_valid_sku(sku_raw):
+            return None
+        normalized = normalize_sku_for_kream(sku_raw)
+        key = _strip_key(normalized)
+        return key or None
+
     def _build_collect_row(
         self, item: dict, model_no: str,
     ) -> tuple[str, str, str, str, str]:
@@ -268,7 +281,27 @@ class OnRunningAdapter:
         # 같은 SKU 가 여러 variant row 로 나올 수 있어 dedup — 모델 번호 기준.
         seen_keys: set[str] = set()
 
-        for item in variants:
+        # 1c-5r R2: 같은 컬러 SKU 가 여러 사이트맵 URL(PDP) 에서 중복 관측될
+        # 때, 기존 "첫 관측 선점" 은 덤프가 30분+ 걸리면 신선한 뒤 관측을
+        # 버리고 오래된(stale) 관측이 채택돼 정상 재고가 stale_observation
+        # 으로 오판정됐다. SKU 별로 observed_at 이 가장 최신인 항목만 승자로
+        # 남기고 나머지는 (순서 무관) 스킵한다.
+        winning_index_by_key: dict[str, int] = {}
+        for idx, item in enumerate(variants):
+            key = self._match_key_for_item(item)
+            if key is None:
+                continue
+            observed_at = item.get("observed_at") or 0.0
+            cur_idx = winning_index_by_key.get(key)
+            if cur_idx is None:
+                winning_index_by_key[key] = idx
+                continue
+            cur_observed_at = variants[cur_idx].get("observed_at") or 0.0
+            if observed_at > cur_observed_at:
+                winning_index_by_key[key] = idx
+        winning_indices = set(winning_index_by_key.values())
+
+        for idx, item in enumerate(variants):
             if not item.get("available", False):
                 stats.soldout_dropped += 1
                 continue
@@ -288,6 +321,10 @@ class OnRunningAdapter:
                 stats.no_model_number += 1
                 continue
             if key in seen_keys:
+                continue
+            if idx not in winning_indices:
+                # 같은 키의 더 신선한 관측이 따로 있음 — 이 항목은 스킵
+                # (그 신선한 항목이 이 루프에서 처리된다).
                 continue
             seen_keys.add(key)
 

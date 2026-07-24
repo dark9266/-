@@ -513,6 +513,31 @@ class Orchestrator:
                 event.kream_product_id,
             )
 
+    async def _release_candidate_dedup(
+        self, kream_product_id: int, retail_price: int
+    ) -> None:
+        """1c-5r R1 — 만료(source_stock_expired) 차단된 재생 profit 의 dedup 해제.
+
+        라이브 세션이 candidate 단계에서 "profit" 결과로 남긴 dedup(6h 창)이
+        재생 시점의 만료 차단 이후에도 그대로면, 다음 사이클의 신선한
+        재검증 후보가 `dedup_recent` 로 잘못 차단된다(보류≠drop 위반). 해당
+        (pid, retail_price) 행을 삭제해 즉시 재처리를 허용한다.
+        """
+        try:
+            db = self._checkpoints._require_db()  # noqa: SLF001
+            await db.execute(
+                "DELETE FROM kream_candidate_dedup "
+                "WHERE kream_product_id = ? AND retail_price = ?",
+                (int(kream_product_id), int(retail_price)),
+            )
+            await db.commit()
+        except aiosqlite.Error:
+            logger.debug(
+                "candidate_dedup 해제 실패 (비치명): pid=%s retail_price=%s",
+                kream_product_id,
+                retail_price,
+            )
+
     async def _persist_retail_product(self, event: CandidateMatched) -> None:
         """감사 목적으로 매칭된 후보를 retail_products 에 영속화.
 
@@ -935,6 +960,21 @@ class Orchestrator:
                 source=event.source,
                 kream_product_id=event.kream_product_id,
                 model_no=event.model_no,
+            )
+            # 1c-5r R1 — 라이브 세션이 candidate 단계에서 이미 남긴 dedup(6h
+            # 창)을 그대로 두면, 다음 사이클의 신선한 재검증 후보가
+            # dedup_recent 로 잘못 차단된다(보류≠drop 위반). catch 미적용 시
+            # ProfitFound.retail_price == 원 CandidateMatched.retail_price
+            # (dedup 키) 지만, catch 적용 시(catch_applied=True) retail_price
+            # 는 결제 페이지 최종가로 대체돼 dedup 키와 달라진다 — 그 경우
+            # original_retail 이 원래 dedup 키 값을 보존한다.
+            dedup_retail_price = (
+                event.original_retail
+                if event.catch_applied and event.original_retail is not None
+                else event.retail_price
+            )
+            await self._release_candidate_dedup(
+                event.kream_product_id, dedup_retail_price
             )
             if ckpt_id is not None:
                 try:

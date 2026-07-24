@@ -758,6 +758,73 @@ async def test_source_stock_stale_observed_at_unknown_held(bus, kream_db):
     assert cand.available_sizes == ()
 
 
+def _dup_sku_variant_item(observed_at: float, url_suffix: str) -> dict:
+    """1c-5r R2 테스트 전용 — dump_catalog 산출 dict 스키마를 직접 구성.
+
+    사이트맵의 서로 다른 URL(PDP) 이 같은 컬러 SKU 를 내놓는 상황을 재현하기
+    위해 dump_catalog 를 거치지 않고 match_to_kream 입력을 직접 만든다
+    (실제로는 두 PDP fetch 시각이 달라 observed_at 이 다르다).
+    """
+    return {
+        "url": f"https://www.on.com/ko-kr/products/{url_suffix}/mens/black-shoes-3MF10071043",
+        "name": "남성 Cloud 6 Black",
+        "line_name": "남성 Cloud 6",
+        "brand": "On",
+        "sku": "3MF10071043",
+        "color": "Black | Black",
+        "color_slug": "black",
+        "price": 199000,
+        "currency": "KRW",
+        "available": True,
+        "size_stock": [SizeStock(size="270", stock=5)],
+        "size_stock_map_size": 1,
+        "observed_at": observed_at,
+    }
+
+
+async def test_duplicate_sku_multiple_observations_latest_wins_older_first(bus, kream_db):
+    """1c-5r R2: 같은 SKU 가 여러 PDP(URL) 에서 중복 관측될 때 최신 관측이 승자.
+
+    입력 순서상 오래된(TTL 초과) 관측이 먼저 오고 신선한 관측이 나중에 와도
+    최신 관측 기준으로 IN_STOCK 판정돼야 한다 — 기존 "첫 관측 선점" 로직은
+    여기서 stale_observation 오판정을 냈다(코덱스 수렴 R2).
+    """
+    now = time.time()
+    stale_observed = now - (DEFAULT_SOURCE_STOCK_TTL_SEC + 120)
+    variants = [
+        _dup_sku_variant_item(stale_observed, "a"),  # 오래된 관측 — 먼저 등장
+        _dup_sku_variant_item(now, "b"),  # 신선한 관측 — 나중 등장
+    ]
+    adapter = OnRunningAdapter(bus=bus, db_path=kream_db, http_client=None)
+    matches, stats = await adapter.match_to_kream(variants)
+
+    assert stats.matched == 1
+    assert stats.unknown_held == 0, "최신 관측이 승자여야 함 — 보류 아님"
+    cand = matches[0]
+    assert cand.source_stock is not None
+    assert cand.source_stock.state == StockState.IN_STOCK
+    assert cand.source_stock.observed_at == now
+
+
+async def test_duplicate_sku_multiple_observations_latest_wins_fresh_first(bus, kream_db):
+    """R2 대조군 — 입력 순서를 뒤집어도(신선 먼저, 오래된 나중) 결과 동일."""
+    now = time.time()
+    stale_observed = now - (DEFAULT_SOURCE_STOCK_TTL_SEC + 120)
+    variants = [
+        _dup_sku_variant_item(now, "b"),
+        _dup_sku_variant_item(stale_observed, "a"),
+    ]
+    adapter = OnRunningAdapter(bus=bus, db_path=kream_db, http_client=None)
+    matches, stats = await adapter.match_to_kream(variants)
+
+    assert stats.matched == 1
+    assert stats.unknown_held == 0
+    cand = matches[0]
+    assert cand.source_stock is not None
+    assert cand.source_stock.state == StockState.IN_STOCK
+    assert cand.source_stock.observed_at == now
+
+
 async def test_source_stock_all_zero_drop(bus, kream_db):
     """컬러 SKU 파싱은 성공했지만 전 사이즈 stock=0 → 품절 확정 drop."""
     url = "https://www.on.com/ko-kr/products/cloud-6-m-3mf1007/mens/black-shoes-3MF10071043"
