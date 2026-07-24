@@ -41,6 +41,16 @@ logs/stage_chain*
 # 매 세션마다 sessionId/pid 갱신되는 Claude 스케줄러 lock
 .claude/scheduled_tasks.lock
 
+# 훅 런타임 (세션별 작업계약·증거게이트 카운터·Fable 게이트 상태)
+.claude/runtime/
+.claude/.orchestration-state
+.claude/.orchestration/
+# active.md 는 토글이 만드는 복사본 — 원본은 fable-mode.md / off.md
+.claude/orchestration/active.md
+
+# Codex 협업 산출물 (검증 결과·raw 로그·큐) — 한도 소모 기록이라 커밋하지 않는다
+reports/codex/
+
 # Superpowers brainstorming workspace
 .superpowers/
 

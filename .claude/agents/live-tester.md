@@ -1,6 +1,7 @@
 ---
 name: live-tester
 description: 크롤러 실서버 end-to-end 검증 에이전트. 등록된 소싱처에 실제 GET 요청 → 검색→상세→매칭 파이프라인 정상 동작 확인.
+model: claude-sonnet-5
 ---
 
 # Live Tester Agent

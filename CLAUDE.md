@@ -59,6 +59,26 @@
 
 **1개라도 FAIL → 매칭/신규 작업 착수 금지, 복구 먼저.**
 
+### 🛡 기계 가드 (2026-07-24 — 마크다운이 못 막는 것을 훅이 막는다)
+
+> 앤트로픽 공식: *"'절대 하지 마라' 는 지시가 아니라 **훅+권한**으로 하라 — 긴 세션에서,
+> 압박받을 때, 모호한 상황에서 모델은 프롬프트된 규칙을 못 지킨다."*
+> 위 🚫 금지 리스트와 "라이브 관측 없이 수치 주장" 은 이제 **기계가 강제**한다.
+
+| 훅 | 시점 | 무엇을 |
+|---|---|---|
+| `session_start_inject.py` | SessionStart | INVARIANT + 봇 생존 + 최근 커밋 + **DONE 원장** + 헬스체크 4종 주입 — "했던 일 잊지 않기" |
+| `task_intake_guard.py` | UserPromptSubmit | 프롬프트 토큰으로 **DONE 원장·메모리·git log·기존 모듈** 자동 검색 주입 + **금지 리스트 저촉 경고** + 관련 **스킬 자동 소환** — "중복 작업 안 하기" |
+| `direction_guard.py` | PreToolUse | **폐기 흐름 스캐너 수정 차단**(reverse/scanner/tier1/continuous — `tier2_monitor` 은 예외로 허용) + **신규 소싱처 파일 생성 차단**. 해제 = `KREAM_LEGACY_EDIT_GO=1` / `KREAM_NEW_SOURCE_GO=1` |
+| `claim_evidence_guard.py` | Stop | 증거 없는 **"완료"·"안 된다"·"뚫었다"·"N건이다"** 를 끝내지 못하게 차단 |
+| `orchestration_gate.py` | PreToolUse | Fable 모드 ON 일 때만 — 메인 직접수정 턴당 5파일 제한 |
+
+- 전부 **fail-open**(훅 버그가 세션을 막지 않는다). 판정 로직은 `tests/test_hooks_guards.py` 로 고정.
+- **재실행 금지 원장 = `docs/DONE_REGISTRY.md`.** 작업이 끝나 다시 할 이유가 없어지면 한 줄 추가한다.
+- 차단 메시지를 받으면 **우회하지 말고** 그 지시대로 하거나 사장에게 보고한다.
+
+@.claude/orchestration/active.md
+
 ### 메인 아키텍처
 - `src/adapters/*_adapter.py` (22곳) → `src/core/event_bus` → `src/core/orchestrator` → `kream_collect_queue` → 알림
 - 축 ② 보조: `tier2_monitor.py` 역방향 hot 130건 60초 폴링 (폐기 X, 재포지셔닝)
@@ -219,6 +239,48 @@ ruff format src/ tests/          # 포맷
 |---------|------|
 | `api-prober` | (1) 소싱처 신규 추가 진입 시 / (2) **UI 봇 Phase B0 진입 시 (크림 보관판매 endpoint 탐색) — 의무** / (3) Phase C 가격 갱신 endpoint 탐색 시 |
 | `source-analyzer` | 소싱처 종합 분석 — 덤프/재고/매칭 방식 판별 (api-prober 후속) |
+
+**Fable 오케스트레이션 워커 (모드 ON 일 때만)**:
+| 에이전트 | 모델 | 역할 |
+|---------|------|------|
+| `kream-executor` | Opus 4.8 | 무거운 구현 노동 — 코드 작성·수정·리팩터·테스트·버그 봉합. 설계·방향 결정은 안 함 |
+| `kream-explorer` | Haiku 4.5 | read-only 탐색·조사 — 파일/심볼 검색, DB SELECT 조회, 로그 요약. 판단 안 함 |
+
+> 위 **도메인 의무 트리거가 우선**한다 — 수수료 변경은 `profit-analyzer`, 새 소싱처는
+> `crawler-builder`. executor/explorer 는 그 트리거에 안 걸리는 일반 노동을 받는다.
+> 토글: `bash scripts/fable.sh on|off|status` (기본 OFF).
+
+### 스킬 (`.claude/skills/`)
+
+| 스킬 | 언제 |
+|------|------|
+| `kream-search-in-search` | 소싱처가 403/202/빈 결과 — "차단됐다" 판단하기 **전에**. TLS 지문 로테이션·세션 워밍·내장 JSON 추출·4단계 escalation |
+| `kream-codex-collab` | 사장이 "코덱스 검증/의논/협업해" 라고 할 때만 (수동 트리거) |
+| `kream-instagram-extract` | 사장이 인스타 릴/포스트 링크를 주며 분석·정리 요청 |
+| `kream-youtube-transcript` | 사장이 유튜브 링크를 주며 자막·내용 정리 요청 |
+
+### Codex 협업 (수동 트리거 전용)
+
+**ChatGPT Plus 계정이 하나라 구매대행 프로젝트와 한도를 공유한다.** 크림봇은 Stop 훅 자동
+큐잉을 **배선하지 않았다** — 사장이 부를 때만 쓴다. 등급(모델·effort)은 자동 판정.
+
+```bash
+python scripts/codex_collab.py plan      # ★ 판정만. Codex 호출 0 · 한도 0 — 항상 먼저
+python scripts/codex_collab.py verify    # 적대검증  |  consult "…"  |  collab "…"
+python scripts/codex_collab.py status    # 큐 현황   |  drain        # 밀린 것 1건
+```
+
+| 등급 | 모델·effort | 트리거 |
+|:-:|---|---|
+| S | `sol`/xhigh | `storage_sale/`·`profit_calculator.py`·`config.py`·`.env`·`.claude/hooks/` · 보관판매·수수료·정산·검수비·자격증명·호출캡 |
+| A | `sol`/high | `src/models/` 스키마·마이그레이션 · 아키텍처/설계/선택지 · **의논·협업은 최소 A** |
+| B | `terra`/high | **기본값** — `.py`/`.sh` 변경 또는 코드파일 3개+ |
+| C | `luna`/high | 전수·열거·커버리지 훑기 (코드 변경 없을 때). 최종 판단 위임 금지 |
+| N | 호출 없음 | 문서 · `probe_*`/`diag_*`/`repro_*` 일회용 |
+
+- 기존 의무 에이전트를 **대체하지 않는다** — `profit-analyzer` + Codex S 처럼 병존.
+- 수렴 규칙(무한 반복 금지)·호출 위생 = `docs/ops/codex-collaboration-policy.md`.
+- 판정 로직 `src/ops/codex_gate.py` · 고정 테스트 `tests/test_codex_gate.py`.
 
 **폐기 (2026-04-16)**: security-guard, catalog-dumper, delta-engine-builder, pipeline-builder, runtime-sentinel, verify-agent, kream-monitor, coverage-analyzer, queue-inspector — 직접 실행이 더 빠른 단순 작업이거나 사용 단계 미도달.
 

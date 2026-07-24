@@ -1,6 +1,7 @@
 ---
 name: scan-debugger
 description: 상품별 스캔 파이프라인 추적 + 역방향 가격 조회 디버그 전담 에이전트. 모델번호 기준 전 구간 디버깅(크림 시세·소싱처 검색·매칭·수익·스케줄). reverse-scanner 흡수.
+model: claude-sonnet-5
 ---
 
 # Scan Debugger Agent

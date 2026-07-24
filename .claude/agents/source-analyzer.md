@@ -1,6 +1,7 @@
 ---
 name: source-analyzer
 description: 소싱처 분석 전담 에이전트. 카탈로그 덤프 가능 여부, 재고 정확성, 매칭 방식, 최적 기법을 종합 판단.
+model: claude-sonnet-5
 ---
 
 # Source Analyzer Agent

@@ -1,0 +1,363 @@
+"""훅 가드 3종 순수 판정 테스트 — 중복 작업·방향 이탈·증거 없는 주장 차단.
+
+마크다운(CLAUDE.md)이 못 막은 것을 기계가 막는다. 그 기계가 맞게 도는지 여기서 고정한다.
+**오탐이 나면 사람이 훅을 꺼버린다** — 오탐 케이스를 실패 케이스만큼 촘촘히 둔다.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+_HOOKS = Path(__file__).resolve().parents[1] / ".claude" / "hooks"
+if str(_HOOKS) not in sys.path:
+    sys.path.insert(0, str(_HOOKS))
+
+import claim_evidence_guard as ceg  # noqa: E402
+import direction_guard as dg  # noqa: E402
+import orchestration_gate as og  # noqa: E402
+import task_intake_guard as tig  # noqa: E402
+
+
+def _edit(path: str) -> dict:
+    return {"tool_name": "Edit", "tool_input": {"file_path": path}}
+
+
+def _write(path: str) -> dict:
+    return {"tool_name": "Write", "tool_input": {"file_path": path}}
+
+
+def _bash(cmd: str) -> dict:
+    return {"tool_name": "Bash", "tool_input": {"command": cmd}}
+
+
+def _never(_p: str) -> bool:
+    return False
+
+
+def _always(_p: str) -> bool:
+    return True
+
+
+# ═══════════════════════════════════════════════ direction_guard (방향 이탈)
+
+
+def test_legacy_scanner_edit_is_blocked():
+    """폐기 흐름(v2 역방향/Tier) — 리팩터·버그픽스·재활용 전부 금지."""
+    for path in ("src/reverse_scanner.py", "src/scanner.py", "src/tier1_scanner.py",
+                 "src/continuous_scanner.py"):
+        d = dg.decide(_edit(path), exists=_always, env={})
+        assert d.allow is False, path
+        assert "폐기 흐름" in d.message
+
+
+def test_tier2_monitor_is_not_blocked():
+    """축 ② 보조 감시 — '역방향이니 끄자'는 이미 판정 완료된 예외다."""
+    assert dg.decide(_edit("src/tier2_monitor.py"), exists=_always, env={}).allow is True
+
+
+def test_legacy_edit_passes_with_explicit_override():
+    d = dg.decide(_edit("src/scanner.py"), exists=_always, env={"KREAM_LEGACY_EDIT_GO": "1"})
+    assert d.allow is True
+
+
+def test_bash_rewrite_of_legacy_file_is_blocked():
+    """Edit 대신 sed -i 로 우회하는 경로도 막는다."""
+    d = dg.decide(_bash("sed -i 's/a/b/' src/tier1_scanner.py"), exists=_always, env={})
+    assert d.allow is False
+
+
+def test_bash_read_of_legacy_file_passes():
+    assert dg.decide(_bash("grep -n foo src/scanner.py"), exists=_always, env={}).allow is True
+
+
+def test_new_source_adapter_creation_is_blocked():
+    d = dg.decide(_write("src/adapters/newshop_adapter.py"), exists=_never, env={})
+    assert d.allow is False
+    assert "22 소싱처 안정화" in d.message
+
+
+def test_existing_adapter_edit_passes():
+    """안정화 작업 자체가 기존 22곳을 고치는 일이다 — 막으면 훅이 꺼진다."""
+    d = dg.decide(_edit("src/adapters/stussy_adapter.py"), exists=_always, env={})
+    assert d.allow is True
+
+
+def test_crawler_infra_creation_passes():
+    for path in ("src/crawlers/registry.py", "src/crawlers/__init__.py"):
+        assert dg.decide(_write(path), exists=_never, env={}).allow is True, path
+
+
+def test_new_source_passes_with_explicit_override():
+    d = dg.decide(_write("src/adapters/x_adapter.py"), exists=_never,
+                  env={"KREAM_NEW_SOURCE_GO": "1"})
+    assert d.allow is True
+
+
+def test_unrelated_new_file_passes():
+    assert dg.decide(_write("src/core/new_thing.py"), exists=_never, env={}).allow is True
+
+
+def test_absolute_paths_are_normalized():
+    root = str(dg.project_root())
+    d = dg.decide(_edit(f"{root}/src/scanner.py"), exists=_always, env={})
+    assert d.allow is False
+
+
+# ═══════════════════════════════════════════════ task_intake_guard (중복·망각)
+
+
+def test_model_number_token_extraction():
+    assert "DZ5485-100" in tig.extract_tokens("DZ5485-100 이거 왜 안 잡혀?")
+
+
+def test_source_name_token_extraction():
+    toks = [t.lower() for t in tig.extract_tokens("무신사랑 29cm 매칭 확인해줘")]
+    assert "무신사" in toks and "29cm" in toks
+
+
+def test_korean_particle_is_stripped_into_a_stem():
+    """'봇월이라' ≠ '봇월' — 조사가 붙으면 스킬/문서 매칭이 통째로 실패한다."""
+    assert "봇월" in tig.extract_tokens("봇월이라 못 뚫었어")
+
+
+def test_stopwords_are_not_tokens():
+    assert "해줘" not in tig.extract_tokens("이거 해줘")
+
+
+def test_forbidden_reverse_scanner_is_detected():
+    hits = tig.forbidden_hits("역방향 스캐너 다시 살려볼까?")
+    assert hits and "폐기 흐름" in hits[0]
+
+
+def test_forbidden_target_shrink_is_detected():
+    assert tig.forbidden_hits("hot 위주로만 돌리자")
+    assert tig.forbidden_hits("인기 카테고리 먼저 타겟팅할까요")
+
+
+def test_forbidden_new_source_is_detected():
+    assert tig.forbidden_hits("새 소싱처 하나 추가하자")
+
+
+def test_forbidden_overseas_store_is_detected():
+    assert tig.forbidden_hits("미국 스토어도 붙일까")
+
+
+def test_forbidden_local_db_profit_calc_is_detected():
+    assert tig.forbidden_hits("로컬 DB로 수익 계산하면 빠르잖아")
+
+
+def test_ordinary_request_triggers_no_forbidden_warning():
+    """오탐이 잦으면 경고를 아무도 안 읽는다."""
+    assert tig.forbidden_hits("무신사 어댑터 로그 좀 봐줘") == []
+    assert tig.forbidden_hits("테스트 돌려줘") == []
+
+
+# ═══════════════════════════════════════════════ claim_evidence_guard (증거)
+
+
+def _use(tool_id: str, name: str, text: str) -> dict:
+    return {"kind": "tool_use", "id": tool_id, "name": name, "text": text}
+
+
+def _result(tool_id: str, text: str) -> dict:
+    return {"kind": "tool_result", "id": tool_id, "text": text}
+
+
+def test_success_claim_is_detected():
+    assert ceg.claims_success("수정 완료했습니다") is True
+    assert ceg.claims_success("봉합 완료") is True
+
+
+def test_future_and_negated_forms_are_not_claims():
+    for text in ("성공했는지 확인하겠습니다", "아직 고쳤다고 볼 수 없습니다",
+                 "승인 없이 실행할 수 없습니다", "중단은 불가피합니다"):
+        assert ceg.claims_success(text) is False, text
+        assert ceg.claims_blocked(text) is False, text
+
+
+def test_blocked_claim_needs_an_operational_noun():
+    assert ceg.claims_blocked("adidas 는 403 이라 안 됩니다") is True
+    # 개념 서술은 검증할 '시도'가 없다 — 막으면 오탐
+    assert ceg.claims_blocked("훅은 판단을 못 합니다") is False
+
+
+def test_works_claim_and_self_correction_exemption():
+    assert ceg.claims_works("adidas 봇월 뚫었습니다") is True
+    assert ceg.claims_works("adidas 뚫었다 했는데 틀렸다") is False
+
+
+def test_metric_claim_is_detected():
+    assert ceg.claims_metric("매칭 150건 나왔습니다") is True
+    assert ceg.claims_metric("커버율 3.1% 입니다") is True
+
+
+def test_cited_metric_is_not_a_claim():
+    assert ceg.claims_metric("CLAUDE.md 기준 매칭 150건으로 적혀 있습니다") is False
+
+
+def test_edit_tools_count_as_mutation():
+    assert ceg.is_mutation(_use("1", "Edit", "{}")) is True
+    assert ceg.is_mutation(_use("1", "Read", "{}")) is False
+
+
+def test_bash_file_write_counts_as_mutation():
+    ev = _use("1", "Bash", json.dumps({"command": "sed -i 's/a/b/' src/x.py"}))
+    assert ceg.is_mutation(ev) is True
+    ev2 = _use("2", "Bash", json.dumps({"command": "grep -n cp src/x.py"}))
+    assert ceg.is_mutation(ev2) is False
+
+
+def test_verification_before_the_change_is_not_evidence():
+    events = [
+        _use("a", "Bash", json.dumps({"command": "pytest -q"})),
+        _result("a", "31 passed"),
+        _use("b", "Edit", "{}"),
+        _result("b", "ok"),
+    ]
+    assert ceg.has_causal_verification(events) is False
+
+
+def test_successful_verification_after_the_change_is_evidence():
+    events = [
+        _use("b", "Edit", "{}"),
+        _result("b", "ok"),
+        _use("a", "Bash", json.dumps({"command": "pytest -q"})),
+        _result("a", "31 passed"),
+    ]
+    assert ceg.has_causal_verification(events) is True
+
+
+def test_failed_pytest_is_not_evidence():
+    events = [
+        _use("b", "Edit", "{}"), _result("b", "ok"),
+        _use("a", "Bash", json.dumps({"command": "pytest -q"})),
+        _result("a", "1 failed, 2 passed\nFAILED tests/x.py"),
+    ]
+    assert ceg.has_causal_verification(events) is False
+
+
+def test_no_tests_ran_is_not_evidence():
+    """exit 5 는 실패 패턴에 안 걸리지만 성공도 아니다 — 애매하면 증거 아님."""
+    events = [
+        _use("b", "Edit", "{}"), _result("b", "ok"),
+        _use("a", "Bash", json.dumps({"command": "pytest -q tests/none.py"})),
+        _result("a", "no tests ran in 0.01s"),
+    ]
+    assert ceg.has_causal_verification(events) is False
+
+
+def test_verification_without_a_result_is_not_evidence():
+    events = [
+        _use("b", "Edit", "{}"), _result("b", "ok"),
+        _use("a", "Bash", json.dumps({"command": "pytest -q"})),
+    ]
+    assert ceg.has_causal_verification(events) is False
+
+
+def test_parallel_calls_are_paired_by_id():
+    """결과 순서가 섞여도 다른 도구의 실패와 잘못 짝지으면 안 된다."""
+    events = [
+        _use("m", "Edit", "{}"), _result("m", "ok"),
+        _use("v", "Bash", json.dumps({"command": "pytest -q"})),
+        _use("x", "Bash", json.dumps({"command": "curl example.com"})),
+        _result("x", "Error: refused"),
+        _result("v", "31 passed"),
+    ]
+    assert ceg.has_causal_verification(events) is True
+
+
+# ── evaluate 통합 ────────────────────────────────────────────────────────────
+
+
+def test_success_claim_after_change_without_verification_is_blocked():
+    events = [_use("b", "Edit", "{}"), _result("b", "ok")]
+    block, reason = ceg.evaluate("수정 완료했습니다", events)
+    assert block is True
+    assert "검증 실행이 없다" in reason
+
+
+def test_report_only_turn_with_completion_wording_passes():
+    """오늘 한 일을 보고만 하는 턴 — 검증할 대상 자체가 없다. 막으면 영원히 못 끝낸다."""
+    block, _ = ceg.evaluate("어제 수정 완료했습니다", [])
+    assert block is False
+
+
+def test_blocked_claim_without_an_attempt_is_blocked():
+    block, reason = ceg.evaluate("adidas 는 403 이라 안 됩니다", [])
+    assert block is True
+    assert "실제로 시도한 실패 출력이 없다" in reason
+
+
+def test_blocked_claim_with_failure_output_passes():
+    events = [_result("x", "HTTP 403 Forbidden")]
+    block, _ = ceg.evaluate("adidas 는 403 이라 안 됩니다", events)
+    assert block is False
+
+
+def test_works_claim_without_real_data_is_blocked():
+    block, reason = ceg.evaluate("adidas 봇월 뚫었습니다", [_result("x", "status 200")])
+    assert block is True
+    assert "실 데이터" in reason
+
+
+def test_works_claim_with_real_data_passes():
+    events = [_result("x", '{"@type": "Product", "name": "..."}')]
+    block, _ = ceg.evaluate("adidas 봇월 뚫었습니다", events)
+    assert block is False
+
+
+def test_metric_claim_without_any_read_is_blocked():
+    block, reason = ceg.evaluate("매칭 150건 나왔습니다", [])
+    assert block is True
+    assert "라이브 관측 없이 수치 주장" in reason
+
+
+def test_metric_claim_with_a_read_passes():
+    events = [_result("q", "150|IH1325|adidas 매칭 결과 행이 여기 길게 나온다")]
+    block, _ = ceg.evaluate("매칭 150건 나왔습니다", events)
+    assert block is False
+
+
+def test_empty_text_passes():
+    assert ceg.evaluate("", [_use("b", "Edit", "{}")])[0] is False
+
+
+def test_human_turn_detection_filters_tool_result_disguise():
+    assert ceg.is_human_turn({"type": "user", "message": {"content": "안녕"}}) is True
+    fake = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "x"}]}}
+    assert ceg.is_human_turn(fake) is False
+
+
+# ═══════════════════════════════════════════════ orchestration_gate (Fable)
+
+
+def test_switch_off_passes_everything():
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": "a.py"}, "prompt_id": "p"}
+    assert og.decide(payload, "off", {}).allow is True
+
+
+def test_subagents_are_exempt_from_the_limit():
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": "a.py"},
+               "prompt_id": "p", "agent_type": "kream-executor"}
+    gate = {"prompt_id": "p", "files": [f"f{i}.py" for i in range(5)]}
+    assert og.decide(payload, "on", gate).allow is True
+
+
+def test_reaching_the_limit_blocks_and_directs_delegation():
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": "new.py"}, "prompt_id": "p"}
+    gate = {"prompt_id": "p", "files": [f"f{i}.py" for i in range(5)]}
+    d = og.decide(payload, "on", gate)
+    assert d.allow is False
+    assert "kream-executor" in d.message
+
+
+def test_re_editing_the_same_file_does_not_count():
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": "f0.py"}, "prompt_id": "p"}
+    gate = {"prompt_id": "p", "files": [f"f{i}.py" for i in range(5)]}
+    assert og.decide(payload, "on", gate).allow is True
+
+
+def test_non_code_files_are_outside_the_limit():
+    payload = {"tool_name": "Write", "tool_input": {"file_path": "docs/x.md"}, "prompt_id": "p"}
+    gate = {"prompt_id": "p", "files": [f"f{i}.py" for i in range(5)]}
+    assert og.decide(payload, "on", gate).allow is True

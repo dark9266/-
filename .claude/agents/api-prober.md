@@ -1,6 +1,7 @@
 ---
 name: api-prober
 description: 새 소싱처 API 탐색 전담 에이전트. 최적 기법 판별(httpx/curl_cffi/Playwright/모바일API) + 엔드포인트 발견 및 응답 구조 문서화.
+model: claude-sonnet-5
 ---
 
 # API Prober Agent
