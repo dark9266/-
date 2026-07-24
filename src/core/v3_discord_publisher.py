@@ -68,11 +68,13 @@ def _lookup_kream_product(db_path: str, kream_product_id: int) -> dict | None:
         return None
 
 
-def _lookup_retail_sources(db_path: str, model_no: str) -> list[dict]:
+def _lookup_retail_sources(db_path: str, model_no: str) -> list[dict] | None:
     """모델번호 → 매입처별 (source, url, price) 리스트. 가장 싼 가격 우선.
 
     retail_price_history 비어있어도 retail_products url 은 표시 (가격은 None).
     kream_delta 자체 row 는 제외.
+
+    실패 시 None(Unavailable) 반환 — 매입처가 진짜 없는 경우([])와 구분한다.
     """
     try:
         with sync_connect(db_path, read_only=True, timeout=2.0) as conn:
@@ -92,7 +94,7 @@ def _lookup_retail_sources(db_path: str, model_no: str) -> list[dict]:
         return result
     except Exception as e:
         logger.debug("[v3_discord] retail_products 조회 실패: %s", e)
-        return []
+        return None
 
 
 def _build_embed(event: ProfitFound, product: dict | None = None) -> dict:
@@ -286,7 +288,7 @@ class V3DiscordPublisher:
         if event.signal not in _ALERT_SIGNALS:
             return
         product = None
-        retail_sources: list[dict] = []
+        retail_sources: list[dict] | None = []
         if self._db_path:
             product = _lookup_kream_product(self._db_path, event.kream_product_id)
             retail_sources = _lookup_retail_sources(self._db_path, event.model_no)
@@ -294,13 +296,23 @@ class V3DiscordPublisher:
                 product = (product or {}) | {"retail_sources": retail_sources}
         # 매입처 없는 kream_delta 알림 차단 — 사용자가 어디서 매입할지 알 수 없으면 무용.
         # retail_products 에 동일 model_number 의 외부 소싱처 row 가 있어야 발송.
-        if event.source == "kream_delta" and not retail_sources:
-            logger.info(
-                "[v3_discord] kream_delta 알림 차단 (매입처 없음): model=%s pid=%s",
-                event.model_no,
-                event.kream_product_id,
-            )
-            return
+        # 단, 조회 자체가 실패한 경우(Unavailable=None)는 "없음"과 다르다 — 차단이 아니라 보류.
+        if event.source == "kream_delta":
+            if retail_sources is None:
+                logger.warning(
+                    "[v3_discord] retail 조회 실패 — kream_delta 알림 보류(재시도 대상): "
+                    "model=%s pid=%s",
+                    event.model_no,
+                    event.kream_product_id,
+                )
+                return
+            if not retail_sources:
+                logger.info(
+                    "[v3_discord] kream_delta 알림 차단 (매입처 없음): model=%s pid=%s",
+                    event.model_no,
+                    event.kream_product_id,
+                )
+                return
         embed = _build_embed(event, product)
 
         # 1순위: discord.py bot 채널 직접 send (기존 profit 채널 재사용)

@@ -9,11 +9,17 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 import src.core.v3_discord_publisher as _pub_mod
 from src.core.event_bus import ProfitFound
-from src.core.v3_discord_publisher import V3DiscordPublisher, wrap_handler
+from src.core.v3_discord_publisher import (
+    V3DiscordPublisher,
+    _lookup_retail_sources,
+    wrap_handler,
+)
 
 
 @pytest.fixture
@@ -340,3 +346,52 @@ async def test_external_source_footer_label():
     await pub.publish(_make_event("강력매수"))
 
     assert "외부 매입처 매수" in captured[0]["footer"]["text"]
+
+
+# ─── (i) 매입처 조회 3-state: Found / NotFound / Unavailable (코덱스 P2) ────
+
+
+def test_lookup_retail_unavailable_returns_none():
+    """DB 파일 자체가 없거나 손상 — 조회 실패는 None(Unavailable), [] 아님."""
+    result = _lookup_retail_sources("/nonexistent/x.db", "AR3565-004")
+    assert result is None
+
+
+def test_lookup_retail_notfound_returns_empty(tmp_path):
+    """정상 DB 지만 매칭 매입처 없는 model_no — [] 반환(NotFound, None 아님)."""
+    db_path = tmp_path / "empty.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE retail_products (source TEXT, url TEXT, product_id TEXT, "
+            "model_number TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE retail_price_history (source TEXT, product_id TEXT, "
+            "price INTEGER, in_stock INTEGER)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = _lookup_retail_sources(str(db_path), "NO-SUCH-MODEL")
+    assert result == []
+
+
+async def test_kream_delta_held_when_lookup_unavailable(monkeypatch, caplog):
+    """조회 실패(Unavailable=None) 시 — '매입처 없음' 차단과 달리 WARNING 로그 + 발송 보류."""
+    monkeypatch.setattr(_pub_mod, "_lookup_retail_sources", lambda db_path, model_no: None)
+    monkeypatch.setattr(_pub_mod, "_lookup_kream_product", lambda db_path, pid: None)
+
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send, db_path="dummy")
+    with caplog.at_level("WARNING", logger="src.core.v3_discord_publisher"):
+        await pub.publish(_make_kream_delta_event(signal="강력매수"))
+
+    # 발송은 보류(차단과 동일하게 미발송)되지만, 원인이 다르므로 WARNING 로그로 구분되어야 함.
+    assert captured == []
+    assert any("보류" in rec.message for rec in caplog.records)
