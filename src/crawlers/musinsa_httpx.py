@@ -332,9 +332,41 @@ class MusinsaHttpxCrawler:
             goods_data = await self._fetch_goods_detail_api(api_id)
 
             if goods_data:
-                # 전체 품절 상품 스킵 (재고 API 불능 시 유일한 품절 게이트)
+                # 전체 품절(API 최상위 플래그) — 관측된 음성 증거이므로 확정
+                # OUT_OF_STOCK 으로 반환한다 (1c-3 리뷰 F2: 과거 `return None` 은
+                # fetch_stock_evidence 에서 UNKNOWN("pdp_none") 이 되어 확정
+                # 품절 상품이 매 사이클 보류 재발행되는 문제가 있었다).
                 if goods_data.get("isOutOfStock"):
-                    return None
+                    logger.info(
+                        "[musinsa] 전체 품절(API 플래그) — 확정 drop 증거: pid=%s",
+                        product_id,
+                    )
+                    oos_name = goods_data.get("goodsNm") or f"상품 {product_id}"
+                    oos_brand_info = goods_data.get("brandInfo")
+                    oos_brand = (
+                        oos_brand_info.get("brandName", "")
+                        if isinstance(oos_brand_info, dict)
+                        else goods_data.get("brand", "")
+                    )
+                    oos_model = goods_data.get("styleNo") or ""
+                    if oos_model and self._is_musinsa_sku(oos_model):
+                        from src.matcher import extract_model_from_name
+                        name_model = extract_model_from_name(oos_name)
+                        if name_model:
+                            oos_model = name_model
+                    return RetailProduct(
+                        source="musinsa",
+                        product_id=product_id,
+                        name=oos_name,
+                        model_number=oos_model,
+                        brand=oos_brand,
+                        url=url,
+                        image_url=goods_data.get("thumbnailImageUrl") or "",
+                        sizes=[],
+                        fetched_at=datetime.now(),
+                        stock_state="OUT_OF_STOCK",
+                        stock_reason="soldout_flag",
+                    )
                 if self._is_offline_api_goods(goods_data):
                     logger.info("오프라인 전용 상품 스킵: pid=%s", product_id)
                     return None
@@ -424,8 +456,11 @@ class MusinsaHttpxCrawler:
                     stock_state = ""
                     stock_reason = ""
                 elif not attempted_inventory:
-                    # 사이즈 옵션은 있지만 옵션값 자체가 없음 — 팔 것이 없음(품절 확정).
-                    stock_state = "OUT_OF_STOCK"
+                    # 사이즈 옵션은 있지만 `_get_all_option_value_nos` 가 전체
+                    # optionValue 를 못 찾음 — inventory API 호출조차 안 됐으므로
+                    # 관측된 품절 증거가 아니라 기형 응답(1c-3 리뷰 F1). 승격 금지
+                    # 보류 → 다음 사이클 재검증.
+                    stock_state = "UNKNOWN"
                     stock_reason = "no_option_values"
                 elif inventory_data is None:
                     # inventory API 조회실패 (1회 재시도 후에도) — 승격 금지, 보류 대상.
@@ -568,7 +603,17 @@ class MusinsaHttpxCrawler:
                 reason = f"api_{resp.status_code}"
                 continue
 
-            body = resp.json()
+            # 200 이지만 비-JSON(WAF HTML 등) 응답 시 json() 파싱 예외가 재시도
+            # 루프를 뚫고 나가지 않도록 보호 (1c-3 리뷰 F2) — 재시도 1회 계약 유지.
+            try:
+                body = resp.json()
+            except Exception as e:
+                logger.debug(
+                    "재고 API 응답 파싱 실패: pid=%s attempt=%d %s", product_id, attempt, e,
+                )
+                reason = "parse_fail"
+                continue
+
             if isinstance(body, dict):
                 inv = body.get("data", [])
                 if isinstance(inv, list):

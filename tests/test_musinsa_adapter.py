@@ -415,6 +415,31 @@ async def test_out_of_stock_dropped(bus, tmp_path):
     assert matches == []
 
 
+async def test_is_out_of_stock_flag_dropped_via_adapter(bus, tmp_path):
+    """PDP `isOutOfStock` 확정 증거(soldout_flag) → 발행 안 됨 + soldout_dropped.
+
+    1c-3 리뷰 F3: 확정 품절 상품이 UNKNOWN 보류로 새지 않고 곧바로 drop 되는지
+    어댑터 경로에서 확인.
+    """
+    kream_db = _single_product_kream_db(tmp_path)
+    fake_http = _FakeMusinsaHttp(
+        listings={},
+        pdp_sizes={"1001": []},
+        pdp_stock={"1001": ("OUT_OF_STOCK", "soldout_flag")},
+    )
+    adapter = MusinsaAdapter(
+        bus=bus, db_path=kream_db, http_client=fake_http,
+        categories={"103": "신발"}, brands=(),
+    )
+
+    matches, stats = await adapter.match_to_kream([_SINGLE_PRODUCT])
+
+    assert stats.soldout_dropped == 1
+    assert stats.matched == 0
+    assert stats.unknown_held == 0
+    assert matches == []
+
+
 async def test_in_stock_publishes_source_stock_snapshot(bus, tmp_path):
     """IN_STOCK → source_stock.state==IN_STOCK + available_sizes 일치 (검증 기준 10)."""
     kream_db = _single_product_kream_db(tmp_path)

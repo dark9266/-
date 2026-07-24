@@ -254,6 +254,29 @@ class TestFetchInventoriesApiRetry:
         assert data is None
         assert reason == "api_400"
 
+    async def test_retry_bad_json_both_attempts_parse_fail(self):
+        """200 + 비-JSON(WAF HTML 등) 2회 → 호출 2회 + (None, "parse_fail").
+
+        1c-3 리뷰 F2: json() 파싱이 try 밖에 있으면 예외가 재시도 루프를 뚫고
+        나가 재시도 계약이 깨진다 — 회귀 고정.
+        """
+
+        class _BadJsonResp:
+            status_code = 200
+            text = "<html>WAF block</html>"
+
+            def json(self):
+                raise ValueError("not json")
+
+        fake_client = AsyncMock()
+        fake_client.post.side_effect = [_BadJsonResp(), _BadJsonResp()]
+        with patch.object(self.crawler, "connect", AsyncMock(return_value=fake_client)):
+            data, reason = await self.crawler._fetch_inventories_api("9001", [501, 502])
+
+        assert fake_client.post.call_count == 2
+        assert data is None
+        assert reason == "parse_fail"
+
 
 class TestGetProductDetailStockEvidence:
     """`get_product_detail` — source_stock 증거 상태 결정 (검증 기준 1,2,3,4,5,7)."""
@@ -414,3 +437,66 @@ class TestGetProductDetailStockEvidence:
         assert product.sizes == []
         assert product.stock_state == "UNKNOWN"
         assert product.stock_reason == "options_api_fail"
+
+    async def test_size_option_present_but_no_option_values_is_unknown(self):
+        """사이즈 옵션은 있으나 optionValues 빈 응답(기형) → UNKNOWN/no_option_values.
+
+        1c-3 리뷰 F1: `_get_all_option_value_nos` 가 0개면 inventory API 호출조차
+        안 되므로 관측된 품절 증거가 아니다 — OUT_OF_STOCK 로 확정 짓지 않는다.
+        """
+        malformed_options = {
+            "data": {
+                "basic": [
+                    {"name": "사이즈", "standardOptionNo": 3, "no": 10, "optionValues": []}
+                ],
+                "optionItems": [],
+            }
+        }
+        with (
+            patch.object(
+                self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=_goods_data())
+            ),
+            patch.object(
+                self.crawler, "_fetch_options_api", AsyncMock(return_value=malformed_options)
+            ),
+            patch.object(self.crawler, "_fetch_inventories_api") as inv_mock,
+        ):
+            product = await self.crawler.get_product_detail("9001")
+
+        assert product is not None
+        assert product.sizes == []
+        assert product.stock_state == "UNKNOWN"
+        assert product.stock_reason == "no_option_values"
+        inv_mock.assert_not_called()  # inventory API 호출 자체가 없어야 함
+
+    async def test_is_out_of_stock_flag_confirms_out_of_stock(self):
+        """goods-detail API `isOutOfStock` 최상위 플래그 → 확정 OUT_OF_STOCK.
+
+        1c-3 리뷰 F3: 과거 `return None` 은 fetch_stock_evidence 에서
+        UNKNOWN("pdp_none") 이 되어 확정 품절 상품이 매 사이클 보류 재발행됐다.
+        """
+        goods_data = _goods_data()
+        goods_data["isOutOfStock"] = True
+        with patch.object(
+            self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=goods_data)
+        ):
+            product = await self.crawler.get_product_detail("9001")
+
+        assert product is not None
+        assert product.sizes == []
+        assert product.stock_state == "OUT_OF_STOCK"
+        assert product.stock_reason == "soldout_flag"
+        assert product.model_number  # 이름/모델 등 확보 가능한 정보는 채워짐
+
+    async def test_is_out_of_stock_flag_legacy_helper_still_drops(self):
+        """레거시 `fetch_in_stock_sizes` 호출자는 sizes=[] → 빈 튜플 → 기존 drop 유지."""
+        from src.adapters._size_helpers import fetch_in_stock_sizes
+
+        goods_data = _goods_data()
+        goods_data["isOutOfStock"] = True
+        with patch.object(
+            self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=goods_data)
+        ):
+            sizes = await fetch_in_stock_sizes(self.crawler, "9001", source_tag="musinsa")
+
+        assert sizes == ()
