@@ -232,6 +232,17 @@ CREATE INDEX IF NOT EXISTS idx_coupon_lookup
 -- expiry scan index (DELETE WHERE captured_at < cutoff, TTL 3일)
 CREATE INDEX IF NOT EXISTS idx_coupon_captured
     ON coupon_catches(captured_at);
+
+-- 거래량 부트스트랩 chunk 원자 lease (조각 2-1, 2026-07-25)
+-- kream_products 에 lease 컬럼을 얹지 않고 별도 소테이블로 분리 —
+-- 도메인 테이블 오염 방지. at-least-once + idempotent upsert 전제(외부 GET
+-- 과 로컬 commit 사이 exactly-once 불가 수용). lease_owner 가 만료된
+-- (lease_until < now) 행은 다른 owner 가 재취득 가능.
+CREATE TABLE IF NOT EXISTS volume_job_lease (
+    product_id TEXT PRIMARY KEY,
+    lease_owner TEXT NOT NULL,
+    lease_until REAL NOT NULL
+);
 """
 
 
@@ -313,8 +324,44 @@ class Database:
         except Exception:
             pass
 
+        await self.migrate_volume_attempt_columns()
+
         await self.db.commit()
         logger.info("실시간 DB 마이그레이션 완료")
+
+    async def migrate_volume_attempt_columns(self) -> None:
+        """거래량 부트스트랩 시도 상태 컬럼 추가 (조각 2-1, 멱등).
+
+        `PRAGMA table_info` 로 존재 여부를 먼저 확인한 뒤 없는 컬럼만
+        ALTER TABLE — 기존 `migrate_realtime_columns`의 try/except 방식과
+        달리 브리프가 명시한 존재-체크 패턴을 그대로 따른다.
+        """
+        cursor = await self.db.execute("PRAGMA table_info(kream_products)")
+        existing = {row["name"] for row in await cursor.fetchall()}
+
+        column_ddls = {
+            "last_volume_attempt_at": "TEXT",
+            "volume_attempt_count": "INTEGER DEFAULT 0",
+            "next_volume_attempt_at": "TEXT",
+            "last_volume_error": "TEXT",
+        }
+        for column, ddl in column_ddls.items():
+            if column in existing:
+                continue
+            try:
+                await self.db.execute(
+                    f"ALTER TABLE kream_products ADD COLUMN {column} {ddl}"
+                )
+            except Exception:
+                pass  # 동시 마이그레이션 경합 등 — 존재하면 무시
+
+        try:
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_next_volume_attempt "
+                "ON kream_products(next_volume_attempt_at)"
+            )
+        except Exception:
+            pass
 
     # -- 크림 상품 --
 
