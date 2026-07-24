@@ -139,6 +139,9 @@ def _build_dataclass_instance(cls: type, data: dict) -> Any:
     try:
         hints = typing.get_type_hints(cls)
     except Exception:
+        # 힌트 해석 실패 시 nested/Enum 복원이 전부 스킵된다 — 조용한 회귀
+        # 방지용 경고 (1c-5 리뷰 Minor).
+        logger.warning("체크포인트 복원: %s 타입힌트 해석 실패 — nested 복원 스킵", cls.__name__)
         hints = {}
     kwargs: dict[str, Any] = {}
     for f in dataclasses.fields(cls):
@@ -376,6 +379,10 @@ class CheckpointStore:
                     try:
                         hints = typing.get_type_hints(cls)
                     except Exception:
+                        logger.warning(
+                            "체크포인트 복원: %s 타입힌트 해석 실패 — nested 복원 스킵",
+                            cls.__name__,
+                        )
                         hints = {}
                     for f in dataclasses.fields(cls):
                         if f.name not in payload:
