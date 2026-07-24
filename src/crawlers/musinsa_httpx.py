@@ -389,22 +389,52 @@ class MusinsaHttpxCrawler:
             # Phase B: options API → 사이즈 데이터
             options_data = await self._fetch_options_api(api_id)
 
-            # Phase C: inventory API → 품절 필터 (POST + 전 optionValue NO)
-            inventory_data = None
-            if options_data:
-                all_value_nos = self._get_all_option_value_nos(options_data)
-                if all_value_nos:
-                    inventory_data = await self._fetch_inventories_api(
-                        api_id, all_value_nos,
-                    )
-
-            # 사이즈 파싱
+            # 1c-3: 재고 증거 상태(stock_state/stock_reason) 결정.
+            # options API 실패 → 조회실패(UNKNOWN). 승격 금지, sizes=[].
             sizes: list[RetailSizeInfo] = []
-            if options_data:
+            stock_state = ""
+            stock_reason = ""
+
+            if options_data is None:
+                stock_state = "UNKNOWN"
+                stock_reason = "options_api_fail"
+            else:
+                has_size_option = self._has_size_option(options_data)
+
+                # Phase C: inventory API → 품절 필터 (POST + 전 optionValue NO)
+                inventory_data = None
+                inventory_reason = ""
+                attempted_inventory = False
+                if has_size_option:
+                    all_value_nos = self._get_all_option_value_nos(options_data)
+                    if all_value_nos:
+                        attempted_inventory = True
+                        inventory_data, inventory_reason = await self._fetch_inventories_api(
+                            api_id, all_value_nos,
+                        )
+
                 sizes = self._parse_sizes_from_api(
                     options_data, inventory_data,
                     sale_price, original_price, discount_type, discount_rate,
                 )
+
+                if not has_size_option:
+                    # 사이즈 옵션 자체를 못 찾는 구조적 미지원 — 기존 동작 유지
+                    # (1c-4 capability 조각 담당, 여기서 UNKNOWN 으로 바꾸지 않음).
+                    stock_state = ""
+                    stock_reason = ""
+                elif not attempted_inventory:
+                    # 사이즈 옵션은 있지만 옵션값 자체가 없음 — 팔 것이 없음(품절 확정).
+                    stock_state = "OUT_OF_STOCK"
+                    stock_reason = "no_option_values"
+                elif inventory_data is None:
+                    # inventory API 조회실패 (1회 재시도 후에도) — 승격 금지, 보류 대상.
+                    stock_state = "UNKNOWN"
+                    stock_reason = inventory_reason or "inventory_api_fail"
+                elif sizes:
+                    stock_state = "IN_STOCK"
+                else:
+                    stock_state = "OUT_OF_STOCK"
 
             product = RetailProduct(
                 source="musinsa",
@@ -416,6 +446,8 @@ class MusinsaHttpxCrawler:
                 image_url=image_url,
                 sizes=sizes,
                 fetched_at=datetime.now(),
+                stock_state=stock_state,
+                stock_reason=stock_reason,
             )
 
             logger.info(
@@ -477,8 +509,8 @@ class MusinsaHttpxCrawler:
         self,
         product_id: str,
         option_value_nos: list[int] | None = None,
-    ) -> list | None:
-        """재고 API 호출 (POST).
+    ) -> tuple[list | None, str]:
+        """재고 API 호출 (POST). 실패 시 **1회만 재시도**.
 
         2026-04-17: GET `selectedOptionValueNos=...` 는 전 상품 400 반환 — 실제
         브라우저는 **POST** `options/v2/prioritized-inventories` + JSON body
@@ -486,43 +518,71 @@ class MusinsaHttpxCrawler:
         상시 400 → `inventory_data=None` → `_parse_sizes_from_api` 폴백이
         `isDeleted=False` 만 확인하고 전 사이즈 in_stock=True 로 처리.
         결과: 전체 품절 상품에도 허위 알림 (삼바 JR2660 pid=4375143 실측).
+
+        2026-07-24 (1c-3): 조회실패(400/타임아웃/예외)를 "전 사이즈 품절"과
+        구분하기 위해 실패 사유를 함께 반환한다 — 호출자가 UNKNOWN 보류 vs
+        OUT_OF_STOCK 확정을 가를 수 있도록.
+
+        Returns
+        -------
+        tuple
+            `(inventory_data, reason_code)`. 성공 시 `(list, "")`.
+            실패(재시도 후에도) 시 `(None, reason)` — reason 은
+            `"api_<status>"` / `"timeout"` / `"exception"` / `"parse_fail"`.
         """
         if not option_value_nos:
-            return None
+            return None, "no_option_values"
 
         client = await self.connect()
         api_url = f"{GOODS_DETAIL_BASE}/api2/goods/{product_id}/options/v2/prioritized-inventories"
         headers = dict(_API_HEADERS)
         headers["Content-Type"] = "application/json"
 
-        try:
-            async with self._rate_limiter.acquire():
-                resp = await client.post(
-                    api_url,
-                    json={"optionValueNos": list(option_value_nos)},
-                    headers=headers,
+        reason = "unknown"
+        for attempt in range(2):  # 최초 1회 + 재시도 1회 (호출량 보수)
+            try:
+                async with self._rate_limiter.acquire():
+                    resp = await client.post(
+                        api_url,
+                        json={"optionValueNos": list(option_value_nos)},
+                        headers=headers,
+                    )
+            except httpx.TimeoutException as e:
+                logger.debug(
+                    "재고 API 타임아웃: pid=%s attempt=%d %s", product_id, attempt, e,
                 )
+                reason = "timeout"
+                continue
+            except Exception as e:
+                logger.debug(
+                    "재고 API 예외: pid=%s attempt=%d %s", product_id, attempt, e,
+                )
+                reason = "exception"
+                continue
+
             if resp.status_code != 200:
                 logger.debug(
-                    "재고 API 실패: pid=%s status=%d body=%s",
-                    product_id, resp.status_code, resp.text[:200],
+                    "재고 API 실패: pid=%s attempt=%d status=%d body=%s",
+                    product_id, attempt, resp.status_code, resp.text[:200],
                 )
-                return None
+                reason = f"api_{resp.status_code}"
+                continue
+
             body = resp.json()
             if isinstance(body, dict):
                 inv = body.get("data", [])
                 if isinstance(inv, list):
                     logger.debug("재고 API 성공: pid=%s %d건", product_id, len(inv))
-                    return inv
+                    return inv, ""
             elif isinstance(body, list):
-                return body
-        except Exception as e:
-            logger.debug("재고 API 예외: pid=%s %s", product_id, e)
+                return body, ""
+
+            reason = "parse_fail"
 
         if not self._inventory_api_warned:
-            logger.warning("재고 API 불능 — optionItems.activated 폴백 (품절 감지 불가)")
+            logger.warning("재고 API 불능 — 조회실패 UNKNOWN 보류 (품절 확정 아님)")
             self._inventory_api_warned = True
-        return None
+        return None, reason
 
     # ─── HTML 파싱 헬퍼 ──────────────────────────────────
 
@@ -756,28 +816,7 @@ class MusinsaHttpxCrawler:
             return []
 
         # 사이즈 옵션 찾기
-        _COLOR_NAMES = {"c", "color", "색상", "컬러"}
-        _SIZE_NAMES = {"s", "size", "사이즈", "신발", "shoes"}
-        _SKIP_NAMES = {"none", ""}
-
-        size_option = None
-        for opt in basic_options:
-            if not isinstance(opt, dict):
-                continue
-            name_lower = (opt.get("name") or "").strip().lower()
-            std_no = opt.get("standardOptionNo")
-            if std_no in (3, 4, 6):
-                size_option = opt
-                break
-            if name_lower in _SIZE_NAMES:
-                size_option = opt
-                break
-
-        if not size_option and len(basic_options) == 1:
-            name_lower = (basic_options[0].get("name") or "").strip().lower()
-            if name_lower not in _COLOR_NAMES and name_lower not in _SKIP_NAMES:
-                size_option = basic_options[0]
-
+        size_option = self._find_size_option(basic_options)
         if not size_option:
             return []
 
@@ -880,6 +919,50 @@ class MusinsaHttpxCrawler:
             ))
 
         return sizes
+
+    @staticmethod
+    def _find_size_option(basic_options: list) -> dict | None:
+        """`basic` 옵션 목록에서 사이즈 옵션 항목을 식별 (없으면 ``None``).
+
+        `_parse_sizes_from_api` 와 `_has_size_option` 이 공유하는 판별 로직
+        (1c-3, 구조적 미지원 감지를 위해 분리).
+        """
+        color_names = {"c", "color", "색상", "컬러"}
+        size_names = {"s", "size", "사이즈", "신발", "shoes"}
+        skip_names = {"none", ""}
+
+        for opt in basic_options:
+            if not isinstance(opt, dict):
+                continue
+            name_lower = (opt.get("name") or "").strip().lower()
+            std_no = opt.get("standardOptionNo")
+            if std_no in (3, 4, 6):
+                return opt
+            if name_lower in size_names:
+                return opt
+
+        if len(basic_options) == 1 and isinstance(basic_options[0], dict):
+            name_lower = (basic_options[0].get("name") or "").strip().lower()
+            if name_lower not in color_names and name_lower not in skip_names:
+                return basic_options[0]
+
+        return None
+
+    def _has_size_option(self, options_data: dict | None) -> bool:
+        """옵션 API 응답에서 사이즈 옵션을 식별 가능한지 판별.
+
+        구조적 미지원(사이즈 옵션 자체 없음) 상품을 UNKNOWN 으로 오분류하지
+        않기 위한 게이트 (1c-3 요구사항 5 — 1c-4 capability 조각 소관).
+        """
+        if not options_data or not isinstance(options_data, dict):
+            return False
+        data = options_data.get("data")
+        if not isinstance(data, dict):
+            return False
+        basic_options = data.get("basic", [])
+        if not isinstance(basic_options, list):
+            return False
+        return self._find_size_option(basic_options) is not None
 
     def _get_all_option_value_nos(self, options_data: dict | None) -> list[int]:
         """옵션 API 응답에서 **모든** optionValue NO 수집 (POST 재고 API 용)."""

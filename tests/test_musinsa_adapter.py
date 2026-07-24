@@ -22,6 +22,7 @@ from src.core.event_bus import (
     ProfitFound,
 )
 from src.core.orchestrator import Orchestrator
+from src.models.stock import StockState
 
 # ─── DB 헬퍼 ──────────────────────────────────────────────
 
@@ -80,8 +81,10 @@ class _FakeSize:
 
 
 class _FakeProduct:
-    def __init__(self, sizes):
+    def __init__(self, sizes, stock_state: str = "", stock_reason: str = ""):
         self.sizes = sizes
+        self.stock_state = stock_state
+        self.stock_reason = stock_reason
 
 
 class _FakeMusinsaHttp:
@@ -91,9 +94,12 @@ class _FakeMusinsaHttp:
         self,
         listings: dict[str, list[dict]],
         pdp_sizes: dict[str, list[str]] | None = None,
+        pdp_stock: dict[str, tuple[str, str]] | None = None,
     ):
         self._listings = listings
         self._pdp = pdp_sizes if pdp_sizes is not None else {}
+        # pid → (stock_state, stock_reason) — 1c-3 재고 증거 오버라이드.
+        self._pdp_stock = pdp_stock if pdp_stock is not None else {}
         self.calls: list[tuple[str, int]] = []
 
     async def fetch_category_listing(
@@ -108,11 +114,16 @@ class _FakeMusinsaHttp:
         return list(self._listings.get(category, []))
 
     async def get_product_detail(self, product_id: str):
-        # 디폴트: 모든 pid → ("270",) 정상 케이스
+        # 디폴트: 모든 pid → ("270",) 정상 케이스, stock_state="" (레거시 mock)
         sizes = self._pdp.get(product_id, ["270"])
-        if not sizes:
+        stock_state, stock_reason = self._pdp_stock.get(product_id, ("", ""))
+        if not sizes and not stock_state:
             return None
-        return _FakeProduct([_FakeSize(s, True) for s in sizes])
+        return _FakeProduct(
+            [_FakeSize(s, True) for s in sizes],
+            stock_state=stock_state,
+            stock_reason=stock_reason,
+        )
 
 
 # ─── fixtures ─────────────────────────────────────────────
@@ -325,6 +336,108 @@ async def test_run_once_stats(bus, kream_db):
     assert stats["dumped"] == 2
     assert stats["matched"] == 1
     assert stats["soldout_dropped"] == 1
+
+
+# ─── (c-2) 1c-3: source_stock 배선 — UNKNOWN 보류 / OUT_OF_STOCK drop / IN_STOCK ──
+
+
+def _single_product_kream_db(tmp_path):
+    path = tmp_path / "kream_stock.db"
+    _init_kream_db(
+        str(path),
+        rows=[
+            {
+                "product_id": "101",
+                "name": "Nike Air Force 1 Low White",
+                "model_number": "CW2288-111",
+                "brand": "Nike",
+            },
+        ],
+    )
+    return str(path)
+
+
+_SINGLE_PRODUCT = {
+    "goodsNo": "1001",
+    "goodsName": "나이키 에어포스 1 / CW2288-111",
+    "brand": "nike",
+    "brandName": "나이키",
+    "price": 139000,
+    "isSoldOut": False,
+}
+
+
+async def test_unknown_stock_publishes_candidate_held(bus, tmp_path):
+    """UNKNOWN 상세 → candidate 발행 + source_stock.state==UNKNOWN + reason_code
+    전달 + unknown_held 카운트 (검증 기준 8)."""
+    kream_db = _single_product_kream_db(tmp_path)
+    fake_http = _FakeMusinsaHttp(
+        listings={},
+        pdp_sizes={"1001": []},
+        pdp_stock={"1001": ("UNKNOWN", "api_400")},
+    )
+    adapter = MusinsaAdapter(
+        bus=bus, db_path=kream_db, http_client=fake_http,
+        categories={"103": "신발"}, brands=(),
+    )
+
+    matches, stats = await adapter.match_to_kream([_SINGLE_PRODUCT])
+
+    assert stats.unknown_held == 1
+    assert stats.matched == 1
+    assert stats.soldout_dropped == 0
+    assert len(matches) == 1
+    cand = matches[0]
+    assert cand.source_stock is not None
+    assert cand.source_stock.state == StockState.UNKNOWN
+    assert cand.source_stock.reason_code == "api_400"
+    assert cand.available_sizes == ()
+
+
+async def test_out_of_stock_dropped(bus, tmp_path):
+    """OUT_OF_STOCK → 발행 안 됨 + soldout_dropped (검증 기준 9)."""
+    kream_db = _single_product_kream_db(tmp_path)
+    fake_http = _FakeMusinsaHttp(
+        listings={},
+        pdp_sizes={"1001": []},
+        pdp_stock={"1001": ("OUT_OF_STOCK", "")},
+    )
+    adapter = MusinsaAdapter(
+        bus=bus, db_path=kream_db, http_client=fake_http,
+        categories={"103": "신발"}, brands=(),
+    )
+
+    matches, stats = await adapter.match_to_kream([_SINGLE_PRODUCT])
+
+    assert stats.soldout_dropped == 1
+    assert stats.matched == 0
+    assert stats.unknown_held == 0
+    assert matches == []
+
+
+async def test_in_stock_publishes_source_stock_snapshot(bus, tmp_path):
+    """IN_STOCK → source_stock.state==IN_STOCK + available_sizes 일치 (검증 기준 10)."""
+    kream_db = _single_product_kream_db(tmp_path)
+    fake_http = _FakeMusinsaHttp(
+        listings={},
+        pdp_sizes={"1001": ["270", "280"]},
+        pdp_stock={"1001": ("IN_STOCK", "")},
+    )
+    adapter = MusinsaAdapter(
+        bus=bus, db_path=kream_db, http_client=fake_http,
+        categories={"103": "신발"}, brands=(),
+    )
+
+    matches, stats = await adapter.match_to_kream([_SINGLE_PRODUCT])
+
+    assert stats.matched == 1
+    assert stats.unknown_held == 0
+    assert stats.soldout_dropped == 0
+    cand = matches[0]
+    assert cand.source_stock is not None
+    assert cand.source_stock.state == StockState.IN_STOCK
+    assert cand.available_sizes == cand.source_stock.available_sizes
+    assert set(cand.available_sizes) == {"270", "280"}
 
 
 # ─── (d) E2E: 어댑터 → 오케스트레이터 → AlertSent ─────────

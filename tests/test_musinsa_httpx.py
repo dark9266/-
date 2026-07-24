@@ -1,5 +1,8 @@
 """musinsa_httpx 크롤러 단위 테스트 — HTML 파싱 순수 함수."""
 
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, patch
+
 from src.crawlers.musinsa_httpx import MusinsaHttpxCrawler
 
 
@@ -152,3 +155,262 @@ class TestExtractPrices:
         assert sale == 89000
         assert discount_type == "할인"
         assert 0.2 < discount_rate < 0.3  # ~0.252
+
+
+# ─── 1c-3: 재고 증거 배선 — 조회실패(UNKNOWN) vs 품절(OUT_OF_STOCK) 구분 ───
+
+
+@asynccontextmanager
+async def _noop_acquire():
+    yield
+
+
+class _FakeResp:
+    """httpx.Response 흉내 — status_code + json() 만 필요."""
+
+    def __init__(self, status_code: int, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = str(self._payload)
+
+    def json(self):
+        return self._payload
+
+
+def _goods_data(product_id: str = "9001") -> dict:
+    """`_fetch_goods_detail_api` 성공 응답 모사."""
+    return {
+        "goodsNo": product_id,
+        "goodsNm": "나이키 덩크 로우 화이트 / DQ8423-100",
+        "brandInfo": {"brandName": "나이키"},
+        "styleNo": "DQ8423-100",
+        "thumbnailImageUrl": "https://img.example/x.jpg",
+        "goodsPrice": {"salePrice": 139000, "normalPrice": 159000, "discountRate": 12.6},
+        "isOutOfStock": False,
+    }
+
+
+def _options_data(activated: dict[int, bool] | None = None) -> dict:
+    """단일 사이즈 옵션(270/280) options API 응답 모사.
+
+    activated: {optionValueNo: activated} — None 이면 전부 활성.
+    """
+    activated = activated or {501: True, 502: True}
+    option_items = [
+        {"no": 1, "activated": activated.get(501, True), "optionValueNos": [501]},
+        {"no": 2, "activated": activated.get(502, True), "optionValueNos": [502]},
+    ]
+    return {
+        "data": {
+            "basic": [
+                {
+                    "name": "사이즈",
+                    "standardOptionNo": 3,
+                    "no": 10,
+                    "optionValues": [
+                        {"no": 501, "name": "270"},
+                        {"no": 502, "name": "280"},
+                    ],
+                }
+            ],
+            "optionItems": option_items,
+        }
+    }
+
+
+class TestFetchInventoriesApiRetry:
+    """`_fetch_inventories_api` — 1회 재시도 + 실패 사유 반환 (검증 기준 6)."""
+
+    def setup_method(self):
+        self.crawler = MusinsaHttpxCrawler()
+        self.crawler._rate_limiter = AsyncMock()
+        self.crawler._rate_limiter.acquire = _noop_acquire
+
+    async def test_retry_success_after_first_failure(self):
+        """400 후 200 → 성공 처리 + 호출 2회."""
+        fake_client = AsyncMock()
+        success_payload = {
+            "data": [{"outOfStock": False, "relatedOption": {"optionValueNo": 501}}]
+        }
+        fake_client.post.side_effect = [
+            _FakeResp(400),
+            _FakeResp(200, success_payload),
+        ]
+        with patch.object(self.crawler, "connect", AsyncMock(return_value=fake_client)):
+            data, reason = await self.crawler._fetch_inventories_api("9001", [501, 502])
+
+        assert fake_client.post.call_count == 2
+        assert reason == ""
+        assert data == [{"outOfStock": False, "relatedOption": {"optionValueNo": 501}}]
+
+    async def test_retry_exhausted_failure_confirmed(self):
+        """400+400 → 실패 확정 + 호출 2회(1회만 재시도)."""
+        fake_client = AsyncMock()
+        fake_client.post.side_effect = [_FakeResp(400), _FakeResp(400)]
+        with patch.object(self.crawler, "connect", AsyncMock(return_value=fake_client)):
+            data, reason = await self.crawler._fetch_inventories_api("9001", [501, 502])
+
+        assert fake_client.post.call_count == 2
+        assert data is None
+        assert reason == "api_400"
+
+
+class TestGetProductDetailStockEvidence:
+    """`get_product_detail` — source_stock 증거 상태 결정 (검증 기준 1,2,3,4,5,7)."""
+
+    def setup_method(self):
+        self.crawler = MusinsaHttpxCrawler()
+        self.crawler._rate_limiter = AsyncMock()
+        self.crawler._rate_limiter.acquire = _noop_acquire
+
+    async def test_jr2660_regression_inventory_400_unknown_not_promoted(self):
+        """JR2660 재현: inventory API 400 → in_stock 사이즈 0개 AND stock_state=UNKNOWN.
+
+        전 사이즈 IN_STOCK 승격이 아님을 명시 assert (2026-04-17 보수 수정 회귀 고정).
+        """
+        with (
+            patch.object(
+                self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=_goods_data())
+            ),
+            patch.object(
+                self.crawler, "_fetch_options_api", AsyncMock(return_value=_options_data())
+            ),
+            patch.object(
+                self.crawler, "_fetch_inventories_api", AsyncMock(return_value=(None, "api_400"))
+            ),
+        ):
+            product = await self.crawler.get_product_detail("9001")
+
+        assert product is not None
+        assert product.sizes == []  # 전 사이즈 IN_STOCK 승격 아님
+        assert product.stock_state == "UNKNOWN"
+        assert product.stock_reason == "api_400"
+
+    async def test_activated_true_inventory_fail_not_promoted(self):
+        """activated=true 사이즈도 inventory 조회 실패 시 승격 안 됨 (UNKNOWN)."""
+        with (
+            patch.object(
+                self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=_goods_data())
+            ),
+            patch.object(
+                self.crawler,
+                "_fetch_options_api",
+                AsyncMock(return_value=_options_data({501: True, 502: True})),
+            ),
+            patch.object(
+                self.crawler, "_fetch_inventories_api", AsyncMock(return_value=(None, "timeout"))
+            ),
+        ):
+            product = await self.crawler.get_product_detail("9001")
+
+        assert product is not None
+        assert product.sizes == []
+        assert product.stock_state == "UNKNOWN"
+        assert product.stock_reason == "timeout"
+
+    async def test_activated_false_excluded_negative_evidence(self):
+        """activated=false → 해당 사이즈 제외 (음성 증거 유지, inventory 성공 케이스)."""
+        with (
+            patch.object(
+                self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=_goods_data())
+            ),
+            patch.object(
+                self.crawler,
+                "_fetch_options_api",
+                AsyncMock(return_value=_options_data({501: True, 502: False})),
+            ),
+            patch.object(
+                self.crawler,
+                "_fetch_inventories_api",
+                AsyncMock(
+                    return_value=(
+                        [
+                            {"outOfStock": False, "relatedOption": {"optionValueNo": 501}},
+                            {"outOfStock": False, "relatedOption": {"optionValueNo": 502}},
+                        ],
+                        "",
+                    )
+                ),
+            ),
+        ):
+            product = await self.crawler.get_product_detail("9001")
+
+        assert product is not None
+        sizes = [s.size for s in product.sizes]
+        assert sizes == ["270"]  # 502(activated=false)는 제외
+        assert product.stock_state == "IN_STOCK"
+
+    async def test_inventory_success_partial_stock_in_stock(self):
+        """inventory 성공 + 일부 재고 → stock_state=IN_STOCK + 정확한 사이즈만."""
+        with (
+            patch.object(
+                self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=_goods_data())
+            ),
+            patch.object(
+                self.crawler, "_fetch_options_api", AsyncMock(return_value=_options_data())
+            ),
+            patch.object(
+                self.crawler,
+                "_fetch_inventories_api",
+                AsyncMock(
+                    return_value=(
+                        [
+                            {"outOfStock": False, "relatedOption": {"optionValueNo": 501}},
+                            {"outOfStock": True, "relatedOption": {"optionValueNo": 502}},
+                        ],
+                        "",
+                    )
+                ),
+            ),
+        ):
+            product = await self.crawler.get_product_detail("9001")
+
+        assert product is not None
+        sizes = [s.size for s in product.sizes]
+        assert sizes == ["270"]
+        assert product.stock_state == "IN_STOCK"
+        assert product.stock_reason == ""
+
+    async def test_inventory_success_all_out_of_stock(self):
+        """inventory 성공 + 전부 outOfStock → stock_state=OUT_OF_STOCK."""
+        with (
+            patch.object(
+                self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=_goods_data())
+            ),
+            patch.object(
+                self.crawler, "_fetch_options_api", AsyncMock(return_value=_options_data())
+            ),
+            patch.object(
+                self.crawler,
+                "_fetch_inventories_api",
+                AsyncMock(
+                    return_value=(
+                        [
+                            {"outOfStock": True, "relatedOption": {"optionValueNo": 501}},
+                            {"outOfStock": True, "relatedOption": {"optionValueNo": 502}},
+                        ],
+                        "",
+                    )
+                ),
+            ),
+        ):
+            product = await self.crawler.get_product_detail("9001")
+
+        assert product is not None
+        assert product.sizes == []
+        assert product.stock_state == "OUT_OF_STOCK"
+
+    async def test_options_api_fail_reason(self):
+        """options API 실패 → stock_reason=='options_api_fail'."""
+        with (
+            patch.object(
+                self.crawler, "_fetch_goods_detail_api", AsyncMock(return_value=_goods_data())
+            ),
+            patch.object(self.crawler, "_fetch_options_api", AsyncMock(return_value=None)),
+        ):
+            product = await self.crawler.get_product_detail("9001")
+
+        assert product is not None
+        assert product.sizes == []
+        assert product.stock_state == "UNKNOWN"
+        assert product.stock_reason == "options_api_fail"

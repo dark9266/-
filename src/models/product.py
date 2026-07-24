@@ -68,6 +68,10 @@ class RetailProduct:
     image_url: str = ""
     sizes: list[RetailSizeInfo] = field(default_factory=list)
     fetched_at: datetime = field(default_factory=datetime.now)
+    # 1c-3: 소싱처 재고 증거 (하위호환 — 기본값 "" = 레거시 미지정, 기존 동작 불변).
+    # "IN_STOCK" | "OUT_OF_STOCK" | "UNKNOWN" (src.models.stock.StockState 값과 일치)
+    stock_state: str = ""
+    stock_reason: str = ""  # UNKNOWN 사유: "api_400" / "timeout" / "options_api_fail" 등
 
 
 @dataclass

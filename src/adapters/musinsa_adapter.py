@@ -24,10 +24,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect_batch
-from src.adapters._size_helpers import fetch_in_stock_sizes
+from src.adapters._size_helpers import fetch_stock_evidence
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import extract_model_from_name, normalize_model_number
+from src.models.stock import DEFAULT_SOURCE_STOCK_TTL_SEC, SourceStockSnapshot, StockState
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ class MatchStats:
     collected_to_queue: int = 0
     skipped_guard: int = 0
     no_model_number: int = 0
+    unknown_held: int = 0  # 1c-3: 재고 조회실패 → verification_pending 보류 발행
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -131,6 +133,7 @@ class MatchStats:
             "collected_to_queue": self.collected_to_queue,
             "skipped_guard": self.skipped_guard,
             "no_model_number": self.no_model_number,
+            "unknown_held": self.unknown_held,
         }
 
 
@@ -277,14 +280,17 @@ class MusinsaAdapter:
             - pb_dropped          : 무신사 PB 제외
             - soldout_dropped     : 품절 제외
             - no_model_number     : 상품명에서 모델번호 추출 실패 (매칭 후보 아님)
-            - matched             : CandidateMatched publish 성공
+            - matched             : CandidateMatched publish 성공 (UNKNOWN 보류 포함)
             - collected_to_queue  : 미등재 신상 큐 적재 성공
             - skipped_guard       : 콜라보/서브타입 가드 차단
+            - unknown_held        : 재고 조회실패 → source_stock=UNKNOWN 로 보류 발행 (1c-3)
         """
         stats = MatchStats(dumped=len(products))
         kream_index = self._load_kream_index()
         matched: list[CandidateMatched] = []
         pending_collect: list[tuple[str, str, str, str, str]] = []
+        # 한 dump 사이클 내 inventory 조회실패 누적 경고 1회 (verifier 열화 신호 관측).
+        unknown_streak_warned = False
 
         for item in products:
             # 품절/PB 필터
@@ -365,19 +371,61 @@ class MusinsaAdapter:
                 stats.skipped_guard += 1
                 continue
 
-            # PDP 실재고 사이즈 수집 — 빈 결과는 무조건 drop (HQ6893 회귀 방지).
+            # PDP 실재고 증거 수집 (1c-3) — 조회실패(UNKNOWN)는 drop 이 아니라
+            # source_stock=UNKNOWN 로 보류 발행, 품절 확정(OUT_OF_STOCK)만 drop.
             http = await self._get_http()
-            available_sizes = await fetch_in_stock_sizes(
-                http, goods_no, source_tag="musinsa"
-            )
-            if not available_sizes:
+            evidence = await fetch_stock_evidence(http, goods_no, source_tag="musinsa")
+            now = time.time()
+
+            if evidence.stock_state == StockState.OUT_OF_STOCK.value:
                 logger.info(
-                    "[musinsa] PDP 재고 없음 drop: pid=%s model=%s",
+                    "[musinsa] PDP 품절 확정 drop: pid=%s model=%s reason=%s",
                     goods_no,
                     model_from_name,
+                    evidence.stock_reason,
                 )
                 stats.soldout_dropped += 1
                 continue
+
+            source_stock: SourceStockSnapshot | None = None
+            available_sizes = evidence.sizes
+
+            if evidence.stock_state == StockState.UNKNOWN.value:
+                stats.unknown_held += 1
+                if stats.unknown_held >= 10 and not unknown_streak_warned:
+                    logger.warning(
+                        "[musinsa] 재고 조회실패 누적 %d건 — verifier 열화 의심 "
+                        "(dump 사이클 내)",
+                        stats.unknown_held,
+                    )
+                    unknown_streak_warned = True
+                source_stock = SourceStockSnapshot(
+                    state=StockState.UNKNOWN,
+                    available_sizes=(),
+                    observed_at=now,
+                    expires_at=now + DEFAULT_SOURCE_STOCK_TTL_SEC,
+                    evidence_method="musinsa_inventory_api",
+                    reason_code=evidence.stock_reason,
+                )
+            elif evidence.stock_state == StockState.IN_STOCK.value:
+                source_stock = SourceStockSnapshot(
+                    state=StockState.IN_STOCK,
+                    available_sizes=available_sizes,
+                    observed_at=now,
+                    expires_at=now + DEFAULT_SOURCE_STOCK_TTL_SEC,
+                    evidence_method="musinsa_inventory_api",
+                )
+            else:
+                # 레거시 ""(stock_state 미지정 — 구조적 미지원/구형 mock) —
+                # 기존 drop 정책 그대로 유지 (HQ6893 회귀 방지).
+                if not available_sizes:
+                    logger.info(
+                        "[musinsa] PDP 재고 없음 drop: pid=%s model=%s",
+                        goods_no,
+                        model_from_name,
+                    )
+                    stats.soldout_dropped += 1
+                    continue
 
             candidate = CandidateMatched(
                 source=self.source_name,
@@ -387,6 +435,7 @@ class MusinsaAdapter:
                 size="",  # 리스팅 단계엔 사이즈 정보 없음 — 수익 consumer 가 보강
                 url=url,
                 available_sizes=available_sizes,
+                source_stock=source_stock,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)
