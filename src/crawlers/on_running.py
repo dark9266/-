@@ -15,9 +15,11 @@ r"""On Running 한국 공식몰(www.on.com/ko-kr) 크롤러.
     - `color`: 예 "Apollo | Eclipse"
     - `offers.availability`: schema.org/InStock | OutOfStock
     - `offers.price` + `offers.priceCurrency=KRW`
-  단, **사이즈별 재고는 SSR 로 내려오지 않는다** — 이는 별도의
-  spree variants API 가 담당하는데 로그인/리다이렉트로 차단돼 있어
-  어댑터는 `available_sizes=()` 로 발행(listing-only 하위호환 경로).
+  (과거 기록 "사이즈별 재고는 SSR 로 내려오지 않는다 — spree variants API
+  로그인/리다이렉트 차단" 은 오판정, 2026-07-24 api-prober 재확인 정정.)
+* **사이즈 실재고**: 같은 PDP HTML 안의 `<script id="__NUXT_DATA__">` (Apollo
+  GraphQL 정규화 캐시, devalue 직렬화)에 전 색상 × 전 사이즈 실재고 정수가
+  들어 있다. 추가 요청 0건 — `parse_size_stock()` 이 같은 응답에서 파싱.
 * **SKU 이중 포맷**: 구형 `NN.XXXXX` 는 크림 DB 에 `NN-XXXXX` 로 저장되어
   있으므로 매칭 시 `.` → `-` 정규화. 매칭은 어댑터 레이어에서 수행하고
   크롤러는 원본을 그대로 돌려준다.
@@ -35,6 +37,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import httpx
 
@@ -98,6 +101,18 @@ _LDJSON_RE_ALT = re.compile(
     r'<script\b[^>]*\btype="application/ld\+json"[^>]*>([\s\S]*?)</script>',
     re.IGNORECASE,
 )
+
+# id="__NUXT_DATA__" script 블록 — Apollo GraphQL 정규화 캐시(devalue 직렬화).
+# 사이즈별 실재고 정수가 여기에 있다 (1c-4, 2026-07-24 api-prober 재확인).
+_NUXT_DATA_RE = re.compile(
+    r'<script\b[^>]*\bid="__NUXT_DATA__"[^>]*>([\s\S]*?)</script>',
+    re.IGNORECASE,
+)
+
+# devalue 가 `Object.create(null)` 객체를 인코딩할 때 쓰는 태그. 일반 배열
+# (첫 원소가 문자열이지만 태그 아님) 과 구분하기 위해 별도 체크.
+_NULL_PROTO_TAG = "null"
+_NUXT_REACTIVE_TAGS = frozenset({"ShallowReactive", "Reactive", "Ref", "ShallowRef"})
 
 
 # ============================================================
@@ -295,6 +310,198 @@ def parse_variants(product_group: dict) -> list[OnVariant]:
     return variants_out
 
 
+# ============================================================
+# 사이즈별 실재고 — __NUXT_DATA__ (Apollo GraphQL 정규화 캐시) 파싱 (1c-4)
+# ============================================================
+
+
+@dataclass(frozen=True)
+class SizeStock:
+    """사이즈 1건의 실재고.
+
+    `size` 는 mm 변환 완료 (신발, 예 "250") 혹은 원본 그대로 (의류 S/M/L 등 —
+    숫자로 파싱 불가한 값은 변환하지 않고 통과). `stock` 은 재고 수량 정수,
+    0 이면 품절.
+    """
+
+    size: str
+    stock: int
+
+    @property
+    def in_stock(self) -> bool:
+        return self.stock > 0
+
+
+def normalize_on_size_to_mm(size_raw: str) -> str:
+    """On 사이즈 표기(cm, 예 "25"/"25.5") → 크림 mm 표기("250"/"255").
+
+    크림 신발 사이즈는 mm 정수 문자열이므로 ×10 변환 필수 — 변환 안 하면
+    runtime `_size_matches` 의 exact/base 매칭에서 전부 미스난다. 숫자로
+    파싱 불가한 사이즈(의류 S/M/L, 원사이즈 등)는 원본 그대로 반환.
+    """
+    s = (size_raw or "").strip()
+    if not s:
+        return s
+    try:
+        cm = float(s)
+    except ValueError:
+        return s
+    return str(round(cm * 10))
+
+
+def _find_apollo_cache(flat: list) -> dict | None:
+    """devalue flat 배열에서 Apollo 정규화 캐시 dict 탐색.
+
+    캐시 dict 는 `"Product:1234"` / `"Variant:5678"` 류 키를 가진 원소 —
+    그 키의 값(정수)이 해당 엔티티의 devalue 인코딩 인덱스를 가리킨다.
+    """
+    for el in flat:
+        if not isinstance(el, dict):
+            continue
+        if any(
+            isinstance(k, str) and (k.startswith("Product:") or k.startswith("Variant:"))
+            for k in el
+        ):
+            return el
+    return None
+
+
+def _decode_nuxt_node(flat: list, idx: Any, memo: dict[int, Any]) -> Any:
+    """devalue 노드(인덱스 1개) → Python 값.
+
+    `src.crawlers.kream._unflatten_nuxt` 와 같은 devalue 계열이지만, on.com
+    PDP 는 `Object.create(null)` 프로토타입 객체(`["null", key, ref, ...]`)와
+    Apollo 참조(`{"__ref": idx}`) 를 함께 쓴다 — 두 패턴 모두 kream 파서가
+    못 풀어 여기서 별도 확장 처리.
+    """
+    if not isinstance(idx, int) or idx < 0 or idx >= len(flat):
+        return None
+    if idx in memo:
+        return memo[idx]
+    memo[idx] = None  # 순환 참조 방어 — 해석 도중 재진입 시 None
+    value = flat[idx]
+    result: Any
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        result = value
+    elif isinstance(value, list):
+        if value and value[0] == _NULL_PROTO_TAG:
+            obj: dict[str, Any] = {}
+            it = iter(value[1:])
+            for key, ref in zip(it, it):
+                obj[key] = _decode_nuxt_node(flat, ref, memo)
+            result = obj
+        elif len(value) == 2 and value[0] in _NUXT_REACTIVE_TAGS:
+            result = _decode_nuxt_node(flat, value[1], memo)
+        else:
+            result = [
+                _decode_nuxt_node(flat, v, memo) if isinstance(v, int) else v for v in value
+            ]
+    elif isinstance(value, dict):
+        if set(value.keys()) == {"__ref"}:
+            result = _decode_nuxt_node(flat, value["__ref"], memo)
+        else:
+            result = {
+                k: _decode_nuxt_node(flat, v, memo) if isinstance(v, int) else v
+                for k, v in value.items()
+            }
+    else:
+        result = value
+
+    memo[idx] = result
+    return result
+
+
+def _format_product_sku(sku_raw: Any) -> str:
+    """Apollo Product 레코드의 `sku` 필드 → JSON-LD 문자열 표기와 동일 형식.
+
+    신형(`3MF10074109`)은 원래 문자열. 구형(`61.97785`)은 JS 상 숫자로
+    직렬화돼 devalue 파싱 후 Python float 이 되므로 문자열로 되돌린다.
+    """
+    if isinstance(sku_raw, str):
+        return sku_raw.strip().upper()
+    if isinstance(sku_raw, float):
+        return str(sku_raw)
+    return ""
+
+
+def parse_size_stock(html: str) -> dict[str, list[SizeStock]]:
+    """PDP HTML 의 `__NUXT_DATA__` (Apollo 정규화 캐시) → 컬러 SKU 별 사이즈 재고.
+
+    Returns
+    -------
+    dict[str, list[SizeStock]]
+        컬러 SKU(예: "3MF10074109") → 사이즈별 재고 리스트. `__NUXT_DATA__`
+        마커 없음/JSON 파싱 실패/스키마 이상 시 빈 dict (예외 아님 — 호출자가
+        빈/None 을 구분해 UNKNOWN 처리).
+    """
+    if not html:
+        return {}
+    m = _NUXT_DATA_RE.search(html)
+    if not m:
+        return {}
+    body = m.group(1).strip()
+    if not body:
+        return {}
+    try:
+        flat = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(flat, list) or not flat:
+        return {}
+
+    apollo = _find_apollo_cache(flat)
+    if apollo is None:
+        return {}
+
+    memo: dict[int, Any] = {}
+    result: dict[str, list[SizeStock]] = {}
+
+    for cache_key, ref_idx in apollo.items():
+        if not (isinstance(cache_key, str) and cache_key.startswith("Product:")):
+            continue
+        if not isinstance(ref_idx, int):
+            continue
+        try:
+            record = _decode_nuxt_node(flat, ref_idx, memo)
+        except RecursionError:
+            logger.warning("[on] NUXT_DATA 레코드 디코딩 재귀 한계: %s", cache_key)
+            continue
+        if not isinstance(record, dict):
+            continue
+
+        sku = _format_product_sku(record.get("sku"))
+        if not sku:
+            continue
+        spree = record.get("spreeVariants")
+        if not isinstance(spree, list) or not spree:
+            continue
+
+        sizes: list[SizeStock] = []
+        for variant_ref_key in spree:
+            if not isinstance(variant_ref_key, str):
+                continue
+            variant_idx = apollo.get(variant_ref_key)
+            if not isinstance(variant_idx, int):
+                continue
+            try:
+                variant_record = _decode_nuxt_node(flat, variant_idx, memo)
+            except RecursionError:
+                continue
+            if not isinstance(variant_record, dict):
+                continue
+            size_raw = variant_record.get("size")
+            stock = variant_record.get("stock")
+            if size_raw is None or not isinstance(stock, int) or isinstance(stock, bool):
+                continue
+            sizes.append(SizeStock(size=normalize_on_size_to_mm(str(size_raw)), stock=stock))
+
+        if sizes:
+            result[sku] = sizes
+
+    return result
+
+
 def parse_pdp(html: str) -> dict | None:
     """PDP HTML → 덤프용 표준 dict. 실패 시 None.
 
@@ -304,7 +511,11 @@ def parse_pdp(html: str) -> dict | None:
             "brand": str,
             "url": str,  # productGroup.url 또는 비어있으면 variants[0].url
             "variants": list[OnVariant],
+            "size_stock": dict[str, list[SizeStock]],  # 컬러 SKU → 사이즈 재고
         }
+
+    `size_stock` 은 같은 HTML 응답의 `__NUXT_DATA__` 에서 파싱 — 추가 요청
+    없음. 파싱 실패 시 빈 dict (호출자가 UNKNOWN 처리, 1c-4).
     """
     pg = parse_ldjson_block(html)
     if pg is None:
@@ -322,6 +533,7 @@ def parse_pdp(html: str) -> dict | None:
         "brand": brand or "On",
         "url": str(pg.get("url") or variants[0].url or ""),
         "variants": variants,
+        "size_stock": parse_size_stock(html),
     }
 
 
@@ -484,15 +696,18 @@ __all__ = [
     "SKU_OLD_RE",
     "OnRunningCrawler",
     "OnVariant",
+    "SizeStock",
     "extract_color_slug_from_url",
     "extract_gender_from_url",
     "extract_sku_from_url",
     "is_launch_or_coming_soon",
     "is_valid_sku",
+    "normalize_on_size_to_mm",
     "normalize_sku_for_kream",
     "on_running_crawler",
     "parse_ldjson_block",
     "parse_pdp",
+    "parse_size_stock",
     "parse_sitemap",
     "parse_variants",
 ]

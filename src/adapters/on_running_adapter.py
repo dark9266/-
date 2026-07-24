@@ -9,8 +9,11 @@
   테스트에서는 mock 주입, 실서버 검증은 `_DefaultOnRunningHttp`.
 * 매칭: `matcher.py` 의 `normalize_model_number` + 스트립 키. Fuzzy 금지.
 * 구형 SKU 는 `.` → `-` 변환 후 매칭 시도 (`on_running.normalize_sku_for_kream`).
-* 사이즈별 재고 정보는 SSR 로 내려오지 않아 `available_sizes=()` 발행 —
-  기존 v3 runtime 의 listing-only 하위 호환 경로로 처리됨.
+* **사이즈 실재고 (1c-4)**: PDP `__NUXT_DATA__` 파싱 결과(`parse_pdp` 의
+  `size_stock`) 를 컬러 SKU 로 조회해 `SourceStockSnapshot` 을 구성한다.
+  (과거 "SSR 에 사이즈별 재고 없음" 기록은 오판정 — 2026-07-24 정정.)
+  전 사이즈 품절 확정만 drop, `__NUXT_DATA__` 파싱 실패/컬러 못 찾음은
+  UNKNOWN 보류(runtime 게이트가 검증 대기 처리) — musinsa 1c-3 배선과 동일 패턴.
 * 크림 실호출 금지 — 로컬 SQLite `kream_products` 만 조회.
 * POST/PUT/DELETE 금지 (읽기 전용 원칙).
 """
@@ -24,15 +27,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect_batch
+from src.adapters._stock_capability import StockCapability
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.crawlers.on_running import (
     OnVariant,
+    SizeStock,
     extract_color_slug_from_url,
     is_valid_sku,
     normalize_sku_for_kream,
 )
 from src.matcher import normalize_model_number
+from src.models.stock import DEFAULT_SOURCE_STOCK_TTL_SEC, SourceStockSnapshot, StockState
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +67,7 @@ class OnRunningMatchStats:
     matched: int = 0
     collected_to_queue: int = 0
     skipped_guard: int = 0
+    unknown_held: int = 0  # 1c-4: 사이즈 재고 조회실패 → verification_pending 보류 발행
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -73,6 +80,7 @@ class OnRunningMatchStats:
             "matched": self.matched,
             "collected_to_queue": self.collected_to_queue,
             "skipped_guard": self.skipped_guard,
+            "unknown_held": self.unknown_held,
         }
 
 
@@ -86,6 +94,8 @@ class OnRunningAdapter:
 
     source_name: str = "on_running"
     brand_hint: str = "On Running"
+    # 1c-4: PDP __NUXT_DATA__ 에 전 색상 × 전 사이즈 실재고가 노출됨 (실측 확정).
+    stock_capability: StockCapability = StockCapability.SIZE_STOCK_SUPPORTED
 
     def __init__(
         self,
@@ -170,6 +180,11 @@ class OnRunningAdapter:
             line_name = pdp.get("name") or ""
             brand = pdp.get("brand") or "On"
             base_url = pdp.get("url") or url
+            # 1c-4: PDP 1회 응답에 이미 담긴 __NUXT_DATA__ 사이즈 재고 — 컬러
+            # SKU 별 조회. map 자체가 비어있으면(파싱 실패) 전 variant 가
+            # UNKNOWN 보류로, map 은 있는데 특정 sku 만 없으면 그 sku 만
+            # UNKNOWN 보류로 구분(match_to_kream 이 처리).
+            size_stock_map: dict[str, list[SizeStock]] = pdp.get("size_stock") or {}
             for v in variants:
                 # offer URL 이 존재하면 그걸 우선 (각 색상별 고유 URL)
                 variant_url = v.url or base_url
@@ -184,6 +199,8 @@ class OnRunningAdapter:
                     "price": v.price,
                     "currency": v.currency,
                     "available": v.in_stock,
+                    "size_stock": size_stock_map.get(v.sku),
+                    "size_stock_map_size": len(size_stock_map),
                 })
 
         event = CatalogDumped(
@@ -319,9 +336,50 @@ class OnRunningAdapter:
 
             price = int(item.get("price") or 0)
 
-            # available_sizes 는 () — SSR 에 사이즈별 재고가 없음. v3 runtime
-            # 핸들러는 이 경우 listing-only 경로 (사이즈 교집합 가드 미적용)
-            # 로 크림 sell_now 를 단독 기준으로 수익 계산한다.
+            # 1c-4: PDP __NUXT_DATA__ 사이즈 실재고 배선 (musinsa 1c-3 패턴 준용).
+            # - 컬러 SKU 파싱 성공 + in-stock 사이즈 ≥1 → IN_STOCK 스냅샷.
+            # - 컬러 SKU 파싱 성공했으나 전 사이즈 stock=0 → 품절 확정 drop.
+            # - __NUXT_DATA__ 전체 파싱 실패(map 비어있음) → UNKNOWN/parse_fail.
+            # - map 은 있는데 이 컬러 SKU 만 못 찾음 → UNKNOWN/color_not_found.
+            # 두 UNKNOWN 케이스 모두 drop 아님 — runtime 게이트가 검증 보류.
+            now = time.time()
+            color_sizes: list[SizeStock] | None = item.get("size_stock")
+            source_stock: SourceStockSnapshot | None
+            available_sizes: tuple[str, ...]
+
+            if color_sizes:
+                in_stock_sizes = tuple(s.size for s in color_sizes if s.stock > 0)
+                if not in_stock_sizes:
+                    logger.info(
+                        "[on] 사이즈 전량 품절 drop: sku=%s model=%s",
+                        sku_raw,
+                        normalized,
+                    )
+                    stats.soldout_dropped += 1
+                    continue
+                available_sizes = in_stock_sizes
+                source_stock = SourceStockSnapshot(
+                    state=StockState.IN_STOCK,
+                    available_sizes=in_stock_sizes,
+                    observed_at=now,
+                    expires_at=now + DEFAULT_SOURCE_STOCK_TTL_SEC,
+                    evidence_method="on_nuxt_data",
+                )
+            else:
+                reason = (
+                    "color_not_found" if item.get("size_stock_map_size", 0) > 0 else "parse_fail"
+                )
+                stats.unknown_held += 1
+                available_sizes = ()
+                source_stock = SourceStockSnapshot(
+                    state=StockState.UNKNOWN,
+                    available_sizes=(),
+                    observed_at=now,
+                    expires_at=now + DEFAULT_SOURCE_STOCK_TTL_SEC,
+                    evidence_method="on_nuxt_data",
+                    reason_code=reason,
+                )
+
             candidate = CandidateMatched(
                 source=self.source_name,
                 kream_product_id=kream_product_id,
@@ -329,7 +387,8 @@ class OnRunningAdapter:
                 retail_price=price,
                 size="",
                 url=item.get("url") or "",
-                available_sizes=(),
+                available_sizes=available_sizes,
+                source_stock=source_stock,
             )
             await self._bus.publish(candidate)
             matched.append(candidate)

@@ -25,6 +25,7 @@ from typing import Any
 
 from src.adapters._collect_queue import aenqueue_collect_batch
 from src.adapters._size_helpers import fetch_stock_evidence
+from src.adapters._stock_capability import StockCapability
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.core.matching_guards import collab_match_fails, subtype_mismatch
 from src.matcher import extract_model_from_name, normalize_model_number
@@ -141,6 +142,8 @@ class MusinsaAdapter:
     """무신사 카탈로그 덤프 + 크림 DB 매칭 + 이벤트 발행 어댑터."""
 
     source_name: str = "musinsa"
+    # 1c-4: PDP 재고 API(`fetch_stock_evidence`)로 사이즈별 실재고 확보 (1c-3 배선 근거).
+    stock_capability: StockCapability = StockCapability.SIZE_STOCK_SUPPORTED
 
     def __init__(
         self,

@@ -19,6 +19,7 @@ from src.adapters.on_running_adapter import OnRunningAdapter
 from src.core.event_bus import CandidateMatched, CatalogDumped, EventBus
 from src.crawlers.on_running import (
     OnVariant,
+    SizeStock,
     extract_color_slug_from_url,
     extract_gender_from_url,
     extract_sku_from_url,
@@ -30,11 +31,16 @@ from src.crawlers.on_running import (
     parse_sitemap,
     parse_variants,
 )
+from src.models.stock import StockState
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "live"
 SITEMAP_FIXTURE = FIXTURE_DIR / "on_running_sitemap.xml"
 PDP_NEW_FIXTURE = FIXTURE_DIR / "on_running_pdp_new.html"
 PDP_OLD_FIXTURE = FIXTURE_DIR / "on_running_pdp_old.html"
+# 1c-4: __NUXT_DATA__(사이즈 실재고) 포함 실캡처 — 위 두 fixture 는 json-ld 만
+# 남아있어(2026-04 정리) 사이즈 재고 검증엔 못 씀.
+PDP_NEW_NUXT_FIXTURE = FIXTURE_DIR / "on_running_pdp_new_nuxt.html"
+PDP_OLD_NUXT_FIXTURE = FIXTURE_DIR / "on_running_pdp_old_nuxt.html"
 
 
 # ─── DB 헬퍼 ──────────────────────────────────────────────
@@ -319,12 +325,18 @@ class _FakeOnHttp:
         return self._pdp_map.get(url)
 
 
-def _mk_pdp(line_name: str, brand: str, variants: list[OnVariant]) -> dict:
+def _mk_pdp(
+    line_name: str,
+    brand: str,
+    variants: list[OnVariant],
+    size_stock: dict | None = None,
+) -> dict:
     return {
         "name": line_name,
         "brand": brand,
         "url": variants[0].url if variants else "",
         "variants": variants,
+        "size_stock": size_stock,  # 1c-4: None → 어댑터가 {} 로 취급(파싱 실패)
     }
 
 
@@ -664,3 +676,159 @@ class TestFalsePositiveRegression:
         assert extract_sku_from_url(url) == "3MF10074109"
         # 라인 슬러그가 11자리가 아니라 의도된 포맷 불일치라 is_valid_sku 거부.
         assert not is_valid_sku("3MF1007")
+
+
+# ============================================================
+# F. 1c-4 — PDP __NUXT_DATA__ 사이즈 실재고 배선 (musinsa 1c-3 패턴 준용)
+# ============================================================
+
+
+async def test_source_stock_in_stock_wired(bus, kream_db):
+    """컬러 SKU 사이즈 재고 파싱 성공 + in-stock 있음 → IN_STOCK 스냅샷 배선."""
+    url = "https://www.on.com/ko-kr/products/cloud-6-m-3mf1007/mens/black-shoes-3MF10071043"
+    size_stock = {
+        "3MF10071043": [
+            SizeStock(size="250", stock=10),
+            SizeStock(size="255", stock=0),
+            SizeStock(size="260", stock=3),
+        ],
+    }
+    fake = _FakeOnHttp(
+        urls=[url],
+        pdp_map={
+            url: _mk_pdp(
+                "남성 Cloud 6", "On",
+                [_mk_variant("3MF10071043", "Black | Black", 199000, True, url)],
+                size_stock=size_stock,
+            ),
+        },
+    )
+    adapter = OnRunningAdapter(bus=bus, db_path=kream_db, http_client=fake)
+    _, variants = await adapter.dump_catalog()
+    matches, stats = await adapter.match_to_kream(variants)
+
+    assert stats.matched == 1
+    assert stats.unknown_held == 0
+    assert stats.soldout_dropped == 0
+    cand = matches[0]
+    assert cand.source_stock is not None
+    assert cand.source_stock.state == StockState.IN_STOCK
+    assert set(cand.available_sizes) == {"250", "260"}  # 255 는 stock 0 라 제외
+    assert cand.source_stock.evidence_method == "on_nuxt_data"
+
+
+async def test_source_stock_all_zero_drop(bus, kream_db):
+    """컬러 SKU 파싱은 성공했지만 전 사이즈 stock=0 → 품절 확정 drop."""
+    url = "https://www.on.com/ko-kr/products/cloud-6-m-3mf1007/mens/black-shoes-3MF10071043"
+    size_stock = {
+        "3MF10071043": [
+            SizeStock(size="250", stock=0),
+            SizeStock(size="255", stock=0),
+        ],
+    }
+    fake = _FakeOnHttp(
+        urls=[url],
+        pdp_map={
+            url: _mk_pdp(
+                "남성 Cloud 6", "On",
+                [_mk_variant("3MF10071043", "Black | Black", 199000, True, url)],
+                size_stock=size_stock,
+            ),
+        },
+    )
+    adapter = OnRunningAdapter(bus=bus, db_path=kream_db, http_client=fake)
+    _, variants = await adapter.dump_catalog()
+    matches, stats = await adapter.match_to_kream(variants)
+
+    assert stats.matched == 0
+    assert stats.soldout_dropped == 1
+    assert stats.unknown_held == 0
+    assert matches == []
+
+
+async def test_source_stock_parse_fail_unknown_held(bus, kream_db):
+    """`__NUXT_DATA__` 전체 파싱 실패(size_stock 자체가 없음) → UNKNOWN/parse_fail 보류.
+
+    JSON-LD 는 InStock(available=True) 이어도 사이즈 재고를 지어내 승격하지
+    않는다 — drop 아니라 candidate 는 발행하되 source_stock=UNKNOWN.
+    """
+    url = "https://www.on.com/ko-kr/products/cloud-6-m-3mf1007/mens/black-shoes-3MF10071043"
+    fake = _FakeOnHttp(
+        urls=[url],
+        pdp_map={
+            url: _mk_pdp(
+                "남성 Cloud 6", "On",
+                [_mk_variant("3MF10071043", "Black | Black", 199000, True, url)],
+                size_stock=None,  # 파싱 실패 시뮬레이션
+            ),
+        },
+    )
+    adapter = OnRunningAdapter(bus=bus, db_path=kream_db, http_client=fake)
+    _, variants = await adapter.dump_catalog()
+    matches, stats = await adapter.match_to_kream(variants)
+
+    assert stats.matched == 1  # drop 아님 — 보류 발행
+    assert stats.unknown_held == 1
+    assert stats.soldout_dropped == 0
+    cand = matches[0]
+    assert cand.source_stock is not None
+    assert cand.source_stock.state == StockState.UNKNOWN
+    assert cand.source_stock.reason_code == "parse_fail"
+    assert cand.available_sizes == ()
+
+
+async def test_source_stock_color_not_found_unknown_held(bus, kream_db):
+    """`__NUXT_DATA__` 파싱은 성공했지만 이 컬러 SKU 만 못 찾음 → color_not_found 보류."""
+    url = "https://www.on.com/ko-kr/products/cloud-6-m-3mf1007/mens/black-shoes-3MF10071043"
+    size_stock = {
+        "3MF99999999": [SizeStock(size="250", stock=1)],  # 다른 컬러만 존재
+    }
+    fake = _FakeOnHttp(
+        urls=[url],
+        pdp_map={
+            url: _mk_pdp(
+                "남성 Cloud 6", "On",
+                [_mk_variant("3MF10071043", "Black | Black", 199000, True, url)],
+                size_stock=size_stock,
+            ),
+        },
+    )
+    adapter = OnRunningAdapter(bus=bus, db_path=kream_db, http_client=fake)
+    _, variants = await adapter.dump_catalog()
+    matches, stats = await adapter.match_to_kream(variants)
+
+    assert stats.matched == 1
+    assert stats.unknown_held == 1
+    cand = matches[0]
+    assert cand.source_stock.state == StockState.UNKNOWN
+    assert cand.source_stock.reason_code == "color_not_found"
+
+
+async def test_real_nuxt_fixture_end_to_end_in_stock(bus, kream_db):
+    """실캡처 PDP(__NUXT_DATA__ 포함) → parse_pdp → 어댑터 매칭 → source_stock 배선.
+
+    3MF10071043 은 kream_db fixture 에 등재돼 있고(product_id 448252), 실캡처
+    프로브 실측(1c-4 브리프)상 15사이즈 중 12사이즈 in-stock(250~305mm),
+    31/31.5/33(310/315/330mm) 는 stock 0.
+    """
+    html_new = PDP_NEW_NUXT_FIXTURE.read_text(encoding="utf-8")
+    pdp_new = parse_pdp(html_new)
+    assert pdp_new is not None
+    assert "3MF10071043" in pdp_new["size_stock"]
+
+    url = "https://www.on.com/ko-kr/products/cloud-6-m-3mf1007/mens"
+    fake = _FakeOnHttp(urls=[url], pdp_map={url: pdp_new})
+    adapter = OnRunningAdapter(bus=bus, db_path=kream_db, http_client=fake)
+
+    _, variants = await adapter.dump_catalog()
+    matches, stats = await adapter.match_to_kream(variants)
+
+    cand = next(m for m in matches if m.model_no == "3MF10071043")
+    assert cand.source_stock is not None
+    assert cand.source_stock.state == StockState.IN_STOCK
+    expected_in_stock = {"250", "255", "260", "265", "270", "275", "280", "285", "290", "295",
+                          "300", "305"}
+    assert set(cand.available_sizes) == expected_in_stock
+    assert "310" not in cand.available_sizes
+    assert "315" not in cand.available_sizes
+    assert "330" not in cand.available_sizes
