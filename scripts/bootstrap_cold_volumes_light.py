@@ -123,6 +123,12 @@ SQL_TARGET_BASE = """
 # 조각 2-3 — 정기 재검사 대상(성공 이력 있음, next_volume_check_at 마감 도래분).
 # `last_volume_check IS NULL`(미확인, bootstrap 모드)과 겹치지 않는다 —
 # recheck 는 `next_volume_check_at` 이 채워진(=한 번 이상 성공 확인된) 행만 대상.
+# 2-3r F1: `next_volume_attempt_at` 백오프 가드를 SQL_TARGET_BASE 와 동일하게
+# 유지 — 쓰기(축 분리, `_apply_state`)는 그대로 두되 선별(SELECT)만 양쪽 축을
+# 모두 존중해야 한다. 이 가드가 없으면 recheck 성공 이력이 있는 상품이 실패
+# (retryable/quarantined)해도 `next_volume_check_at`(과거로 고정된 채) 이
+# 매 recheck 실행마다 재선택되어 retry_backoff/quarantine 90일이 무력화되고,
+# 403 으로 굳은 상품이 ASC 맨 앞이면 배치가 매번 즉시 전면 중단(영구 정체)된다.
 SQL_TARGET_RECHECK = """
     SELECT DISTINCT kp.product_id AS product_id,
                      kp.model_number AS model_number,
@@ -132,6 +138,7 @@ SQL_TARGET_RECHECK = """
     WHERE kp.model_number != ''
       AND kp.next_volume_check_at IS NOT NULL
       AND kp.next_volume_check_at <= datetime('now')
+      AND (kp.next_volume_attempt_at IS NULL OR kp.next_volume_attempt_at <= datetime('now'))
 """
 
 

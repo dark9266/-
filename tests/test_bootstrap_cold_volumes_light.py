@@ -744,6 +744,102 @@ async def test_fetch_targets_recheck_source_filter_still_works(db):
     assert [r["product_id"] for r in rows] == ["P2"]
 
 
+# ---------------------------------------------------------------------------
+# 11r. 2-3 리뷰 F1/F2 — recheck 선별도 실패 백오프(next_volume_attempt_at) 존중
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_targets_recheck_excludes_when_attempt_backoff_future(db):
+    """recheck 마감 도래 + next_volume_attempt_at 이 미래(백오프 중) -> 제외.
+
+    한 번 성공(next_volume_check_at 과거) 후 실패(retryable)하면
+    `_apply_state` 가 `next_volume_check_at` 은 안 건드리고
+    `next_volume_attempt_at` 만 미래로 미룬다 — recheck 선별도 이 가드를
+    존중해야 매 실행마다 재선택되는 무한루프를 막는다.
+    """
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await db.execute(
+        "UPDATE kream_products SET "
+        "next_volume_check_at = datetime('now', '-1 hour'), "
+        "next_volume_attempt_at = datetime('now', '+1 day') "
+        "WHERE product_id = 'P1'"
+    )
+    await db.execute(
+        "INSERT INTO retail_products (source, product_id, name, model_number) "
+        "VALUES ('musinsa', 'r1', 'x', 'M1')"
+    )
+    await db.commit()
+
+    rows = await boot.fetch_targets(db, mode="recheck")
+    assert rows == []
+
+
+async def test_fetch_targets_recheck_includes_when_attempt_backoff_past(db):
+    """recheck 마감 도래 + next_volume_attempt_at 이 과거(백오프 경과) -> 포함."""
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await db.execute(
+        "UPDATE kream_products SET "
+        "next_volume_check_at = datetime('now', '-1 hour'), "
+        "next_volume_attempt_at = datetime('now', '-1 hour') "
+        "WHERE product_id = 'P1'"
+    )
+    await db.execute(
+        "INSERT INTO retail_products (source, product_id, name, model_number) "
+        "VALUES ('musinsa', 'r1', 'x', 'M1')"
+    )
+    await db.commit()
+
+    rows = await boot.fetch_targets(db, mode="recheck")
+    assert [r["product_id"] for r in rows] == ["P1"]
+
+
+async def test_fetch_targets_recheck_includes_when_attempt_null(db):
+    """recheck 마감 도래 + next_volume_attempt_at NULL(백오프 이력 없음) -> 포함(기존 동작)."""
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = datetime('now', '-1 hour') "
+        "WHERE product_id = 'P1'"
+    )
+    await db.execute(
+        "INSERT INTO retail_products (source, product_id, name, model_number) "
+        "VALUES ('musinsa', 'r1', 'x', 'M1')"
+    )
+    await db.commit()
+
+    rows = await boot.fetch_targets(db, mode="recheck")
+    assert [r["product_id"] for r in rows] == ["P1"]
+
+
+async def test_recheck_retryable_product_not_reselected_immediately(db, monkeypatch):
+    """e2e — recheck 에서 RETRYABLE 처리된 직후 같은 selector 재실행 시 미선택(백오프 존중).
+
+    이전 버그: SQL_TARGET_RECHECK 에 next_volume_attempt_at 가드가 빠져 있어
+    403 등으로 굳은 상품이 매 recheck 마다 ASC 맨 앞에서 재선택 -> 배치가 그
+    상품에서 매번 즉시 전면 중단(영구 정체) 되던 상황을 재현.
+    """
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = datetime('now', '-1 hour') "
+        "WHERE product_id = 'P1'"
+    )
+    await db.execute(
+        "INSERT INTO retail_products (source, product_id, name, model_number) "
+        "VALUES ('musinsa', 'r1', 'x', 'M1')"
+    )
+    await db.commit()
+
+    monkeypatch.setattr(boot, "_fetch_screens_raw", AsyncMock(return_value=(503, None)))
+
+    rows_before = await boot.fetch_targets(db, mode="recheck")
+    assert [r["product_id"] for r in rows_before] == ["P1"]
+
+    result = await boot._process_one(db, "P1")
+    assert result.state == boot.RETRYABLE
+
+    rows_after = await boot.fetch_targets(db, mode="recheck")
+    assert rows_after == []  # 백오프(6h) 존중 — 즉시 재선택 안 됨
+
+
 async def test_run_batch_recheck_mode_reuses_lease_and_budget_wiring(
     db, spy_pacer, monkeypatch
 ):
