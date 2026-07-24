@@ -544,6 +544,64 @@ class KreamCrawler:
 
         return status, self._calculate_trade_stats(trades_for_stats, product_id)
 
+    async def fetch_search_status(
+        self, keyword: str, *, purpose: str = "manual",
+    ) -> tuple[int, list[dict] | None]:
+        """검색 페이지 단일 시도(재시도·백오프·쿠키 재초기화 없음) — 상태코드 +
+        리스팅 상품 목록 반환 (2-2r F1, `fetch_screens_status`(2-1r F3)와 동일 정신).
+
+        `_request()`는 403 시 쿠키 재초기화 후 **미계측 GET 1회를 더** 보내고,
+        429 는 최대 10초(2**attempt*10) 지수 백오프로 반복 sleep 하며, 결국
+        403/429/5xx/timeout 전부를 상태코드 없이 None 으로 뭉갠다 — 백그라운드
+        배치의 "차단 1회 = 즉시 전면 중단"(2-0) 계약에는 실제 HTTP 상태코드가
+        필요하고, 차단 후 추가 실호출도 있어서는 안 된다. 그래서 `_request()`의
+        기존 재시도 경로는 손대지 않고, screens API 와 동일하게 검색 전용 raw
+        경로를 별도로 추가한다. 재시도/백오프는 호출자(`acquire_background`,
+        2-0)가 다음 실행에서 다시 담당한다(원샷 배치 전제).
+
+        check_budget()/record_call() 은 `_request()` 관례와 동일하게 수행한다.
+        연결 실패/타임아웃은 status=0 으로 반환(`kream_budget._is_retryable_
+        failure` 관례와 동일).
+
+        반환:
+            - 2xx 가 아니거나 페이지 파싱 실패(`_extract_page_data`) → (status, None)
+            - 2xx + 파싱 성공 → (status, `_extract_listing_products()` 결과 —
+              exact match 없으면 빈 리스트일 수 있다. "구조 이상"과 "검색은
+              됐는데 결과가 없음"을 굳이 더 나누지 않는다 — 호출자
+              (`drain_collect_queue._classify_search_result`)는 canonical
+              key 매칭 여부만 보므로 빈 리스트 = NO_MATCH 로 자연 귀결한다.
+        """
+        await check_budget()
+        if purpose == "manual":
+            purpose = current_purpose()
+
+        session = await self._get_session()
+        url = f"{KREAM_BASE}/search?keyword={keyword}&tab=products&sort=date&page=1"
+        endpoint = "/search"
+        headers = dict(_PAGE_HEADERS)
+        headers["User-Agent"] = random.choice(_SAFARI_USER_AGENTS)
+
+        t0 = time.perf_counter()
+        try:
+            resp = await session.request("GET", url, headers=headers, allow_redirects=True)
+        except Exception:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            await record_call(endpoint, "GET", None, latency_ms, purpose)
+            return 0, None
+
+        status = resp.status_code
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        await record_call(endpoint, "GET", status, latency_ms, purpose)
+
+        if not (200 <= status < 300):
+            return status, None
+
+        data = self._extract_page_data(resp.text)
+        if not data:
+            return status, None
+
+        return status, self._extract_listing_products(data)
+
     # ─── __NUXT_DATA__ 파싱 ───────────────────────────────
 
     @staticmethod

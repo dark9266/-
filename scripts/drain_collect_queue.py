@@ -13,11 +13,15 @@
        없음"일 때만 증가한다(transport 실패는 미증가, `next_search_at`만
        연기). 1회차 → +7일, 2회차 → +30일, 3회차 → dormant=1.
 
-`src/kream_realtime/collector.py`의 `collect_pending()`(model_number 정규화 +
-`_request`/`_extract_page_data`/`_extract_listing_products` 검색 경로)을
-그대로 재사용한다 — 신규 공개 API 를 kream.py 에 추가하지 않는다(2-2 브리프
-명시). 대신 호출 직전 2-0 `acquire_background(purpose)`를 통과시켜 페이서·
-백그라운드 예산·서킷브레이커를 우회 불가능하게 배선한다
+검색은 `kream_crawler.fetch_search_status()`(2-2r F1, kream.py 공개 API —
+`fetch_screens_status()` 2-1r F3 와 동일 정신의 단일시도 raw 경로)를 통해
+수행한다. 애초 브리프는 `collector.collect_pending()`이 쓰던 `_request(max_
+retries=1)` 경로 재사용을 명시했으나, 리뷰(2-2r F1)에서 그 경로가 403 시
+쿠키 재초기화용 미계측 GET 을 추가로 보내고 429 는 지수 백오프로 반복
+sleep하며 결국 403/429/5xx/timeout 을 상태코드 없이 None 으로 뭉개
+"차단 1회 = 즉시 전면 중단"(2-0) 계약을 깬다는 점이 확인되어 정정됐다.
+호출 직전 2-0 `acquire_background(purpose)`를 통과시켜 페이서·백그라운드
+예산·서킷브레이커를 우회 불가능하게 배선하는 것은 그대로다
 (`scripts/bootstrap_cold_volumes_light.py` 2-1 배선 표준과 동일 패턴).
 
 ⚠️ **원샷 배치 전제**: `report_block()`의 5xx/timeout 연속 실패 카운터는
@@ -59,7 +63,7 @@ from src.core.kream_budget import (  # noqa: E402
     report_block,
     report_success,
 )
-from src.crawlers.kream import KREAM_BASE, kream_crawler  # noqa: E402
+from src.crawlers.kream import kream_crawler  # noqa: E402
 from src.models.database import Database  # noqa: E402
 
 PURPOSE = "collect_queue_drain"
@@ -275,30 +279,22 @@ def _classify_search_result(
 
 
 async def _fetch_search_raw(model_number: str) -> tuple[int, list[dict] | None]:
-    """크림 검색 1회 시도 — `collector.collect_pending()` 이 쓰는 기존 경로 재사용.
+    """크림 검색 1회 시도 — `kream_crawler.fetch_search_status()`(2-2r F1, kream.py
+    공개 API) 위임.
 
-    `kream_crawler._request()`는 429/5xx/403 을 내부에서 재시도·백오프하다
-    최종 실패 시 상태코드 없이 None 만 반환한다. 신규 공개 API 를 kream.py 에
-    추가하지 않는 대신(2-2 브리프 명시 — "신규 공개 API 불요"), `max_retries=1`
-    로 호출해 내부 재시도를 억제한다("항목당 이번 런에서 검색 1회만"). 이
-    경로에서는 실패 원인(403 vs 5xx vs timeout)을 세분화해 되돌려줄 수 없어
-    관측 가능한 최선의 상태(0=transport 실패)로 매핑한다 — 403/429 실측 구분이
-    필요해지면(2-4 라이브에서 오탐 확인 시) kream.py 공개 API 확장을
-    재검토한다(2-1r F3 선례).
+    `kream_crawler._request()`는 403 시 쿠키 재초기화용 미계측 GET 을 추가로
+    보내고 429 는 지수 백오프로 반복 sleep 하며, 결국 403/429/5xx/timeout
+    전부를 상태코드 없이 None 으로 뭉갠다 — 백그라운드 배치의 "차단 1회 =
+    즉시 전면 중단"(2-0) 계약이 이 경로로는 성립하지 않는다(리뷰 F1). 그래서
+    `fetch_screens_status()`(2-1r F3)와 동일한 정신으로 kream.py 에 검색 전용
+    단일시도 공개 API 를 추가했고, 이 함수는 그 결과를 그대로 전달한다 —
+    private 파싱 헬퍼(`_extract_page_data`/`_extract_listing_products`)에
+    더 이상 직접 의존하지 않는다.
 
-    ⚠️ 이 함수는 2-2 테스트 전부에서 monkeypatch 로 대체된다(실호출 0). 실제
-    네트워크 경로 검증은 조각 2-4(라이브 카나리) 스코프.
+    ⚠️ 이 함수는 2-2/2-2r 테스트 전부에서 monkeypatch 로 대체된다(실호출 0).
+    실제 네트워크 경로 검증은 조각 2-4(라이브 카나리) 스코프.
     """
-    url = f"{KREAM_BASE}/search?keyword={model_number}&tab=products&sort=date&page=1"
-    html = await kream_crawler._request(
-        "GET", url, parse_json=False, max_retries=1, purpose=current_purpose()
-    )
-    if not html:
-        return 0, None
-    data = kream_crawler._extract_page_data(html)
-    if not data:
-        return 200, []
-    return 200, kream_crawler._extract_listing_products(data)
+    return await kream_crawler.fetch_search_status(model_number, purpose=current_purpose())
 
 
 # ─── DB 상태 반영 (idempotent UPDATE, 그룹 전체 반영) ──────────────────────

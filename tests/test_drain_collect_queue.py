@@ -20,6 +20,7 @@ with patch("dotenv.load_dotenv", lambda *a, **kw: None):
     import scripts.drain_collect_queue as drain
 
 import src.core.kream_budget as kb
+from src.crawlers.kream import kream_crawler
 from src.models.database import Database
 
 # ---------------------------------------------------------------------------
@@ -413,6 +414,33 @@ async def test_run_batch_kream_hard_cap_stops_gracefully(db, spy_pacer, monkeypa
     assert summary.search_calls_made == 0
     assert summary.stopped_reason == "kream_hard_cap"
     assert fetch_mock.await_count == 1
+
+
+async def test_e2e_kream_403_stops_run_batch_immediately(db, spy_pacer, monkeypatch):
+    """2-2r F2 — `kream_crawler.fetch_search_status()`(실제 kream.py 공개 API)가
+    403 을 돌려주면 `_fetch_search_raw`(내부 위임) → `_classify_search_result`
+    → `run_batch` 까지 이어져 즉시 전면 중단(immediate_stop)되는지 e2e(mock).
+
+    `drain._fetch_search_raw` 가 아니라 `kream_crawler.fetch_search_status` 를
+    직접 패치해 실제 배선(2-2r F1)이 끊어지지 않았는지 확인한다.
+    """
+    await _insert_queue(db, "M1", added_at="2026-01-01 00:00:00")
+    await _insert_queue(db, "M2", added_at="2026-01-02 00:00:00")
+    await drain.local_rematch(db, dry_run=False)
+    rows = await drain.fetch_search_targets(db)
+    targets = drain.group_search_targets(rows)
+
+    monkeypatch.setattr(
+        kream_crawler, "fetch_search_status", AsyncMock(return_value=(403, None))
+    )
+
+    summary = await drain.run_batch(db, targets, run_cap=100)
+
+    assert summary.search_calls_made == 1
+    assert summary.stopped_reason == "blocked_http_403"
+    state = await kb.get_ramp_state()
+    assert state["circuit_tripped"] is True
+    assert state["manual_resume_required"] is True
 
 
 # ---------------------------------------------------------------------------
