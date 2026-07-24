@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+# 소싱처 관측→알림 사이 허용 신선도(초). in-flight 이벤트는 수 초 내 소비되므로
+# 사실상 재생/지연 방어용 보수값 (1c-2, runtime 중앙 게이트가 참조).
+DEFAULT_SOURCE_STOCK_TTL_SEC = 1800  # 30분
+
 
 class StockState(str, Enum):
     IN_STOCK = "IN_STOCK"
@@ -43,4 +47,4 @@ class SourceStockSnapshot:
         )
 
 
-__all__ = ["SourceStockSnapshot", "StockState"]
+__all__ = ["DEFAULT_SOURCE_STOCK_TTL_SEC", "SourceStockSnapshot", "StockState"]

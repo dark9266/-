@@ -68,6 +68,7 @@ from src.core.orchestrator import Orchestrator
 from src.core.v3_alert_logger import V3AlertLogger, build_profit_handler
 from src.core.v3_discord_publisher import V3DiscordPublisher, wrap_handler
 from src.models.product import Signal
+from src.models.stock import DEFAULT_SOURCE_STOCK_TTL_SEC, SourceStockSnapshot, StockState
 from src.profit_calculator import (
     apply_catch_to_buy_price,
     calculate_size_profit,
@@ -282,6 +283,66 @@ class V3Runtime:
                 )
                 return None
 
+            # 1c-2: 중앙 재고 게이트 — 소싱처 재고 검증은 크림 호출 전.
+            # kream_delta 는 크림 내부 차익 감시 경로라 외부 소싱처 재고 개념이
+            # 없음(매입처 증거는 publisher 의 retail_sources 게이트가 담당,
+            # 커밋 7cb0ed4/2ef2fc7) — 게이트 면제.
+            effective_stock: SourceStockSnapshot | None = None
+            if event.source != "kream_delta":
+                now = time.time()
+                effective_stock = event.source_stock
+                if effective_stock is None and event.available_sizes:
+                    # 레거시 과도기 승격 — 라이브 이벤트는 어댑터가 방금 관측한
+                    # 것(in-flight 승격 안전). 체크포인트 재생은 candidate 를
+                    # 재생하지 않으므로 stale 위험 없음.
+                    effective_stock = SourceStockSnapshot(
+                        state=StockState.IN_STOCK,
+                        available_sizes=tuple(event.available_sizes),
+                        observed_at=now,
+                        expires_at=now + DEFAULT_SOURCE_STOCK_TTL_SEC,
+                        evidence_method="legacy_available_sizes",
+                    )
+
+                if (
+                    effective_stock is None
+                    or effective_stock.state == StockState.UNKNOWN
+                    or not effective_stock.is_fresh(now)
+                ):
+                    if effective_stock is None:
+                        reason = "unverified"
+                    elif effective_stock.state == StockState.UNKNOWN:
+                        reason = effective_stock.reason_code or "unknown"
+                    else:
+                        reason = "expired"
+                    logger.info(
+                        "[v3] verification_pending — 소싱처 재고 미검증, 보류: "
+                        "pid=%s source=%s reason=%s",
+                        event.kream_product_id,
+                        event.source,
+                        reason,
+                    )
+                    return None
+
+                if effective_stock.state == StockState.OUT_OF_STOCK:
+                    logger.info(
+                        "[v3] 소싱처 품절 — drop: pid=%s source=%s",
+                        event.kream_product_id,
+                        event.source,
+                    )
+                    return None
+
+                if not effective_stock.usable(now):
+                    # IN_STOCK 인데 available_sizes 빈 경우 — 모델 계약상
+                    # UNKNOWN 취급 → 보류 경로 (usable() 은 사이즈 없으면 False).
+                    logger.info(
+                        "[v3] verification_pending — 소싱처 재고 미검증, 보류: "
+                        "pid=%s source=%s reason=%s",
+                        event.kream_product_id,
+                        event.source,
+                        "empty_sizes",
+                    )
+                    return None
+
             if snapshot_fn is None:
                 logger.debug(
                     "[v3] kream_snapshot_fn 미주입 — candidate drop: pid=%s",
@@ -310,7 +371,13 @@ class V3Runtime:
             # 어댑터가 available_sizes 를 비워두면(listing-only) 이 단계 건너뜀.
             # 교집합 비어 있으면 = 소싱처가 크림에서 팔리는 사이즈를 하나도
             # 안 가지고 있음 → 실제 차익거래 불가 → drop.
-            avail = tuple(getattr(event, "available_sizes", ()) or ())
+            # kream_delta 는 게이트 면제라 event.available_sizes 를 그대로 참조.
+            # 그 외 소스는 위 게이트를 통과한 effective_stock 기준(1c-2, 승격 경로
+            # 덕에 값은 동일하지만 참조원을 일원화).
+            if event.source == "kream_delta":
+                avail = tuple(getattr(event, "available_sizes", ()) or ())
+            else:
+                avail = effective_stock.available_sizes if effective_stock else ()
             if avail:
                 avail_norm = {str(s).strip() for s in avail if str(s).strip()}
                 raw_sizes = snapshot.get("size_prices") or []

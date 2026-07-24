@@ -230,7 +230,11 @@ async def test_candidate_handler_drops_below_floor(tmp_path):
     async def snap_fn(pid: int, size: str) -> dict | None:
         captured_snapshots.append((pid, size))
         # 낮은 수익 — 하드 플로어 미달
-        return {"sell_now_price": 125_000, "volume_7d": 10}
+        return {
+            "sell_now_price": 125_000,
+            "volume_7d": 10,
+            "size_prices": [{"size": "270", "sell_now_price": 125_000}],
+        }
 
     runtime = V3Runtime(
         db_path=db,
@@ -246,6 +250,8 @@ async def test_candidate_handler_drops_below_floor(tmp_path):
     handler = runtime._orchestrator._candidate_handler  # type: ignore[attr-defined]
     assert handler is not None
 
+    # 1c-2 중앙 재고 게이트: available_sizes 명시로 소싱처 재고 검증됨을 표시
+    # (게이트 도입 전에는 미검증 후보도 통과했으나, 그게 바로 이 조각이 막는 구멍).
     low = CandidateMatched(
         source="musinsa",
         kream_product_id=101,
@@ -253,6 +259,7 @@ async def test_candidate_handler_drops_below_floor(tmp_path):
         retail_price=120_000,
         size="270",
         url="https://www.musinsa.com/products/1",
+        available_sizes=("270",),
     )
     result = await handler(low)
     assert result is None  # 수익 적어 drop
@@ -260,7 +267,11 @@ async def test_candidate_handler_drops_below_floor(tmp_path):
 
     # 고수익 케이스
     async def snap_fn_high(pid: int, size: str) -> dict | None:
-        return {"sell_now_price": 300_000, "volume_7d": 10}
+        return {
+            "sell_now_price": 300_000,
+            "volume_7d": 10,
+            "size_prices": [{"size": "270", "sell_now_price": 300_000}],
+        }
 
     runtime._kream_snapshot_fn = snap_fn_high  # type: ignore[attr-defined]
     handler2 = runtime._build_candidate_handler()
