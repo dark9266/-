@@ -415,8 +415,10 @@ def _decode_nuxt_node(flat: list, idx: Any, memo: dict[int, Any]) -> Any:
 def _format_product_sku(sku_raw: Any) -> str:
     """Apollo Product 레코드의 `sku` 필드 → JSON-LD 문자열 표기와 동일 형식.
 
-    신형(`3MF10074109`)은 원래 문자열. 구형(`61.97785`)은 JS 상 숫자로
-    직렬화돼 devalue 파싱 후 Python float 이 되므로 문자열로 되돌린다.
+    실캡처(신형·구형 dot SKU 모두)에서 `sku` 는 항상 str 로 관측됐다
+    (2026-07-25 리뷰 확인). float 분기는 숫자 직렬화 대비 방어 경로 —
+    trailing zero 손실로 미스나더라도 color_not_found(UNKNOWN 보류)로
+    안전측 실패한다.
     """
     if isinstance(sku_raw, str):
         return sku_raw.strip().upper()

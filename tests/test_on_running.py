@@ -17,6 +17,7 @@ from pathlib import Path
 
 from src.crawlers.on_running import (
     SizeStock,
+    _format_product_sku,
     normalize_on_size_to_mm,
     parse_pdp,
     parse_size_stock,
@@ -174,6 +175,29 @@ class TestParsePdpIncludesSizeStock:
     def test_parse_pdp_ldjson_failure_keeps_none(self):
         """json-ld 자체가 없으면 parse_pdp 는 여전히 None (size_stock 유무와 무관)."""
         assert parse_pdp("<html></html>") is None
+
+
+class TestFormatProductSku:
+    """방어 분기 명세 고정 — 실캡처에선 sku 가 항상 str (2026-07-25 리뷰 확인).
+
+    float 분기는 합성 입력으로만 도달 가능. trailing zero 가 있는 SKU 가
+    숫자 직렬화되면 손실됨(예: 61.99020 → "61.9902") — 미스나도
+    color_not_found(UNKNOWN 보류)로 안전측 실패라는 전제의 계약 테스트.
+    """
+
+    def test_str_passthrough_normalized(self):
+        assert _format_product_sku(" 3mf10074109 ") == "3MF10074109"
+
+    def test_float_synthetic_input(self):
+        assert _format_product_sku(61.99024) == "61.99024"
+
+    def test_float_trailing_zero_loss_documented(self):
+        # 61.99020 은 float 이 되는 순간 "61.9902" — 손실은 안전측(UNKNOWN 보류)
+        assert _format_product_sku(61.99020) == "61.9902"
+
+    def test_unsupported_types_empty(self):
+        assert _format_product_sku(None) == ""
+        assert _format_product_sku(1234) == ""
 
 
 def test_size_stock_dataclass_shape():
