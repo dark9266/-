@@ -44,7 +44,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import random
 import sys
 import time
 from dataclasses import dataclass, field
@@ -55,18 +54,16 @@ load_dotenv()  # src.core.kream_budget import 전에 호출 — KREAM_DAILY_CAP 
 
 import aiosqlite  # noqa: E402
 
-import src.crawlers.kream as kream_module  # noqa: E402
 from src.config import settings  # noqa: E402
 from src.core.kream_budget import (  # noqa: E402
     KreamBackgroundBudgetExceeded,
+    KreamBudgetExceeded,
     KreamCircuitTripped,
     acquire_background,
     background_allowance,
-    check_budget,
     current_purpose,
     current_soft_cap,
     get_usage,
-    record_call,
     report_block,
     report_success,
 )
@@ -191,35 +188,7 @@ async def acquire_lease_chunk(
     return acquired
 
 
-# ─── screens 응답 파싱 (success_zero vs retryable 구분) ────────────────────
-
-
-def _parse_screens_trades(data, product_id: str) -> tuple[bool, dict]:
-    """screens API 응답 파싱 — (구조 정상 여부, 통계결과) 반환.
-
-    구조 정상 = transaction_history 딕셔너리를 확실히 찾음(th is not None).
-    이 조건이 참이면 sales 가 비어 있어도 "확인된 0건"(success_zero) 이고,
-    거짓이면 응답 구조 자체가 기대와 달라 신뢰할 수 없다(retryable/parse_fail).
-    (1c "UNKNOWN != 0" 원칙과 동일한 정신 — screens API 버전.)
-    """
-    if not data or not isinstance(data, dict):
-        return False, {}
-
-    th = kream_crawler._find_transaction_history_in_screens(data)
-    if th is None:
-        return False, {}
-
-    sales = kream_crawler._th_items(th.get("sales"))
-    trades_for_stats = [
-        {"price": item.get("price"), "date": item.get("date_created", "")}
-        for item in sales
-        if isinstance(item, dict)
-    ]
-    if not trades_for_stats:
-        return True, {"volume_7d": 0, "volume_30d": 0, "last_trade_date": None, "price_trend": ""}
-
-    stats = kream_crawler._calculate_trade_stats(trades_for_stats, product_id)
-    return True, stats
+# ─── 상태 분류 (success_zero vs retryable 구분) ────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -233,8 +202,16 @@ class ClassifyResult:
     immediate_stop: bool = False
 
 
-def _classify_response(status: int, data, product_id: str) -> ClassifyResult:
-    """HTTP 상태 + 응답 바디 → 상태 4종 분류 (순수 함수, mock 친화적)."""
+def _classify_response(status: int, stats: dict | None, product_id: str) -> ClassifyResult:
+    """HTTP 상태 + (이미 파싱된) 거래 통계 → 상태 4종 분류 (순수 함수, mock 친화적).
+
+    `stats` 는 `kream_crawler.fetch_screens_status()`(2-1r F3, kream.py 공개
+    API)가 이미 거래내역까지 파싱해 돌려준 결과다 — 스크립트는 raw screens
+    body 를 직접 들여다보지 않는다(private 계약 제거).
+    2xx 인데 `transaction_history` 구조를 못 찾은 경우 `stats=None` 이 온다
+    (구조 이상 — "확인된 0건"과 구분해야 함, 1c "UNKNOWN != 0" 원칙과 동일한
+    정신). 구조는 찾았지만 거래가 없으면 0값 dict(성공 zero) 가 온다.
+    """
     if status in _QUARANTINE_STATUSES:
         return ClassifyResult(QUARANTINED, error=f"http_{status}")
     if status in _BLOCK_STATUSES:
@@ -247,8 +224,7 @@ def _classify_response(status: int, data, product_id: str) -> ClassifyResult:
     if not (200 <= status < 300):
         return ClassifyResult(RETRYABLE, error=f"http_{status}")
 
-    parsed_ok, stats = _parse_screens_trades(data, product_id)
-    if not parsed_ok:
+    if not isinstance(stats, dict):
         return ClassifyResult(RETRYABLE, error="parse_fail")
 
     volume_7d = stats.get("volume_7d", 0) or 0
@@ -261,48 +237,18 @@ def _classify_response(status: int, data, product_id: str) -> ClassifyResult:
 # ─── 실호출 (mock 대상 — 2-1 TDD 스코프는 실호출 0) ────────────────────────
 
 
-async def _fetch_screens_raw(product_id: str) -> tuple[int, dict | str | None]:
-    """screens API 단일 시도(재시도 없음) — 상태코드 그대로 반환.
+async def _fetch_screens_raw(product_id: str) -> tuple[int, dict | None]:
+    """screens API 단일 시도(재시도 없음) — 상태코드 + 파싱된 거래 통계 반환.
 
-    `kream_crawler._request()`는 429/5xx/403 을 내부에서 재시도·백오프하고
-    최종 실패 시 상태코드 없이 None만 반환한다. 이 상태모델(success_positive/
-    success_zero/retryable/quarantined) 판정에는 실제 HTTP 상태(403/429/404/
-    5xx)가 그대로 필요하므로, 크롤러의 세션·인증 헤더 구성을 재사용하되
-    재시도 없이 정확히 1회만 시도한다 — 재시도는 `acquire_background()`(2-0)
-    를 다시 통과해야 하는 다음 실행으로 넘긴다(원샷 배치 전제).
-    status=0 은 타임아웃/연결 실패를 뜻한다(`kream_budget._is_retryable_failure`
-    관례와 동일).
+    `kream_crawler.fetch_screens_status()`(2-1r F3, kream.py 공개 API) 를
+    그대로 위임한다 — 밑줄 붙은 private 속성(`_get_session`/`_build_api_auth_
+    headers`/모듈 상수 등)에 더 이상 의존하지 않는다. 재시도/백오프 없음,
+    check_budget/record_call 은 kream.py 쪽에서 `_request()` 관례대로 수행.
 
     ⚠️ 이 함수는 2-1 테스트 전부에서 monkeypatch 로 대체된다(실호출 0). 실제
     네트워크 경로 검증은 조각 2-4(라이브 카나리) 스코프.
     """
-    await check_budget()
-    purpose = current_purpose()
-    session = await kream_crawler._get_session()
-    endpoint = f"/api/screens/products/{product_id}"
-    url = f"{kream_module.KREAM_API_BASE}{endpoint}"
-    headers = dict(kream_module._API_HEADERS)
-    headers["User-Agent"] = random.choice(kream_module._SAFARI_USER_AGENTS)
-    headers.update(kream_crawler._build_api_auth_headers())
-
-    t0 = time.perf_counter()
-    try:
-        resp = await session.request("GET", url, headers=headers, allow_redirects=True)
-    except Exception:
-        latency_ms = int((time.perf_counter() - t0) * 1000)
-        await record_call(endpoint, "GET", None, latency_ms, purpose)
-        return 0, None
-
-    status = resp.status_code
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-    await record_call(endpoint, "GET", status, latency_ms, purpose)
-
-    if 200 <= status < 300:
-        try:
-            return status, resp.json()
-        except Exception:
-            return status, None
-    return status, None
+    return await kream_crawler.fetch_screens_status(product_id, purpose=current_purpose())
 
 
 # ─── DB 상태 반영 (idempotent UPDATE) ──────────────────────────────────────
@@ -361,8 +307,11 @@ async def _apply_state(db: aiosqlite.Connection, product_id: str, result: Classi
 async def _process_one(db: aiosqlite.Connection, product_id: str) -> ClassifyResult:
     """acquire_background 경유 1회 시도 → 상태분류 → report_block/success → DB 반영.
 
-    `KreamCircuitTripped`/`KreamBackgroundBudgetExceeded` 는 그대로 전파한다 —
-    `run_batch` 가 잡아서 배치를 종료시킨다(예산/서킷 우회 방지).
+    `KreamCircuitTripped`/`KreamBackgroundBudgetExceeded`/`KreamBudgetExceeded`
+    는 그대로 전파한다 — `run_batch` 가 잡아서 배치를 종료시킨다(예산/서킷
+    우회 방지). `KreamBudgetExceeded` 는 라이브 하드캡(10k/24h, 백그라운드
+    소프트캡과 별개) 초과 시 `check_budget()`(실제 fetch 구현 내부)이 던진다 —
+    잡지 않으면 트레이스백으로 프로세스가 죽는다(2-1 리뷰 F1).
     """
     async with acquire_background(PURPOSE):
         status, data = await _fetch_screens_raw(product_id)
@@ -417,6 +366,11 @@ async def run_batch(
                 break
             except KreamBackgroundBudgetExceeded:
                 summary.stopped_reason = "budget_exhausted"
+                break
+            except KreamBudgetExceeded:
+                # 라이브 하드캡(10k/24h) 초과 — 백그라운드 소프트캡/서킷과 별개.
+                # 잡지 않으면 트레이스백으로 죽는다(2-1 리뷰 F1) — 우아하게 중단.
+                summary.stopped_reason = "kream_hard_cap"
                 break
 
             summary.counts[result.state] += 1

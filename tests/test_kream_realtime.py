@@ -11,6 +11,8 @@ ALTER TABLE kream_products ADD COLUMN volume_30d INTEGER DEFAULT 0;
 ALTER TABLE kream_products ADD COLUMN last_volume_check TIMESTAMP;
 ALTER TABLE kream_products ADD COLUMN refresh_tier TEXT DEFAULT 'cold';
 ALTER TABLE kream_products ADD COLUMN last_price_refresh TIMESTAMP;
+ALTER TABLE kream_products ADD COLUMN scan_priority TEXT DEFAULT 'cold';
+ALTER TABLE kream_products ADD COLUMN next_volume_attempt_at TEXT;
 """
 
 
@@ -328,6 +330,91 @@ async def test_spike_save_snapshots():
     cursor = await db.execute("SELECT volume_7d FROM kream_volume_snapshots WHERE product_id = 'ss1'")
     row = await cursor.fetchone()
     assert row["volume_7d"] == 7
+    await db.close()
+
+
+# -- collect_current_volumes: 2-1 상태모델(quarantine/retryable) 존중 (2-1r F2) --
+
+
+@pytest.mark.asyncio
+async def test_collect_current_volumes_excludes_quarantined_future_attempt():
+    """next_volume_attempt_at 가 미래(quarantine +90일 등)면 대상에서 제외."""
+    from unittest.mock import AsyncMock, patch
+
+    from src.kream_realtime.volume_spike_detector import VolumeSpikeDetector
+
+    db = await _create_db()
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, next_volume_attempt_at)
+        VALUES ('quarantined1', 'Q', 'Q-001', datetime('now', '+90 days'))"""
+    )
+    await db.commit()
+
+    detector = VolumeSpikeDetector(db)
+    fake_trade = AsyncMock(return_value={"volume_7d": 0, "volume_30d": 0})
+    with patch(
+        "src.kream_realtime.volume_spike_detector.kream_crawler",
+        AsyncMock(get_trade_history=fake_trade),
+    ):
+        volumes = await detector.collect_current_volumes()
+
+    assert volumes == []
+    fake_trade.assert_not_called()
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_collect_current_volumes_includes_due_retry():
+    """next_volume_attempt_at 이 이미 지났으면(retryable 재시도 마감 도래) 대상 포함."""
+    from unittest.mock import AsyncMock, patch
+
+    from src.kream_realtime.volume_spike_detector import VolumeSpikeDetector
+
+    db = await _create_db()
+    await db.execute(
+        """INSERT INTO kream_products
+        (product_id, name, model_number, next_volume_attempt_at)
+        VALUES ('due1', 'D', 'D-001', datetime('now', '-1 hour'))"""
+    )
+    await db.commit()
+
+    detector = VolumeSpikeDetector(db)
+    fake_trade = AsyncMock(return_value={"volume_7d": 3, "volume_30d": 5})
+    with patch(
+        "src.kream_realtime.volume_spike_detector.kream_crawler",
+        AsyncMock(get_trade_history=fake_trade),
+    ):
+        volumes = await detector.collect_current_volumes()
+
+    assert [v["product_id"] for v in volumes] == ["due1"]
+    fake_trade.assert_awaited_once()
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_collect_current_volumes_includes_legacy_null_column():
+    """next_volume_attempt_at 이 NULL(레거시/한 번도 부트스트랩 안 됨) 이면 기존대로 포함."""
+    from unittest.mock import AsyncMock, patch
+
+    from src.kream_realtime.volume_spike_detector import VolumeSpikeDetector
+
+    db = await _create_db()
+    await db.execute(
+        "INSERT INTO kream_products (product_id, name, model_number) "
+        "VALUES ('legacy1', 'L', 'L-001')"
+    )
+    await db.commit()
+
+    detector = VolumeSpikeDetector(db)
+    fake_trade = AsyncMock(return_value={"volume_7d": 1, "volume_30d": 1})
+    with patch(
+        "src.kream_realtime.volume_spike_detector.kream_crawler",
+        AsyncMock(get_trade_history=fake_trade),
+    ):
+        volumes = await detector.collect_current_volumes()
+
+    assert [v["product_id"] for v in volumes] == ["legacy1"]
     await db.close()
 
 

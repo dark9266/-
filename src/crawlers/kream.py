@@ -467,6 +467,83 @@ class KreamCrawler:
         logger.error("최대 재시도(%d회) 초과: %s", max_retries, url)
         return None
 
+    async def fetch_screens_status(
+        self, product_id: str, *, purpose: str = "manual",
+    ) -> tuple[int, dict | None]:
+        """screens API 단일 시도(재시도·백오프 없음) — 상태코드 + 거래 파싱 결과 반환.
+
+        `_request()`는 429/5xx/403 을 내부에서 재시도·백오프하며 최종 실패 시
+        상태코드 없이 None 만 반환한다 — 라이브 실시간 경로엔 적합하지만,
+        백그라운드 배치의 상태모델(success_positive/success_zero/retryable/
+        quarantined, 조각 2-1)은 실제 HTTP 상태(403/429/404/5xx)를 그대로
+        알아야 서킷·격리 판정이 가능하다. 그래서 `_request()`의 기존 재시도
+        경로는 손대지 않고, 이 메서드를 별도의 명시적 raw 경로로 추가한다.
+        재시도/백오프는 호출자(`acquire_background`, 2-0)가 다음 실행에서
+        다시 담당한다(원샷 배치 전제).
+
+        check_budget()/record_call() 은 `_request()` 관례와 동일하게 수행한다.
+        연결 실패/타임아웃은 status=0 으로 반환(`kream_budget._is_retryable_failure`
+        관례와 동일).
+
+        반환 dict 계약(2-1r F3 — 호출자가 private 파싱 헬퍼에 의존하지 않도록
+        이 메서드가 거래내역 파싱까지 끝낸 결과를 돌려준다):
+            - 2xx 가 아니거나 JSON 파싱 실패 → dict=None
+            - 2xx 인데 `transaction_history` 구조 자체를 못 찾음 → dict=None
+              (호출자 입장에서 "구조 이상" — success_zero 와 구분해야 함)
+            - `transaction_history` 는 찾았지만 sales 가 없음 → 확인된 0건.
+              `{"volume_7d": 0, "volume_30d": 0, "last_trade_date": None,
+              "price_trend": ""}` 반환(빈 dict 가 아니라 명시적 0값 — "확인된
+              0건" 임을 구조 파싱 실패와 구분하기 위함)
+            - sales 있음 → `_calculate_trade_stats()` 결과.
+        """
+        await check_budget()
+        if purpose == "manual":
+            purpose = current_purpose()
+
+        session = await self._get_session()
+        endpoint = f"/api/screens/products/{product_id}"
+        url = f"{KREAM_API_BASE}{endpoint}"
+        headers = dict(_API_HEADERS)
+        headers["User-Agent"] = random.choice(_SAFARI_USER_AGENTS)
+        headers.update(self._build_api_auth_headers())
+
+        t0 = time.perf_counter()
+        try:
+            resp = await session.request("GET", url, headers=headers, allow_redirects=True)
+        except Exception:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            await record_call(endpoint, "GET", None, latency_ms, purpose)
+            return 0, None
+
+        status = resp.status_code
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        await record_call(endpoint, "GET", status, latency_ms, purpose)
+
+        if not (200 <= status < 300):
+            return status, None
+
+        try:
+            data = resp.json()
+        except Exception:
+            return status, None
+
+        th = self._find_transaction_history_in_screens(data)
+        if th is None:
+            return status, None
+
+        sales = self._th_items(th.get("sales"))
+        trades_for_stats = [
+            {"price": item.get("price"), "date": item.get("date_created", "")}
+            for item in sales
+            if isinstance(item, dict)
+        ]
+        if not trades_for_stats:
+            return status, {
+                "volume_7d": 0, "volume_30d": 0, "last_trade_date": None, "price_trend": "",
+            }
+
+        return status, self._calculate_trade_stats(trades_for_stats, product_id)
+
     # ─── __NUXT_DATA__ 파싱 ───────────────────────────────
 
     @staticmethod

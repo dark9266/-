@@ -10,12 +10,19 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import scripts.bootstrap_cold_volumes_light as boot
+# ⚠️ 스크립트 모듈은 임포트 시점에 `load_dotenv()`(.env 의 KREAM_DAILY_CAP=50000
+# 반영용, CLI 단독 실행 대비)를 호출한다. 이 파일이 세션 최초로 임포트하면
+# `src.core.kream_budget.BUDGET`(모듈 임포트 시 1회 고정) 이 다른 테스트 파일
+# (test_kream_bg_budget.py, 10000 하드코딩 가정) 보다 먼저 50000 으로 굳어져
+# 그쪽 테스트를 깨뜨린다 — 최초 임포트 순간만 무해화(no-op)하고, 실제 스크립트
+# 동작(재실행 시 `dotenv`는 정상 동작)에는 영향 없음.
+with patch("dotenv.load_dotenv", lambda *a, **kw: None):
+    import scripts.bootstrap_cold_volumes_light as boot
+
 import src.core.kream_budget as kb
 from src.models.database import Database
 
@@ -84,22 +91,18 @@ async def _get_row(db, product_id: str) -> dict:
     return dict(row)
 
 
-def _screens_payload(sales_prices: list[int]) -> dict:
-    """screens API 정상 응답 골격 — sales 리스트만 변주 (날짜는 항상 '방금').
-
-    volume_7d 판정이 "지금 - N일" 윈도로 계산되므로, 고정된 과거 날짜를 쓰면
-    테스트 실행 시점에 따라 7일 밖으로 밀려나 항상 실패할 수 있다.
+def _stats_result(volume_7d: int, volume_30d: int | None = None) -> dict:
+    """`kream_crawler.fetch_screens_status()`(2-1r F3) 가 돌려주는 이미 파싱된
+    거래 통계 shape — 스크립트는 더 이상 raw screens body 를 직접 파싱하지
+    않고 이 dict(또는 구조 파싱 실패 시 None)만 받는다.
     """
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    if volume_30d is None:
+        volume_30d = volume_7d
     return {
-        "transaction_history": {
-            "sales": [
-                {"price": p, "date_created": now, "product_option": {"key": "270"}}
-                for p in sales_prices
-            ],
-            "asks": [],
-            "bids": [],
-        }
+        "volume_7d": volume_7d,
+        "volume_30d": volume_30d,
+        "last_trade_date": None,
+        "price_trend": "",
     }
 
 
@@ -109,7 +112,7 @@ def _screens_payload(sales_prices: list[int]) -> dict:
 
 
 def test_classify_success_positive():
-    data = _screens_payload([100000, 105000])
+    data = _stats_result(2, 5)
     result = boot._classify_response(200, data, "P1")
     assert result.state == boot.SUCCESS_POSITIVE
     assert result.volume_7d > 0
@@ -117,17 +120,16 @@ def test_classify_success_positive():
 
 
 def test_classify_success_zero_confirmed_empty_sales():
-    """transaction_history 는 정상 파싱됐지만 sales 가 진짜로 빈 경우 — success_zero."""
-    data = _screens_payload([])
+    """kream_crawler.fetch_screens_status() 가 확인된 0건(0값 dict)을 돌려준 경우."""
+    data = _stats_result(0, 0)
     result = boot._classify_response(200, data, "P1")
     assert result.state == boot.SUCCESS_ZERO
     assert result.volume_7d == 0
 
 
 def test_classify_retryable_on_parse_failure():
-    """200 인데 transaction_history 자체를 못 찾음 — 구조 이상, retryable(파싱실패)."""
-    data = {"unexpected": "shape"}
-    result = boot._classify_response(200, data, "P1")
+    """200 인데 kream_crawler 가 transaction_history 구조를 못 찾아 None 반환."""
+    result = boot._classify_response(200, None, "P1")
     assert result.state == boot.RETRYABLE
     assert result.error == "parse_fail"
 
@@ -276,7 +278,7 @@ async def test_acquire_lease_chunk_same_chunk_two_owners(db):
 
 async def test_process_one_idempotent_success_positive(db, spy_pacer, monkeypatch):
     await _insert_kream_product(db, "P1")
-    payload = _screens_payload([100000, 100000, 100000, 100000, 100000])
+    payload = _stats_result(5, 5)
     monkeypatch.setattr(boot, "_fetch_screens_raw", AsyncMock(return_value=(200, payload)))
 
     result1 = await boot._process_one(db, "P1")
@@ -314,7 +316,7 @@ async def test_process_one_idempotent_quarantined(db, spy_pacer, monkeypatch):
 async def test_process_one_goes_through_acquire_background(db, spy_pacer, monkeypatch):
     await _insert_kream_product(db, "P1")
     monkeypatch.setattr(
-        boot, "_fetch_screens_raw", AsyncMock(return_value=(200, _screens_payload([])))
+        boot, "_fetch_screens_raw", AsyncMock(return_value=(200, _stats_result(0, 0)))
     )
     await boot._process_one(db, "P1")
     assert spy_pacer.wait_turn_calls == 1
@@ -373,7 +375,7 @@ async def test_run_batch_success_resets_streak_and_continues(db, spy_pacer, monk
         await _insert_kream_product(db, pid, model_number=pid)
 
     # 500, 200(성공, 스트릭 리셋), 500 — 스트릭이 리셋되므로 트립 안 됨
-    responses = [(500, None), (200, _screens_payload([])), (500, None)]
+    responses = [(500, None), (200, _stats_result(0, 0)), (500, None)]
     fetch_mock = AsyncMock(side_effect=responses)
     monkeypatch.setattr(boot, "_fetch_screens_raw", fetch_mock)
 
@@ -399,6 +401,29 @@ async def test_run_batch_budget_exhausted_stops(db, spy_pacer, monkeypatch):
 
     assert summary.processed == 0
     assert summary.stopped_reason == "budget_exhausted"
+
+
+async def test_run_batch_kream_hard_cap_exceeded_stops_gracefully(db, spy_pacer, monkeypatch):
+    """check_budget() 발 KreamBudgetExceeded — 트레이스백 없이 요약 후 정상 종료 (2-1r F1).
+
+    실제 `_fetch_screens_raw()` 내부는 `check_budget()`(라이브 하드캡, 백그라운드
+    소프트캡과 별개)을 호출한다. 하드캡 초과 시 이 예외가 나는데, 예전 코드는
+    `run_batch` 가 이를 잡지 않아 스크립트가 크래시했다.
+    """
+    await _insert_kream_product(db, "P1")
+    await _insert_kream_product(db, "P2", model_number="M2")
+
+    fetch_mock = AsyncMock(
+        side_effect=kb.KreamBudgetExceeded("10000/10000 calls in last 24h")
+    )
+    monkeypatch.setattr(boot, "_fetch_screens_raw", fetch_mock)
+
+    summary = await boot.run_batch(db, ["P1", "P2"], owner="test-owner")
+
+    assert summary.processed == 0
+    assert summary.stopped_reason == "kream_hard_cap"
+    # 첫 상품 처리 중 예외가 났으므로 두 번째 상품은 시도조차 안 됨
+    assert fetch_mock.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -522,3 +547,25 @@ async def test_dry_run_reflects_kream_usage(db, monkeypatch, tmp_path):
     report = await boot.build_dry_run_report(db, rows)
     assert report["kream_used_24h"] == 1
     assert report["kream_hard_remaining"] == report["kream_hard_cap"] - 1
+
+
+# ---------------------------------------------------------------------------
+# 8. kream.py private 계약 제거 확인 (2-1r F3)
+# ---------------------------------------------------------------------------
+
+
+def test_script_has_zero_kream_crawler_private_attribute_references():
+    """`kream_crawler._xxx` / `kream_module._xxx` 참조가 스크립트에 0건이어야 한다.
+
+    2-1 리뷰 F3 — `fetch_screens_status()`(kream.py 공개 API) 도입 이후,
+    스크립트는 세션/인증헤더/파싱 헬퍼 등 kream.py 의 밑줄(private) 속성에
+    더 이상 의존하지 않는다.
+    """
+    import re
+
+    source = boot.__file__
+    with open(source, encoding="utf-8") as f:
+        text = f.read()
+
+    matches = re.findall(r"kream_crawler\._[a-zA-Z]\w*|kream_module\.\w*", text)
+    assert matches == [], f"private 속성 참조 잔존: {matches}"

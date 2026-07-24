@@ -109,12 +109,22 @@ class VolumeSpikeDetector:
             logger.info("%d개 상품 hot tier 승격", len(spikes))
 
     async def collect_current_volumes(self, batch_size: int = 50) -> list[dict]:
-        """DB에서 거래량 체크가 필요한 상품을 선별하여 크림 API로 현재 거래량 수집."""
+        """DB에서 거래량 체크가 필요한 상품을 선별하여 크림 API로 현재 거래량 수집.
+
+        `next_volume_attempt_at` (조각 2-1 상태모델) 이 미래인 상품은 제외한다 —
+        quarantined(404 확정 삭제, +90일) 나 retryable 백오프(+6h) 상태인 상품이
+        매 사이클 최우선(`last_volume_check IS NULL`)으로 반복 조회되어 실예산이
+        영구 낭비되는 걸 막는다. 컬럼이 NULL(레거시/한 번도 부트스트랩 안 거친
+        상품)이면 기존대로 대상에 포함(과도하게 배제하지 않음). TEXT datetime
+        컬럼이므로 `datetime('now')` 비교 — epoch 비교 금지(CLAUDE.md SQL 함정).
+        """
         cursor = await self.db.execute(
             """SELECT product_id, model_number FROM kream_products
             WHERE model_number != ''
             AND (last_volume_check IS NULL
                  OR last_volume_check < datetime('now', ?))
+            AND (next_volume_attempt_at IS NULL
+                 OR next_volume_attempt_at <= datetime('now'))
             ORDER BY last_volume_check ASC NULLS FIRST
             LIMIT ?""",
             (f"-{settings.realtime_volume_check_minutes} minutes", batch_size),
