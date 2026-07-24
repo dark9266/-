@@ -11,8 +11,26 @@ from __future__ import annotations
 
 import pytest
 
+import src.core.v3_discord_publisher as _pub_mod
 from src.core.event_bus import ProfitFound
 from src.core.v3_discord_publisher import V3DiscordPublisher, wrap_handler
+
+
+@pytest.fixture
+def kream_delta_retail_mock(monkeypatch):
+    """kream_delta 테스트 픽스처 — retail_sources 더미 1건 주입.
+
+    매입처 없는 kream_delta 알림은 publish() 가 차단하므로, 라벨/색상 등
+    embed 빌드 검증 테스트는 매입처 있다고 가정한 상태로 돌아야 한다.
+    """
+    monkeypatch.setattr(
+        _pub_mod,
+        "_lookup_retail_sources",
+        lambda db_path, model_no: [
+            {"source": "musinsa", "url": f"https://musinsa.com/{model_no}", "min_price": 50000}
+        ],
+    )
+    monkeypatch.setattr(_pub_mod, "_lookup_kream_product", lambda db_path, pid: None)
 
 
 def _make_event(
@@ -222,14 +240,14 @@ def _make_kream_delta_event(signal: str = "매수") -> ProfitFound:
     )
 
 
-async def test_kream_delta_label_clarifies_internal_quote():
+async def test_kream_delta_label_clarifies_internal_quote(kream_delta_retail_mock):
     """source='kream_delta' 일 때 '소싱가' 대신 '크림 즉시판매 호가' + 스나이프 경고."""
     captured: list[dict] = []
 
     async def _send(embed: dict) -> None:
         captured.append(embed)
 
-    pub = V3DiscordPublisher(channel_send=_send)
+    pub = V3DiscordPublisher(channel_send=_send, db_path="dummy")
     await pub.publish(_make_kream_delta_event())
 
     assert len(captured) == 1
@@ -240,17 +258,49 @@ async def test_kream_delta_label_clarifies_internal_quote():
     assert "소싱가" not in price_field["value"]
 
 
-async def test_kream_delta_color_yellow():
+async def test_kream_delta_color_yellow(kream_delta_retail_mock):
     """kream_delta 알림은 노란색 (0xFFD700) — 스나이프성 매물 시각 구분."""
     captured: list[dict] = []
 
     async def _send(embed: dict) -> None:
         captured.append(embed)
 
-    pub = V3DiscordPublisher(channel_send=_send)
+    pub = V3DiscordPublisher(channel_send=_send, db_path="dummy")
     await pub.publish(_make_kream_delta_event(signal="강력매수"))
 
     assert captured[0]["color"] == 0xFFD700
+
+
+async def test_kream_delta_blocked_when_no_retail_sources(monkeypatch):
+    """매입처 없는 kream_delta 알림은 차단 — 사용자가 어디서 매입할지 모름."""
+    monkeypatch.setattr(_pub_mod, "_lookup_retail_sources", lambda db_path, model_no: [])
+    monkeypatch.setattr(_pub_mod, "_lookup_kream_product", lambda db_path, pid: None)
+
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send, db_path="dummy")
+    await pub.publish(_make_kream_delta_event(signal="강력매수"))
+
+    assert captured == []  # 매입처 없으면 발송 X
+
+
+async def test_external_source_publishes_without_retail_sources(monkeypatch):
+    """외부 매입처(예: musinsa) 알림은 retail_sources 비어도 자체 url 있어 발송."""
+    monkeypatch.setattr(_pub_mod, "_lookup_retail_sources", lambda db_path, model_no: [])
+    monkeypatch.setattr(_pub_mod, "_lookup_kream_product", lambda db_path, pid: None)
+
+    captured: list[dict] = []
+
+    async def _send(embed: dict) -> None:
+        captured.append(embed)
+
+    pub = V3DiscordPublisher(channel_send=_send, db_path="dummy")
+    await pub.publish(_make_event("매수"))  # source='musinsa'
+
+    assert len(captured) == 1
 
 
 async def test_external_source_keeps_signal_color():
@@ -266,14 +316,14 @@ async def test_external_source_keeps_signal_color():
     assert captured[0]["color"] == 0xFF0000
 
 
-async def test_kream_delta_footer_label():
+async def test_kream_delta_footer_label(kream_delta_retail_mock):
     """kream_delta footer 에 '크림 내부 차익' 명시."""
     captured: list[dict] = []
 
     async def _send(embed: dict) -> None:
         captured.append(embed)
 
-    pub = V3DiscordPublisher(channel_send=_send)
+    pub = V3DiscordPublisher(channel_send=_send, db_path="dummy")
     await pub.publish(_make_kream_delta_event())
 
     assert "크림 내부 차익" in captured[0]["footer"]["text"]

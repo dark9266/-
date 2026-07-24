@@ -286,11 +286,21 @@ class V3DiscordPublisher:
         if event.signal not in _ALERT_SIGNALS:
             return
         product = None
+        retail_sources: list[dict] = []
         if self._db_path:
             product = _lookup_kream_product(self._db_path, event.kream_product_id)
             retail_sources = _lookup_retail_sources(self._db_path, event.model_no)
             if retail_sources:
                 product = (product or {}) | {"retail_sources": retail_sources}
+        # 매입처 없는 kream_delta 알림 차단 — 사용자가 어디서 매입할지 알 수 없으면 무용.
+        # retail_products 에 동일 model_number 의 외부 소싱처 row 가 있어야 발송.
+        if event.source == "kream_delta" and not retail_sources:
+            logger.info(
+                "[v3_discord] kream_delta 알림 차단 (매입처 없음): model=%s pid=%s",
+                event.model_no,
+                event.kream_product_id,
+            )
+            return
         embed = _build_embed(event, product)
 
         # 1순위: discord.py bot 채널 직접 send (기존 profit 채널 재사용)
