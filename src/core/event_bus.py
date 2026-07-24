@@ -18,6 +18,8 @@ import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 
+from src.models.stock import SourceStockSnapshot
+
 
 class Event:
     """모든 이벤트의 베이스 마커 클래스.
@@ -46,6 +48,11 @@ class CandidateMatched(Event):
 
     `color_name` 은 사이트→크림 색상 disambiguation 결과 (한글). 색상별
     fan-out 어댑터에서만 채움. 미구현 어댑터는 ""(미표시).
+
+    `source_stock` 은 1c 정확성 게이트의 명시 재고 상태(`SourceStockSnapshot`).
+    `None` = 명시적 UNKNOWN(아직 검증 안 됨). 이후 조각에서 게이트가 이 필드를
+    `available_sizes` 보다 우선 참조한다. `available_sizes` 는 하위호환용으로
+    그대로 유지한다.
     """
 
     source: str
@@ -56,6 +63,7 @@ class CandidateMatched(Event):
     url: str
     available_sizes: tuple = ()
     color_name: str = ""
+    source_stock: SourceStockSnapshot | None = None
 
 
 @dataclass(frozen=True)
