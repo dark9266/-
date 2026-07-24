@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 
 import pytest
@@ -917,6 +918,106 @@ async def test_decision_log_cooldown_block(bus, store):
         assert any(
             r["reason"] == "alert_sent" for r in rows
         )
+    finally:
+        await orch.stop()
+
+
+# ----------------------------------------------------------------------
+# 1c-5 F2 — ProfitFound 재생 시 소싱 증거 만료 차단
+# ----------------------------------------------------------------------
+async def test_process_profit_expired_source_stock_blocks_and_marks_failed(bus, store):
+    """source_stock_expires_at 이 과거 → 알림 0 + 체크포인트 mark_failed."""
+    import dataclasses as _dc
+
+    orch = Orchestrator(bus, store, _throttle())
+
+    handler_calls: list[ProfitFound] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return None
+
+    async def profit_handler(event):
+        handler_calls.append(event)
+        return AlertSent(
+            alert_id=1,
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=time.time(),
+        )
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        expired = _dc.replace(
+            _sample_profit(kream_pid=555),
+            source_stock_expires_at=time.time() - 100,
+        )
+        ckpt = await store.record(expired, consumer="profit")
+        await orch._process_profit(expired, ckpt)
+
+        assert handler_calls == [], "만료된 source_stock 증거는 알림 발송 금지"
+
+        db = store._require_db()
+        cur = await db.execute(
+            "SELECT status, last_reason FROM event_checkpoint WHERE id = ?",
+            (ckpt,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        assert row["status"] == "failed"
+        assert row["last_reason"] == "source_stock_expired"
+
+        rows = await _fetch_decisions(store)
+        assert any(
+            r["stage"] == "profit"
+            and r["decision"] == "block"
+            and r["reason"] == "source_stock_expired"
+            for r in rows
+        )
+    finally:
+        await orch.stop()
+
+
+async def test_process_profit_zero_expires_at_sends_normally(bus, store):
+    """source_stock_expires_at=0.0(게이트 면제, 기본값) → 기존대로 알림 발송."""
+    orch = Orchestrator(bus, store, _throttle())
+
+    handler_calls: list[ProfitFound] = []
+
+    async def catalog_handler(event):
+        if False:
+            yield  # pragma: no cover
+
+    async def candidate_handler(event):
+        return None
+
+    async def profit_handler(event):
+        handler_calls.append(event)
+        return AlertSent(
+            alert_id=1,
+            kream_product_id=event.kream_product_id,
+            signal=event.signal,
+            fired_at=time.time(),
+        )
+
+    orch.on_catalog_dumped(catalog_handler)
+    orch.on_candidate_matched(candidate_handler)
+    orch.on_profit_found(profit_handler)
+
+    await orch.start()
+    try:
+        exempt = _sample_profit(kream_pid=556)  # source_stock_expires_at 기본값 0.0
+        ckpt = await store.record(exempt, consumer="profit")
+        await orch._process_profit(exempt, ckpt)
+
+        assert len(handler_calls) == 1, "게이트 면제(0.0) 는 기존대로 발송돼야 함"
     finally:
         await orch.stop()
 

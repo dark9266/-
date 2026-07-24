@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 from src.core.event_bus import (
@@ -215,6 +216,109 @@ async def test_recover_replays_pending_profit(tmp_path):
     cnt = conn.execute("SELECT COUNT(*) FROM alert_sent").fetchone()[0]
     conn.close()
     assert cnt == 1
+
+    await runtime.stop()
+
+
+# ─── (c-2) 1c-5 F4 — 재생 레거시 승격의 관측시각 정직화 ────
+
+async def test_recover_stale_legacy_candidate_blocks_kream_call(tmp_path):
+    """오래된 created_at(TTL 초과) 의 레거시 candidate 재생 → 크림 호출 금지(보류)."""
+    from src.core.checkpoint_store import CheckpointStore
+    from src.models.stock import DEFAULT_SOURCE_STOCK_TTL_SEC
+
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+
+    calls: list[tuple[int, str]] = []
+
+    async def snap_fn(pid: int, size: str) -> dict | None:
+        calls.append((pid, size))
+        return {
+            "sell_now_price": 300_000,
+            "volume_7d": 10,
+            "size_prices": [{"size": "270", "sell_now_price": 300_000}],
+        }
+
+    store = CheckpointStore(db)
+    await store.init()
+    leftover = CandidateMatched(
+        source="musinsa",
+        kream_product_id=101,
+        model_no="CW2288-111",
+        retail_price=120_000,
+        size="270",
+        url="https://www.musinsa.com/products/1",
+        available_sizes=("270",),  # source_stock=None — 레거시 승격 대상
+    )
+    ckpt_id = await store.record(leftover, consumer="candidate")
+    # created_at 을 TTL 초과 과거로 조작 — 오래된 관측 시뮬레이션
+    stale_created = time.time() - (DEFAULT_SOURCE_STOCK_TTL_SEC + 120)
+    db_conn = store._require_db()  # noqa: SLF001
+    await db_conn.execute(
+        "UPDATE event_checkpoint SET created_at = ? WHERE id = ?",
+        (stale_created, ckpt_id),
+    )
+    await db_conn.commit()
+    await store.close()
+
+    runtime = V3Runtime(
+        db_path=db,
+        enabled=True,
+        alert_log_path=str(tmp_path / "v3_alerts.jsonl"),
+        kream_snapshot_fn=snap_fn,
+        musinsa_adapter=_NoopMusinsaAdapter(),  # type: ignore[arg-type]
+        hot_watcher=_NoopHotWatcher(),  # type: ignore[arg-type]
+    )
+    await runtime.start()
+
+    assert calls == [], "오래된 created_at 의 재생 candidate 는 크림 호출 금지(보류)"
+
+    await runtime.stop()
+
+
+async def test_recover_fresh_legacy_candidate_passes_and_calls_kream(tmp_path):
+    """신선한 created_at(TTL 내) 의 레거시 candidate 재생 → 정상 통과, 크림 호출됨."""
+    from src.core.checkpoint_store import CheckpointStore
+
+    db = str(tmp_path / "kream.db")
+    _init_db(db)
+
+    calls: list[tuple[int, str]] = []
+
+    async def snap_fn(pid: int, size: str) -> dict | None:
+        calls.append((pid, size))
+        return {
+            "sell_now_price": 300_000,
+            "volume_7d": 10,
+            "size_prices": [{"size": "270", "sell_now_price": 300_000}],
+        }
+
+    store = CheckpointStore(db)
+    await store.init()
+    leftover = CandidateMatched(
+        source="musinsa",
+        kream_product_id=101,
+        model_no="CW2288-111",
+        retail_price=120_000,
+        size="270",
+        url="https://www.musinsa.com/products/1",
+        available_sizes=("270",),
+    )
+    await store.record(leftover, consumer="candidate")  # created_at = 방금(신선)
+    await store.close()
+
+    runtime = V3Runtime(
+        db_path=db,
+        enabled=True,
+        alert_log_path=str(tmp_path / "v3_alerts.jsonl"),
+        kream_snapshot_fn=snap_fn,
+        musinsa_adapter=_NoopMusinsaAdapter(),  # type: ignore[arg-type]
+        hot_watcher=_NoopHotWatcher(),  # type: ignore[arg-type]
+    )
+    await runtime.start()
+
+    assert calls == [(101, "270")], "신선한 재생 candidate 는 정상 통과해 크림 호출까지 가야 함"
 
     await runtime.stop()
 

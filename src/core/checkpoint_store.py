@@ -34,7 +34,10 @@ import json
 import logging
 import sqlite3
 import time
+import types
+import typing
 from collections.abc import AsyncIterator
+from enum import Enum
 from typing import Any
 
 import aiosqlite
@@ -95,6 +98,58 @@ async def _ensure_columns(db: aiosqlite.Connection) -> None:
             "ALTER TABLE event_checkpoint ADD COLUMN last_reason TEXT"
         )
     await db.commit()
+
+
+def _unwrap_optional(tp: Any) -> Any:
+    """`X | None` / `Optional[X]` 에서 `X` 만 뽑아낸다 (그 외는 그대로 반환).
+
+    1c-5 F3: `from __future__ import annotations` 하에서 `typing.get_type_hints`
+    로 해석한 타입은 PEP604(`X | None` → `types.UnionType`)와 `typing.Union`
+    두 형태 모두 나올 수 있어 둘 다 처리한다.
+    """
+    origin = typing.get_origin(tp)
+    if origin is typing.Union or origin is types.UnionType:
+        args = [a for a in typing.get_args(tp) if a is not type(None)]
+        if len(args) == 1:
+            return args[0]
+    return tp
+
+
+def _restore_dataclass_value(field_type: Any, value: Any) -> Any:
+    """JSON 라운드트립된 원시값을 필드 타입에 맞춰 복원 (재귀).
+
+    1c-5 F3: `CandidateMatched.source_stock` 처럼 nested dataclass 필드는
+    `dataclasses.asdict` → JSON 왕복을 거치며 plain dict 로 남는다. 그대로
+    두면 게이트가 `.state` 등 속성 접근 시 AttributeError. 필드 타입이
+    dataclass 이고 값이 dict 면 재귀적으로 재구성하고, Enum 필드는 문자열에서
+    복원, tuple 기본값 필드는 list → tuple 로 되돌린다.
+    """
+    if value is None:
+        return None
+    target = _unwrap_optional(field_type)
+    if dataclasses.is_dataclass(target) and isinstance(value, dict):
+        return _build_dataclass_instance(target, value)
+    if isinstance(target, type) and issubclass(target, Enum) and isinstance(value, str):
+        return target(value)
+    return value
+
+
+def _build_dataclass_instance(cls: type, data: dict) -> Any:
+    """dict payload → dataclass 인스턴스 (nested/Enum/tuple 필드 재귀 복원)."""
+    try:
+        hints = typing.get_type_hints(cls)
+    except Exception:
+        hints = {}
+    kwargs: dict[str, Any] = {}
+    for f in dataclasses.fields(cls):
+        if f.name not in data:
+            continue
+        raw = data[f.name]
+        hint = hints.get(f.name, f.type)
+        if isinstance(raw, list) and isinstance(f.default, tuple):
+            raw = tuple(raw)
+        kwargs[f.name] = _restore_dataclass_value(hint, raw)
+    return cls(**kwargs)
 
 
 def _resolve_event_class(event_type: str) -> type:
@@ -289,10 +344,13 @@ class CheckpointStore:
             for row in rows
         ]
 
-    async def replay(
+    async def _replay_rows(
         self, consumer: str
-    ) -> AsyncIterator[tuple[int, object]]:
-        """미처리 이벤트를 재구성된 dataclass 인스턴스로 yield.
+    ) -> AsyncIterator[tuple[int, object, float]]:
+        """`replay`/`replay_with_created_at` 공유 내부 구현.
+
+        미처리 이벤트를 재구성된 dataclass 인스턴스 + 기록 시각(created_at)
+        으로 yield.
 
         - 알 수 없는 event_type 은 해당 row 만 `status='failed'` 처리 후 skip
           (나머지는 계속 yield)
@@ -313,18 +371,26 @@ class CheckpointStore:
             try:
                 cls = _resolve_event_class(row["event_type"])
                 payload = row["payload"]
-                # JSON 라운드트립은 tuple → list 로 되돌아오므로 dataclass
-                # 필드 정의와 일치하도록 tuple 기본값 필드를 복원한다.
-                # (e.g. CandidateMatched.available_sizes, ProfitFound.size_profits)
-                import dataclasses as _dc
-                if _dc.is_dataclass(cls):
-                    for f in _dc.fields(cls):
-                        if (
-                            f.name in payload
-                            and isinstance(payload[f.name], list)
-                            and isinstance(f.default, tuple)
-                        ):
-                            payload[f.name] = tuple(payload[f.name])
+                if dataclasses.is_dataclass(cls):
+                    hints: dict[str, Any] = {}
+                    try:
+                        hints = typing.get_type_hints(cls)
+                    except Exception:
+                        hints = {}
+                    for f in dataclasses.fields(cls):
+                        if f.name not in payload:
+                            continue
+                        raw = payload[f.name]
+                        # JSON 라운드트립은 tuple → list 로 되돌아오므로 dataclass
+                        # 필드 정의와 일치하도록 tuple 기본값 필드를 복원한다.
+                        # (e.g. CandidateMatched.available_sizes, ProfitFound.size_profits)
+                        if isinstance(raw, list) and isinstance(f.default, tuple):
+                            raw = tuple(raw)
+                        # 1c-5 F3: nested dataclass(SourceStockSnapshot 등) 는
+                        # asdict→JSON 왕복 후 plain dict 로 남는다 — 필드 타입
+                        # 정보로 재귀 재구성 (Enum 포함).
+                        hint = hints.get(f.name, f.type)
+                        payload[f.name] = _restore_dataclass_value(hint, raw)
                 event = cls(**payload)
             except (ValueError, TypeError) as exc:
                 logger.warning(
@@ -335,7 +401,29 @@ class CheckpointStore:
                 )
                 await self.mark_failed(ckpt_id, f"resolve:{exc}")
                 continue
+            yield ckpt_id, event, float(row["created_at"])
+
+    async def replay(
+        self, consumer: str
+    ) -> AsyncIterator[tuple[int, object]]:
+        """미처리 이벤트를 재구성된 dataclass 인스턴스로 yield.
+
+        기존 호출자 호환 유지용 — `created_at` 이 필요하면
+        `replay_with_created_at` 사용 (1c-5 F4).
+        """
+        async for ckpt_id, event, _created_at in self._replay_rows(consumer):
             yield ckpt_id, event
+
+    async def replay_with_created_at(
+        self, consumer: str
+    ) -> AsyncIterator[tuple[int, object, float]]:
+        """`replay` 와 동일하지만 체크포인트 기록 시각(created_at epoch) 포함.
+
+        1c-5 F4: 재생된 레거시 candidate 를 정직한 관측시각(기록 시각)으로
+        승격하기 위해 orchestrator.recover() 가 사용한다.
+        """
+        async for ckpt_id, event, created_at in self._replay_rows(consumer):
+            yield ckpt_id, event, created_at
 
     async def purge_consumed(
         self,

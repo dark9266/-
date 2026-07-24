@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,7 @@ from src.crawlers.on_running import (
     parse_sitemap,
     parse_variants,
 )
-from src.models.stock import StockState
+from src.models.stock import DEFAULT_SOURCE_STOCK_TTL_SEC, StockState
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "live"
 SITEMAP_FIXTURE = FIXTURE_DIR / "on_running_sitemap.xml"
@@ -715,6 +716,46 @@ async def test_source_stock_in_stock_wired(bus, kream_db):
     assert cand.source_stock.state == StockState.IN_STOCK
     assert set(cand.available_sizes) == {"250", "260"}  # 255 는 stock 0 라 제외
     assert cand.source_stock.evidence_method == "on_nuxt_data"
+
+
+async def test_source_stock_stale_observed_at_unknown_held(bus, kream_db):
+    """1c-5 F5: PDP fetch 시각(observed_at)이 오래되면(TTL 초과) match 시점에
+    IN_STOCK 승격 대신 UNKNOWN(reason=stale_observation) 보류해야 한다.
+
+    dump 가 전 PDP 를 수집한 뒤 match 단계에서 일괄 처리될 때, 초기에 fetch 한
+    PDP 의 오래된 재고를 매칭 시점 기준으로 재유효화하면 안 된다.
+    """
+    url = "https://www.on.com/ko-kr/products/cloud-6-m-3mf1007/mens/black-shoes-3MF10071043"
+    size_stock = {
+        "3MF10071043": [SizeStock(size="270", stock=5)],
+    }
+    fake = _FakeOnHttp(
+        urls=[url],
+        pdp_map={
+            url: _mk_pdp(
+                "남성 Cloud 6", "On",
+                [_mk_variant("3MF10071043", "Black | Black", 199000, True, url)],
+                size_stock=size_stock,
+            ),
+        },
+    )
+    adapter = OnRunningAdapter(bus=bus, db_path=kream_db, http_client=fake)
+    _, variants = await adapter.dump_catalog()
+    assert variants, "덤프 결과가 있어야 함"
+    # PDP fetch 시각을 TTL 초과 과거로 조작 (오래된 관측 시뮬레이션)
+    for v in variants:
+        v["observed_at"] = time.time() - (DEFAULT_SOURCE_STOCK_TTL_SEC + 120)
+
+    matches, stats = await adapter.match_to_kream(variants)
+
+    assert stats.matched == 1, "drop 아님 — 보류 발행"
+    assert stats.unknown_held == 1
+    assert stats.soldout_dropped == 0
+    cand = matches[0]
+    assert cand.source_stock is not None
+    assert cand.source_stock.state == StockState.UNKNOWN
+    assert cand.source_stock.reason_code == "stale_observation"
+    assert cand.available_sizes == ()
 
 
 async def test_source_stock_all_zero_drop(bus, kream_db):

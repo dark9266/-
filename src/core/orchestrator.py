@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -46,12 +47,33 @@ from src.core.event_bus import (
     EventBus,
     ProfitFound,
 )
+from src.models.stock import DEFAULT_SOURCE_STOCK_TTL_SEC, SourceStockSnapshot, StockState
 
 logger = logging.getLogger(__name__)
 
 
+class VerificationPending:
+    """1c-5 F1 — 보류(verification_pending) sentinel 마커 타입.
+
+    `CandidateHandler` 가 소싱처 재고 미검증/만료로 보류할 때 `None`(=drop) 과
+    구분하기 위해 반환한다. `None` 은 orchestrator 의 dedup 테이블에 기록되어
+    6h 동안 재진입을 차단하지만, 보류는 다음 사이클 재검증이 가능해야 하므로
+    dedup 기록을 남기지 않는다 (CLAUDE.md INVARIANT: 보류≠drop).
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover — 진단 편의
+        return "CANDIDATE_VERIFICATION_PENDING"
+
+
+CANDIDATE_VERIFICATION_PENDING = VerificationPending()
+
+
 CatalogHandler = Callable[[CatalogDumped], AsyncIterator[CandidateMatched]]
-CandidateHandler = Callable[[CandidateMatched], Awaitable[ProfitFound | None]]
+CandidateHandler = Callable[
+    [CandidateMatched], Awaitable[ProfitFound | VerificationPending | None]
+]
 ProfitHandler = Callable[[ProfitFound], Awaitable[AlertSent | None]]
 
 
@@ -173,6 +195,10 @@ REASON_DEDUP_CHECKPOINT = "dedup_checkpoint"
 REASON_DEDUP_RECENT = "dedup_recent"
 REASON_PREFILTER_UNPROFITABLE = "prefilter_unprofitable"
 REASON_PREFILTER_LOW_VOLUME = "prefilter_low_volume"
+# 1c-5 F1 — 소싱처 재고 미검증/만료 보류. drop 과 달리 dedup 미기록.
+REASON_VERIFICATION_PENDING = "verification_pending"
+# 1c-5 F2 — 재생(recover)된 ProfitFound 의 소싱 증거가 만료됨. 알림 미발송.
+REASON_SOURCE_STOCK_EXPIRED = "source_stock_expired"
 
 # Pre-filter KREAM 가격 상승 여유 — 마지막 관측 sell_now_price 가 이만큼
 # 상승해도 min_profit 미달이면 차단. 일반 변동성(±20%) 고려.
@@ -223,8 +249,10 @@ class Orchestrator:
             "candidate_dedup_skipped": 0,
             "candidate_prefilter_blocked": 0,
             "candidate_prefilter_low_volume": 0,
+            "candidate_verification_pending": 0,
             "profit_processed": 0,
             "profit_failed": 0,
+            "profit_source_stock_expired": 0,
             "alert_duplicated": 0,
         }
 
@@ -593,7 +621,9 @@ class Orchestrator:
         # 초과분은 stale 처리하여 다음 어댑터 사이클에서 자연 재생성한다.
         candidate_replayed = 0
         candidate_stale = 0
-        async for ckpt_id, event in self._checkpoints.replay(_CONSUMER_CANDIDATE):
+        async for ckpt_id, event, created_at in self._checkpoints.replay_with_created_at(
+            _CONSUMER_CANDIDATE
+        ):
             if candidate_replayed >= self._recover_candidate_cap:
                 await self._checkpoints.mark_failed(ckpt_id, "recover_cap")
                 candidate_stale += 1
@@ -606,6 +636,7 @@ class Orchestrator:
                 )
                 continue
             assert isinstance(event, CandidateMatched)
+            event = self._promote_legacy_replay_stock(event, created_at)
             await self._process_candidate(event, ckpt_id)
             candidate_replayed += 1
         if candidate_stale:
@@ -634,6 +665,32 @@ class Orchestrator:
             "running": self._running,
             "throttle": self._throttle.stats(),
         }
+
+    def _promote_legacy_replay_stock(
+        self, event: CandidateMatched, created_at: float
+    ) -> CandidateMatched:
+        """1c-5 F4 — 재생 레거시 승격의 관측시각 정직화.
+
+        체크포인트 재생 candidate 가 `source_stock=None` + `available_sizes`
+        있는 레거시 형태면, recover 시각(`now()`)이 아니라 **체크포인트 기록
+        시각**(`created_at`)을 관측시각으로 삼아 승격한다. `now()` 를 쓰면
+        수시간 전 소싱처 관측이 방금 확인된 것처럼 신선 둔갑해 stale 재고로
+        크림 호출/거짓 알림이 나갈 수 있다 — created_at 기준이면 게이트의
+        신선도 판정이 자연스럽게 결정한다(오래됐으면 만료→보류).
+
+        `source_stock` 이 이미 있거나 `available_sizes` 가 비어있으면 그대로
+        반환(승격 대상 아님).
+        """
+        if event.source_stock is not None or not event.available_sizes:
+            return event
+        promoted = SourceStockSnapshot(
+            state=StockState.IN_STOCK,
+            available_sizes=tuple(event.available_sizes),
+            observed_at=created_at,
+            expires_at=created_at + DEFAULT_SOURCE_STOCK_TTL_SEC,
+            evidence_method="legacy_available_sizes_replay",
+        )
+        return dataclasses.replace(event, source_stock=promoted)
 
     # ------------------------------------------------------------------
     # 체크포인트 헬퍼
@@ -801,7 +858,7 @@ class Orchestrator:
         # 기록 → 15 소싱처 커버리지 갭. 여기로 옮겨 단일 choke point.
         await self._persist_retail_product(event)
 
-        result: ProfitFound | None = None
+        result: ProfitFound | VerificationPending | None = None
         _t_handler_start = time.perf_counter()
         try:
             result = await handler(event)
@@ -828,7 +885,23 @@ class Orchestrator:
             event.source, event.kream_product_id, _t_throttle, _t_handler,
             cache_hit, result is not None,
         )
-        # handler 성공 — dedup 기록 (예외/deferred 경로는 미기록 → replay 허용)
+
+        # 1c-5 F1: 보류(verification_pending) 는 drop 이 아니다 — dedup
+        # 미기록으로 다음 사이클(같은 pid/price 라도) 즉시 재검증 가능하게
+        # 남긴다. 체크포인트만 소비(mark_consumed)하고 profit 단계로 넘기지
+        # 않는다.
+        if result is CANDIDATE_VERIFICATION_PENDING:
+            self._stats["candidate_verification_pending"] += 1
+            await self.log_decision(
+                "candidate", DECISION_BLOCK, REASON_VERIFICATION_PENDING,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
+            await self._mark(ckpt_id)
+            return
+
+        # handler 성공 — dedup 기록 (예외/deferred/보류 경로는 미기록 → replay 허용)
         await self._record_dedup(
             event, "profit" if result is not None else "no_profit"
         )
@@ -846,6 +919,33 @@ class Orchestrator:
     async def _process_profit(
         self, event: ProfitFound, ckpt_id: int | None
     ) -> None:
+        # 1c-5 F2 — 재생(recover) 시 소싱 증거 만료 차단. 알림 발송 직전
+        # 크래시 → recover 가 수시간 뒤 이 이벤트를 다시 처리할 수 있는데,
+        # 그 사이 소싱처 재고가 stale 해졌을 수 있다(수시간 뒤 stale 재고
+        # 알림 방지). 0.0 = 게이트 면제(kream_delta 등 만료 제약 없는 소스).
+        expires_at = event.source_stock_expires_at
+        if expires_at > 0.0 and expires_at < time.time():
+            self._stats["profit_source_stock_expired"] += 1
+            logger.info(
+                "[profit] source_stock 만료 — 알림 보류: pid=%s expires_at=%.0f",
+                event.kream_product_id, expires_at,
+            )
+            await self.log_decision(
+                "profit", DECISION_BLOCK, REASON_SOURCE_STOCK_EXPIRED,
+                source=event.source,
+                kream_product_id=event.kream_product_id,
+                model_no=event.model_no,
+            )
+            if ckpt_id is not None:
+                try:
+                    await self._checkpoints.mark_failed(ckpt_id, REASON_SOURCE_STOCK_EXPIRED)
+                except Exception:
+                    logger.exception(
+                        "checkpoint mark_failed 실패: id=%s reason=%s",
+                        ckpt_id, REASON_SOURCE_STOCK_EXPIRED,
+                    )
+            return
+
         handler = self._profit_handler
         if handler is None:
             logger.warning("profit handler 미등록 — 이벤트 drop")
@@ -1063,4 +1163,4 @@ class Orchestrator:
             await self._process_profit(event, ckpt_id)
 
 
-__all__ = ["Orchestrator"]
+__all__ = ["CANDIDATE_VERIFICATION_PENDING", "Orchestrator"]

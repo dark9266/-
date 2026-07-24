@@ -173,6 +173,11 @@ class OnRunningAdapter:
             except Exception:
                 logger.exception("[on] PDP 호출 예외: %s", url)
                 pdp = None
+            # 1c-5 F5: 사이즈 재고 관측시각 = 이 PDP 를 실제로 fetch 한 시각.
+            # match_to_kream 은 전 상품 덤프 완료 후 일괄 실행되므로, 거기서
+            # `now()` 를 관측시각으로 쓰면 초기에 fetch 한 PDP 의 오래된
+            # 재고가 매칭 시점 기준 30분 재유효로 둔갑한다.
+            fetch_observed_at = time.time()
             if pdp is None:
                 stats_pdp_failed += 1
                 continue
@@ -201,6 +206,7 @@ class OnRunningAdapter:
                     "available": v.in_stock,
                     "size_stock": size_stock_map.get(v.sku),
                     "size_stock_map_size": len(size_stock_map),
+                    "observed_at": fetch_observed_at,
                 })
 
         event = CatalogDumped(
@@ -342,7 +348,12 @@ class OnRunningAdapter:
             # - __NUXT_DATA__ 전체 파싱 실패(map 비어있음) → UNKNOWN/parse_fail.
             # - map 은 있는데 이 컬러 SKU 만 못 찾음 → UNKNOWN/color_not_found.
             # 두 UNKNOWN 케이스 모두 drop 아님 — runtime 게이트가 검증 보류.
-            now = time.time()
+            # 1c-5 F5: 관측시각 = PDP fetch 시각(dump_catalog 이 기록). 미주입
+            # (하위호환) 시에는 match 시각으로 폴백.
+            match_time = time.time()
+            fetch_time = item.get("observed_at")
+            if fetch_time is None:
+                fetch_time = match_time
             color_sizes: list[SizeStock] | None = item.get("size_stock")
             source_stock: SourceStockSnapshot | None
             available_sizes: tuple[str, ...]
@@ -357,14 +368,37 @@ class OnRunningAdapter:
                     )
                     stats.soldout_dropped += 1
                     continue
-                available_sizes = in_stock_sizes
-                source_stock = SourceStockSnapshot(
-                    state=StockState.IN_STOCK,
-                    available_sizes=in_stock_sizes,
-                    observed_at=now,
-                    expires_at=now + DEFAULT_SOURCE_STOCK_TTL_SEC,
-                    evidence_method="on_nuxt_data",
-                )
+                expires_at = fetch_time + DEFAULT_SOURCE_STOCK_TTL_SEC
+                if expires_at <= match_time:
+                    # fetch 시각 기준 이미 만료 — 매칭이 fetch 보다 한참
+                    # 늦어 재고가 stale 해졌을 위험. IN_STOCK 승격 대신
+                    # UNKNOWN 보류 (거짓 알림 방지).
+                    logger.info(
+                        "[on] 관측시각 만료 — UNKNOWN 보류: sku=%s model=%s "
+                        "observed_at=%.0f",
+                        sku_raw,
+                        normalized,
+                        fetch_time,
+                    )
+                    stats.unknown_held += 1
+                    available_sizes = ()
+                    source_stock = SourceStockSnapshot(
+                        state=StockState.UNKNOWN,
+                        available_sizes=(),
+                        observed_at=fetch_time,
+                        expires_at=expires_at,
+                        evidence_method="on_nuxt_data",
+                        reason_code="stale_observation",
+                    )
+                else:
+                    available_sizes = in_stock_sizes
+                    source_stock = SourceStockSnapshot(
+                        state=StockState.IN_STOCK,
+                        available_sizes=in_stock_sizes,
+                        observed_at=fetch_time,
+                        expires_at=expires_at,
+                        evidence_method="on_nuxt_data",
+                    )
             else:
                 reason = (
                     "color_not_found" if item.get("size_stock_map_size", 0) > 0 else "parse_fail"
@@ -374,8 +408,8 @@ class OnRunningAdapter:
                 source_stock = SourceStockSnapshot(
                     state=StockState.UNKNOWN,
                     available_sizes=(),
-                    observed_at=now,
-                    expires_at=now + DEFAULT_SOURCE_STOCK_TTL_SEC,
+                    observed_at=fetch_time,
+                    expires_at=fetch_time + DEFAULT_SOURCE_STOCK_TTL_SEC,
                     evidence_method="on_nuxt_data",
                     reason_code=reason,
                 )

@@ -64,7 +64,11 @@ from src.core.event_bus import (
     EventBus,
     ProfitFound,
 )
-from src.core.orchestrator import Orchestrator
+from src.core.orchestrator import (
+    CANDIDATE_VERIFICATION_PENDING,
+    Orchestrator,
+    VerificationPending,
+)
 from src.core.v3_alert_logger import V3AlertLogger, build_profit_handler
 from src.core.v3_discord_publisher import V3DiscordPublisher, wrap_handler
 from src.models.product import Signal
@@ -264,13 +268,15 @@ class V3Runtime:
     # ------------------------------------------------------------------
     def _build_candidate_handler(
         self,
-    ) -> Callable[[CandidateMatched], Awaitable[ProfitFound | None]]:
+    ) -> Callable[[CandidateMatched], Awaitable[ProfitFound | VerificationPending | None]]:
         snapshot_fn = self._kream_snapshot_fn
         min_profit = self._min_profit
         min_roi = self._min_roi
         min_volume_7d = self._min_volume_7d
 
-        async def _handler(event: CandidateMatched) -> ProfitFound | None:
+        async def _handler(
+            event: CandidateMatched,
+        ) -> ProfitFound | VerificationPending | None:
             # kream_hot 어댑터 발 이벤트는 이미 크림 sell_now 가 retail_price
             # 슬롯에 실려 있음(설계상). 소싱처 발(무신사 등)은 retail_price 가
             # 실제 소싱처 가격이므로 별도 조회 필요.
@@ -293,8 +299,11 @@ class V3Runtime:
                 effective_stock = event.source_stock
                 if effective_stock is None and event.available_sizes:
                     # 레거시 과도기 승격 — 라이브 이벤트는 어댑터가 방금 관측한
-                    # 것(in-flight 승격 안전). 체크포인트 재생은 candidate 를
-                    # 재생하지 않으므로 stale 위험 없음.
+                    # 것(in-flight 승격 안전). 체크포인트 재생은 (1c-5 F4 이전
+                    # 주석의 "candidate 를 재생하지 않는다"는 서술은 오류였다 —
+                    # 실제로는 재생됨. recover 경로(orchestrator.recover)가
+                    # created_at 기준 승격으로 방어하므로 여기(in-flight, live
+                    # 발행 전용)는 now() 를 그대로 써도 안전하다.
                     effective_stock = SourceStockSnapshot(
                         state=StockState.IN_STOCK,
                         available_sizes=tuple(event.available_sizes),
@@ -321,7 +330,10 @@ class V3Runtime:
                         event.source,
                         reason,
                     )
-                    return None
+                    # 1c-5 F1: 보류는 drop 이 아니다 — sentinel 로 명시 반환해
+                    # orchestrator 가 dedup 기록 없이 다음 사이클 재검증을
+                    # 허용하게 한다 (None 이면 6h dedup 에 걸려 사실상 drop).
+                    return CANDIDATE_VERIFICATION_PENDING
 
                 if effective_stock.state == StockState.OUT_OF_STOCK:
                     logger.info(
@@ -341,7 +353,7 @@ class V3Runtime:
                         event.source,
                         "empty_sizes",
                     )
-                    return None
+                    return CANDIDATE_VERIFICATION_PENDING
 
             if snapshot_fn is None:
                 logger.debug(
@@ -511,6 +523,11 @@ class V3Runtime:
                 color_name=event.color_name,
                 catch_applied=catch_price.catch_applied,
                 original_retail=event.retail_price if catch_price.catch_applied else None,
+                # 1c-5 F2 — 이 기회를 뒷받침한 소싱 증거의 만료 시각. 게이트
+                # 면제 소스(kream_delta 등 effective_stock=None)는 0.0 유지.
+                source_stock_expires_at=(
+                    effective_stock.expires_at if effective_stock is not None else 0.0
+                ),
             )
 
         return _handler

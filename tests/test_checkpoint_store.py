@@ -13,6 +13,7 @@ from src.core.event_bus import (
     CatalogDumped,
     ProfitFound,
 )
+from src.models.stock import SourceStockSnapshot, StockState
 
 
 @pytest.fixture
@@ -75,6 +76,111 @@ async def test_replay_round_trip(store):
     assert len(replayed) == 2
     assert replayed[0] == (id1, e1)
     assert replayed[1] == (id2, e2)
+
+
+async def test_replay_round_trip_restores_source_stock_snapshot(store):
+    """1c-5 F3: CandidateMatched.source_stock(nested dataclass) 라운드트립.
+
+    asdict→JSON 왕복 후 plain dict 로 남는 걸 그대로 두면 게이트가 `.state`
+    접근 시 AttributeError — replay 가 SourceStockSnapshot 인스턴스로 복원
+    해야 한다.
+    """
+    snapshot = SourceStockSnapshot(
+        state=StockState.IN_STOCK,
+        available_sizes=("270", "280"),
+        observed_at=111.0,
+        expires_at=222.0,
+        evidence_method="on_nuxt_data",
+        reason_code="",
+    )
+    e = CandidateMatched(
+        source="on_running",
+        kream_product_id=448252,
+        model_no="3MF10071043",
+        retail_price=199000,
+        size="",
+        url="https://www.on.com/x",
+        available_sizes=("270", "280"),
+        source_stock=snapshot,
+    )
+    ckpt_id = await store.record(e, consumer="candidate")
+
+    replayed = [(cid, ev) async for cid, ev in store.replay("candidate")]
+    assert len(replayed) == 1
+    got_id, got_event = replayed[0]
+    assert got_id == ckpt_id
+    assert isinstance(got_event.source_stock, SourceStockSnapshot)
+    assert got_event.source_stock.state is StockState.IN_STOCK
+    assert isinstance(got_event.source_stock.state, StockState)
+    assert got_event.source_stock.available_sizes == ("270", "280")
+    assert isinstance(got_event.source_stock.available_sizes, tuple)
+    assert got_event.source_stock.observed_at == 111.0
+    assert got_event.source_stock.expires_at == 222.0
+    assert got_event.source_stock.evidence_method == "on_nuxt_data"
+
+    # 게이트가 실제로 참조하는 usable()/.state 접근이 예외 없이 동작해야 함
+    assert got_event.source_stock.usable(200.0) is True
+    assert got_event.source_stock.usable(300.0) is False  # 만료 후
+
+
+async def test_replay_round_trip_source_stock_none_stays_none(store):
+    """source_stock=None(하위호환/미검증) 인 경우 그대로 None 복원."""
+    e = CandidateMatched(
+        source="musinsa",
+        kream_product_id=101,
+        model_no="CW2288-111",
+        retail_price=120000,
+        size="270",
+        url="https://www.musinsa.com/products/1",
+    )
+    await store.record(e, consumer="candidate2")
+    replayed = [(cid, ev) async for cid, ev in store.replay("candidate2")]
+    assert len(replayed) == 1
+    assert replayed[0][1].source_stock is None
+
+
+async def test_replay_with_created_at_includes_created_at(store):
+    """1c-5 F4: `replay_with_created_at` 은 기존 `replay` 와 별도로 created_at 을 포함."""
+    e = CatalogDumped(source="on_running", product_count=1, dumped_at=1.0)
+    before = time.time()
+    ckpt_id = await store.record(e, consumer="c_created_at")
+    after = time.time()
+
+    items = [
+        (cid, ev, created_at)
+        async for cid, ev, created_at in store.replay_with_created_at("c_created_at")
+    ]
+    assert len(items) == 1
+    got_id, got_event, created_at = items[0]
+    assert got_id == ckpt_id
+    assert got_event == e
+    assert before <= created_at <= after
+
+    # 기존 `replay()` 는 여전히 2-tuple — 호출자 호환 유지
+    plain = [(cid, ev) async for cid, ev in store.replay("c_created_at")]
+    assert plain == [(ckpt_id, e)]
+
+
+async def test_profit_found_source_stock_expires_at_round_trip(store):
+    """1c-5 F2: ProfitFound.source_stock_expires_at(신규 float 필드) 라운드트립."""
+    e = ProfitFound(
+        source="on_running",
+        kream_product_id=448252,
+        model_no="3MF10071043",
+        size="270",
+        retail_price=199000,
+        kream_sell_price=280000,
+        net_profit=40000,
+        roi=0.2,
+        signal="매수",
+        volume_7d=5,
+        url="https://www.on.com/x",
+        source_stock_expires_at=1234.5,
+    )
+    await store.record(e, consumer="profit_expiry")
+    replayed = [ev async for _cid, ev in store.replay("profit_expiry")]
+    assert len(replayed) == 1
+    assert replayed[0].source_stock_expires_at == 1234.5
 
 
 async def test_mark_consumed_excludes_from_pending(store):

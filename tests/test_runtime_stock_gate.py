@@ -2,8 +2,10 @@
 
 `make_candidate_handler()` 의 `_handler` 가 `snapshot_fn`(크림 live GET) 호출
 **전에** 소싱처 재고 상태(`SourceStockSnapshot`)를 게이트해야 한다.
-- UNKNOWN/만료 → 크림 호출 금지 + 알림 금지, verification_pending 보류 로그.
-- OUT_OF_STOCK → drop (품절 확정).
+- UNKNOWN/만료 → 크림 호출 금지 + 알림 금지, verification_pending 보류 로그 +
+  `CANDIDATE_VERIFICATION_PENDING` sentinel 반환 (1c-5 F1 — drop 과 구분되어
+  orchestrator dedup 미기록).
+- OUT_OF_STOCK → drop (`None`, 품절 확정 — dedup 대상).
 - IN_STOCK + 신선 + 사이즈 있음 → 통과, 크림 호출 진행.
 - 레거시(`source_stock=None` + `available_sizes` 비어있지 않음) → IN_STOCK 승격.
 - `kream_delta` 소스는 게이트 면제.
@@ -17,6 +19,7 @@ import sqlite3
 import time
 
 from src.core.event_bus import CandidateMatched
+from src.core.orchestrator import CANDIDATE_VERIFICATION_PENDING
 from src.core.runtime import V3Runtime
 from src.models.stock import SourceStockSnapshot, StockState
 
@@ -107,7 +110,7 @@ async def test_unverified_candidate_blocks_kream_call(tmp_path, caplog):
     with caplog.at_level("INFO", logger="src.core.runtime"):
         result = await handler(cand)
 
-    assert result is None
+    assert result is CANDIDATE_VERIFICATION_PENDING
     assert calls == [], "미검증 후보는 크림 호출 금지"
     assert any("verification_pending" in r.message for r in caplog.records)
 
@@ -143,7 +146,7 @@ async def test_unknown_state_blocks_kream_call(tmp_path, caplog):
     with caplog.at_level("INFO", logger="src.core.runtime"):
         result = await handler(cand)
 
-    assert result is None
+    assert result is CANDIDATE_VERIFICATION_PENDING
     assert calls == []
     assert any("verification_pending" in r.message for r in caplog.records)
     assert any("api_400" in r.message for r in caplog.records)
@@ -179,7 +182,7 @@ async def test_expired_in_stock_snapshot_blocks_kream_call(tmp_path, caplog):
     with caplog.at_level("INFO", logger="src.core.runtime"):
         result = await handler(cand)
 
-    assert result is None
+    assert result is CANDIDATE_VERIFICATION_PENDING
     assert calls == []
     assert any("verification_pending" in r.message for r in caplog.records)
 

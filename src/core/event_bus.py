@@ -73,6 +73,11 @@ class ProfitFound(Event):
     `size_profits` 는 사이즈별 {size, kream_sell_price, net_profit, roi} tuple.
     kream_delta_client 이 size_prices 전체를 보존해 알림에서 사이즈별 수익표를
     그릴 수 있게 한다. 비어 있으면 publisher 는 단일 요약만 렌더.
+
+    `source_stock_expires_at` 은 1c-5 F2 — 이 기회를 뒷받침한 소싱처 재고 증거의
+    만료 시각(epoch). `0.0` = 게이트 면제(만료 제약 없음, 예: kream_delta 소스).
+    체크포인트 재생(recover) 시 이 값이 과거면 알림 직전 크래시 후 수시간 뒤
+    stale 재고로 재생 발화하는 것을 orchestrator 가 차단한다.
     """
 
     source: str
@@ -91,6 +96,7 @@ class ProfitFound(Event):
     # Phase 1.5 — Chrome 확장 catch 적용 흔적
     catch_applied: bool = False
     original_retail: int | None = None
+    source_stock_expires_at: float = 0.0
 
 
 @dataclass(frozen=True)
