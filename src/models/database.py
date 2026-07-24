@@ -325,6 +325,7 @@ class Database:
             pass
 
         await self.migrate_volume_attempt_columns()
+        await self.migrate_collect_queue_columns()
 
         await self.db.commit()
         logger.info("실시간 DB 마이그레이션 완료")
@@ -359,6 +360,39 @@ class Database:
             await self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_next_volume_attempt "
                 "ON kream_products(next_volume_attempt_at)"
+            )
+        except Exception:
+            pass
+
+    async def migrate_collect_queue_columns(self) -> None:
+        """collect_queue 드레인 배치 컬럼 추가 (조각 2-2, 멱등).
+
+        기존 22.8k 행 보존 — `PRAGMA table_info` 로 존재 여부 확인 후 없는
+        컬럼만 ALTER TABLE (`migrate_volume_attempt_columns`와 동일 패턴).
+        """
+        cursor = await self.db.execute("PRAGMA table_info(kream_collect_queue)")
+        existing = {row["name"] for row in await cursor.fetchall()}
+
+        column_ddls = {
+            "canonical_model_key": "TEXT",
+            "next_search_at": "TEXT",
+            "dormant": "INTEGER DEFAULT 0",
+            "last_search_at": "TEXT",
+        }
+        for column, ddl in column_ddls.items():
+            if column in existing:
+                continue
+            try:
+                await self.db.execute(
+                    f"ALTER TABLE kream_collect_queue ADD COLUMN {column} {ddl}"
+                )
+            except Exception:
+                pass  # 동시 마이그레이션 경합 등 — 존재하면 무시
+
+        try:
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_collect_queue_next_search "
+                "ON kream_collect_queue(dormant, next_search_at)"
             )
         except Exception:
             pass
