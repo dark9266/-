@@ -554,6 +554,224 @@ async def test_dry_run_reflects_kream_usage(db, monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 9. 조각 2-3 — 성공 2종 → next_volume_check_at 기록 / retryable 은 미기록(축 분리)
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_state_success_positive_records_next_volume_check_at(db):
+    await _insert_kream_product(db, "P1")
+    result = boot.ClassifyResult(boot.SUCCESS_POSITIVE, volume_7d=2, volume_30d=5)
+    await boot._apply_state(db, "P1", result)
+
+    row = await _get_row(db, "P1")
+    assert row["next_volume_check_at"] is not None
+
+    cursor = await db.execute(
+        "SELECT julianday(next_volume_check_at) - julianday('now') AS days_out "
+        "FROM kream_products WHERE product_id = 'P1'"
+    )
+    days_out = (await cursor.fetchone())["days_out"]
+    assert 6 <= days_out <= 8  # volume 1~4 -> 7일 ±10%
+
+
+async def test_apply_state_success_zero_records_next_volume_check_at_30_days(db):
+    await _insert_kream_product(db, "P1")
+    result = boot.ClassifyResult(boot.SUCCESS_ZERO, volume_7d=0, volume_30d=0)
+    await boot._apply_state(db, "P1", result)
+
+    cursor = await db.execute(
+        "SELECT julianday(next_volume_check_at) - julianday('now') AS days_out "
+        "FROM kream_products WHERE product_id = 'P1'"
+    )
+    days_out = (await cursor.fetchone())["days_out"]
+    assert 27 <= days_out <= 33  # volume 0 + retail matched(부트스트랩 대상 전제) -> 30일 ±10%
+
+
+async def test_apply_state_retryable_does_not_touch_next_volume_check_at(db):
+    """축 분리 — retryable 은 next_volume_attempt_at 만, next_volume_check_at 은 안 건드림."""
+    await _insert_kream_product(db, "P1")
+    result = boot.ClassifyResult(boot.RETRYABLE, error="parse_fail")
+    await boot._apply_state(db, "P1", result)
+
+    row = await _get_row(db, "P1")
+    assert row["next_volume_check_at"] is None
+    assert row["next_volume_attempt_at"] is not None
+
+
+async def test_apply_state_success_with_none_volume_records_unknown_tier(db):
+    """방어적 케이스 — volume_7d=None 이면 'cold' 아니라 'unknown' 기록(2-1r Minor, 2-3 이관)."""
+    await _insert_kream_product(db, "P1")
+    result = boot.ClassifyResult(boot.SUCCESS_ZERO, volume_7d=None, volume_30d=None)
+    await boot._apply_state(db, "P1", result)
+
+    row = await _get_row(db, "P1")
+    assert row["refresh_tier"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# 10. 조각 2-3 — retry_backoff 매트릭스로 대체 (2-1 임시 6h 고정 제거)
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_state_retryable_first_attempt_uses_six_hour_backoff(db):
+    await _insert_kream_product(db, "P1", volume_attempt_count=0)
+    result = boot.ClassifyResult(boot.RETRYABLE, error="timeout")
+    await boot._apply_state(db, "P1", result)
+
+    cursor = await db.execute(
+        "SELECT (julianday(next_volume_attempt_at) - julianday('now')) * 24 AS hours_out "
+        "FROM kream_products WHERE product_id = 'P1'"
+    )
+    hours_out = (await cursor.fetchone())["hours_out"]
+    assert 5 <= hours_out <= 7  # 1회차 -> 6시간
+
+
+async def test_apply_state_retryable_second_attempt_uses_24_hour_backoff(db):
+    await _insert_kream_product(db, "P1", volume_attempt_count=1)
+    result = boot.ClassifyResult(boot.RETRYABLE, error="timeout")
+    await boot._apply_state(db, "P1", result)
+
+    cursor = await db.execute(
+        "SELECT (julianday(next_volume_attempt_at) - julianday('now')) * 24 AS hours_out "
+        "FROM kream_products WHERE product_id = 'P1'"
+    )
+    hours_out = (await cursor.fetchone())["hours_out"]
+    assert 23 <= hours_out <= 25  # 2회차 -> 24시간
+
+
+async def test_apply_state_retryable_third_attempt_uses_seven_day_backoff(db):
+    await _insert_kream_product(db, "P1", volume_attempt_count=2)
+    result = boot.ClassifyResult(boot.RETRYABLE, error="timeout")
+    await boot._apply_state(db, "P1", result)
+
+    cursor = await db.execute(
+        "SELECT julianday(next_volume_attempt_at) - julianday('now') AS days_out "
+        "FROM kream_products WHERE product_id = 'P1'"
+    )
+    days_out = (await cursor.fetchone())["days_out"]
+    assert 6 <= days_out <= 8  # 3회차 이상 -> 7일
+
+
+def test_script_has_no_hardcoded_retryable_backoff_hours_constant():
+    """2-1 임시값(RETRYABLE_BACKOFF_HOURS=6 고정)이 retry_backoff() 매트릭스로 대체됐는지 확인."""
+    assert not hasattr(boot, "RETRYABLE_BACKOFF_HOURS")
+
+
+# ---------------------------------------------------------------------------
+# 11. 조각 2-3 — fetch_targets(mode="recheck") : due 선별 + ASC 정렬
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_targets_recheck_excludes_future_due(db):
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = datetime('now', '+1 day') "
+        "WHERE product_id = 'P1'"
+    )
+    await db.execute(
+        "INSERT INTO retail_products (source, product_id, name, model_number) "
+        "VALUES ('musinsa', 'r1', 'x', 'M1')"
+    )
+    await db.commit()
+
+    rows = await boot.fetch_targets(db, mode="recheck")
+    assert rows == []
+
+
+async def test_fetch_targets_recheck_includes_due_and_null_check_excluded(db):
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await _insert_kream_product(db, "P2", model_number="M2")
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = datetime('now', '-1 hour') "
+        "WHERE product_id = 'P1'"
+    )
+    # P2 는 next_volume_check_at 미설정(NULL) — 아직 한 번도 성공 확인 안 된 상태,
+    # 부트스트랩 대상이지 recheck 대상은 아님.
+    for pid, model in (("P1", "M1"), ("P2", "M2")):
+        await db.execute(
+            "INSERT INTO retail_products (source, product_id, name, model_number) "
+            "VALUES ('musinsa', ?, 'x', ?)",
+            (pid, model),
+        )
+    await db.commit()
+
+    rows = await boot.fetch_targets(db, mode="recheck")
+    assert [r["product_id"] for r in rows] == ["P1"]
+
+
+async def test_fetch_targets_recheck_sorted_next_volume_check_at_asc(db):
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await _insert_kream_product(db, "P2", model_number="M2")
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = datetime('now', '-1 hour') "
+        "WHERE product_id = 'P1'"
+    )
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = datetime('now', '-2 hour') "
+        "WHERE product_id = 'P2'"
+    )
+    for pid, model in (("P1", "M1"), ("P2", "M2")):
+        await db.execute(
+            "INSERT INTO retail_products (source, product_id, name, model_number) "
+            "VALUES ('musinsa', ?, 'x', ?)",
+            (pid, model),
+        )
+    await db.commit()
+
+    rows = await boot.fetch_targets(db, mode="recheck")
+    # P2 가 더 이전(더 오래 대기) -> ASC 정렬 시 먼저
+    assert [r["product_id"] for r in rows] == ["P2", "P1"]
+
+
+async def test_fetch_targets_recheck_source_filter_still_works(db):
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await _insert_kream_product(db, "P2", model_number="M2")
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = datetime('now', '-1 hour')"
+    )
+    await db.execute(
+        "INSERT INTO retail_products (source, product_id, name, model_number) "
+        "VALUES ('musinsa', 'r1', 'x', 'M1')"
+    )
+    await db.execute(
+        "INSERT INTO retail_products (source, product_id, name, model_number) "
+        "VALUES ('nike', 'r2', 'x', 'M2')"
+    )
+    await db.commit()
+
+    rows = await boot.fetch_targets(db, sources=("nike",), mode="recheck")
+    assert [r["product_id"] for r in rows] == ["P2"]
+
+
+async def test_run_batch_recheck_mode_reuses_lease_and_budget_wiring(
+    db, spy_pacer, monkeypatch
+):
+    """--mode recheck 도 같은 lease/2-0 배선을 그대로 탄다 — 코드 중복 없음 확인."""
+    await _insert_kream_product(db, "P1", model_number="M1")
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = datetime('now', '-1 hour') "
+        "WHERE product_id = 'P1'"
+    )
+    await db.execute(
+        "INSERT INTO retail_products (source, product_id, name, model_number) "
+        "VALUES ('musinsa', 'r1', 'x', 'M1')"
+    )
+    await db.commit()
+
+    monkeypatch.setattr(
+        boot, "_fetch_screens_raw", AsyncMock(return_value=(200, _stats_result(1, 1)))
+    )
+    rows = await boot.fetch_targets(db, mode="recheck")
+    product_ids = [r["product_id"] for r in rows]
+
+    summary = await boot.run_batch(db, product_ids, owner="recheck-test")
+
+    assert summary.processed == 1
+    assert summary.counts[boot.SUCCESS_POSITIVE] == 1
+    assert spy_pacer.wait_turn_calls == 1
+
+
 def test_script_has_zero_kream_crawler_private_attribute_references():
     """`kream_crawler._xxx` / `kream_module._xxx` 참조가 스크립트에 0건이어야 한다.
 

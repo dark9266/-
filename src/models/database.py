@@ -326,6 +326,7 @@ class Database:
 
         await self.migrate_volume_attempt_columns()
         await self.migrate_collect_queue_columns()
+        await self.migrate_volume_check_schedule_columns()
 
         await self.db.commit()
         logger.info("실시간 DB 마이그레이션 완료")
@@ -360,6 +361,35 @@ class Database:
             await self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_next_volume_attempt "
                 "ON kream_products(next_volume_attempt_at)"
+            )
+        except Exception:
+            pass
+
+    async def migrate_volume_check_schedule_columns(self) -> None:
+        """cold 재검사 스케줄 컬럼 추가 (조각 2-3, 멱등).
+
+        `next_volume_attempt_at`(retryable/quarantined 재시도 축, 조각 2-1)과는
+        **별개 축**이다 — 혼동 금지. 이 컬럼(`next_volume_check_at`)은 성공
+        (success_positive/success_zero) 이후 "다음 정기 재검사"가 언제인지만
+        기록한다(`src.core.volume_tier.compute_next_volume_check_at` 이 계산).
+        `PRAGMA table_info` 존재-체크 후 없는 컬럼만 ALTER TABLE
+        (`migrate_volume_attempt_columns`와 동일 패턴).
+        """
+        cursor = await self.db.execute("PRAGMA table_info(kream_products)")
+        existing = {row["name"] for row in await cursor.fetchall()}
+
+        if "next_volume_check_at" not in existing:
+            try:
+                await self.db.execute(
+                    "ALTER TABLE kream_products ADD COLUMN next_volume_check_at TEXT"
+                )
+            except Exception:
+                pass  # 동시 마이그레이션 경합 등 — 존재하면 무시
+
+        try:
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_next_volume_check "
+                "ON kream_products(next_volume_check_at)"
             )
         except Exception:
             pass

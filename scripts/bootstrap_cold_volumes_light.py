@@ -14,6 +14,16 @@
        비공개). `last_volume_check` 는 성공 2종에서만 갱신 — 실패는 attempt
        계열 컬럼(`last_volume_attempt_at`/`volume_attempt_count`/
        `next_volume_attempt_at`/`last_volume_error`, 신설)만 갱신한다.
+    5. **cold 재검사 정책** (조각 2-3, `src.core.volume_tier`) — 성공 2종은
+       `next_volume_check_at`(다음 정기 재검사 시각, TTL 매트릭스 + 결정적
+       ±10% 지터)도 함께 기록한다. `next_volume_attempt_at`(retryable/
+       quarantined 재시도 축)과는 **별개 축** — 혼동 금지. retryable 백오프도
+       `retry_backoff(attempt_count)`(1회 6h/2회 24h/3회+ 7일)로 대체했다
+       (기존 `RETRYABLE_BACKOFF_HOURS=6` 고정값 제거).
+    6. **`--mode recheck`** — 기존 `--mode bootstrap`(기본, `last_volume_check
+       IS NULL`) 과 별개로, `next_volume_check_at <= now` 인 행(정기 재검사
+       마감 도래분)을 `next_volume_check_at ASC` 정렬로 대상 삼는다. lease·
+       상태모델·2-0 배선은 완전히 동일 — `fetch_targets(mode=...)` 만 분기.
     3. **chunk 원자 lease** (`volume_job_lease` 소테이블, kream_products 오염
        방지) — at-least-once + idempotent upsert 전제. 외부 GET 과 로컬
        commit 사이 exactly-once 는 불가능하므로, 같은 상품이 두 번 처리돼도
@@ -68,7 +78,11 @@ from src.core.kream_budget import (  # noqa: E402
     report_success,
 )
 from src.core.kream_pacer import JITTER_MAX_SEC, MIN_INTERVAL_SEC  # noqa: E402
-from src.core.volume_tier import tier_for_volume  # noqa: E402
+from src.core.volume_tier import (  # noqa: E402
+    compute_next_volume_check_at,
+    retry_backoff,
+    tier_for_volume,
+)
 from src.crawlers.kream import kream_crawler  # noqa: E402
 from src.models.database import Database  # noqa: E402
 
@@ -84,7 +98,10 @@ QUARANTINED = "quarantined"
 _QUARANTINE_STATUSES = frozenset({404, 410})
 _BLOCK_STATUSES = frozenset({403, 429})
 
-RETRYABLE_BACKOFF_HOURS = 6
+# 모드 2종 (조각 2-3): bootstrap = 미확인(최초) / recheck = 정기 재검사 마감 도래분
+MODE_BOOTSTRAP = "bootstrap"
+MODE_RECHECK = "recheck"
+
 QUARANTINE_DAYS = 90
 DEFAULT_LEASE_TTL_SECONDS = 300.0
 DEFAULT_CHUNK_SIZE = 50
@@ -103,26 +120,46 @@ SQL_TARGET_BASE = """
       AND (kp.next_volume_attempt_at IS NULL OR kp.next_volume_attempt_at <= datetime('now'))
 """
 
+# 조각 2-3 — 정기 재검사 대상(성공 이력 있음, next_volume_check_at 마감 도래분).
+# `last_volume_check IS NULL`(미확인, bootstrap 모드)과 겹치지 않는다 —
+# recheck 는 `next_volume_check_at` 이 채워진(=한 번 이상 성공 확인된) 행만 대상.
+SQL_TARGET_RECHECK = """
+    SELECT DISTINCT kp.product_id AS product_id,
+                     kp.model_number AS model_number,
+                     kp.volume_attempt_count AS volume_attempt_count
+    FROM retail_products rp
+    JOIN kream_products kp ON kp.model_number = rp.model_number
+    WHERE kp.model_number != ''
+      AND kp.next_volume_check_at IS NOT NULL
+      AND kp.next_volume_check_at <= datetime('now')
+"""
+
 
 async def fetch_targets(
     db: aiosqlite.Connection,
     *,
     sources: tuple[str, ...] | None = None,
     limit: int | None = None,
+    mode: str = MODE_BOOTSTRAP,
 ) -> list:
-    """부트스트랩 대상 조회 — retail-matched cold + 미확인/재시도 마감 도래분.
+    """대상 조회 — `mode` 에 따라 두 축 중 하나.
 
-    - `last_volume_check IS NULL` (한 번도 성공 확인 못 함)
-    - `next_volume_attempt_at` 이 없거나 이미 지남 (retryable 재시도 마감 포함,
-      quarantined 는 90일 뒤로 밀려 있어 자동 제외됨)
+    - `mode="bootstrap"`(기본): retail-matched cold + 미확인/재시도 마감 도래분
+      (`last_volume_check IS NULL`, `next_volume_attempt_at` 이 없거나 지남).
+    - `mode="recheck"`(조각 2-3): 정기 재검사 마감 도래분만
+      (`next_volume_check_at <= now`), `next_volume_check_at ASC` 정렬 —
+      오래 대기한 것부터 처리해 매달 특정 시점에 몰리지 않게 한다(지터와 함께).
     """
+    is_recheck = mode == MODE_RECHECK
+    sql = SQL_TARGET_RECHECK if is_recheck else SQL_TARGET_BASE
     if sources:
         placeholders = ",".join(["?"] * len(sources))
-        sql = SQL_TARGET_BASE + f" AND rp.source IN ({placeholders})"
+        sql += f" AND rp.source IN ({placeholders})"
         params: tuple = tuple(sources)
     else:
-        sql = SQL_TARGET_BASE
         params = ()
+    if is_recheck:
+        sql += " ORDER BY kp.next_volume_check_at ASC"
     if limit is not None and limit > 0:
         sql += f" LIMIT {int(limit)}"
     cursor = await db.execute(sql, params)
@@ -254,10 +291,30 @@ async def _fetch_screens_raw(product_id: str) -> tuple[int, dict | None]:
 # ─── DB 상태 반영 (idempotent UPDATE) ──────────────────────────────────────
 
 
+async def _current_attempt_count(db: aiosqlite.Connection, product_id: str) -> int:
+    """실패 백오프 계산용 — 이번 시도 전 기존 `volume_attempt_count` 조회."""
+    cursor = await db.execute(
+        "SELECT COALESCE(volume_attempt_count, 0) AS c FROM kream_products WHERE product_id = ?",
+        (product_id,),
+    )
+    row = await cursor.fetchone()
+    return int(row["c"]) if row else 0
+
+
 async def _apply_state(db: aiosqlite.Connection, product_id: str, result: ClassifyResult) -> None:
-    """분류 결과를 kream_products 에 반영. 성공 2종만 last_volume_check 갱신."""
+    """분류 결과를 kream_products 에 반영. 성공 2종만 last_volume_check 갱신.
+
+    성공 2종은 `next_volume_check_at`(조각 2-3, 정기 재검사 축)도 함께 기록—
+    `next_volume_attempt_at`(retryable/quarantined 재시도 축)과는 별개다.
+    `tier_for_volume(result.volume_7d)` — `or 0` 로 coalesce 하지 않는다.
+    volume_7d 가 None 이면 'cold' 가 아니라 'unknown' 으로 정직하게 기록해야
+    한다(2-1 리뷰 Minor, 2-3 이관 — "UNKNOWN != 0" 원칙).
+    """
     if result.state in (SUCCESS_POSITIVE, SUCCESS_ZERO):
-        tier = tier_for_volume(result.volume_7d or 0)
+        tier = tier_for_volume(result.volume_7d)
+        next_check_at = compute_next_volume_check_at(
+            product_id, result.volume_7d, has_retail_match=True,
+        )
         await db.execute(
             """
             UPDATE kream_products SET
@@ -269,12 +326,21 @@ async def _apply_state(db: aiosqlite.Connection, product_id: str, result: Classi
                 last_volume_attempt_at = CURRENT_TIMESTAMP,
                 volume_attempt_count = COALESCE(volume_attempt_count, 0) + 1,
                 next_volume_attempt_at = NULL,
-                last_volume_error = NULL
+                last_volume_error = NULL,
+                next_volume_check_at = ?
             WHERE product_id = ?
             """,
-            (result.volume_7d or 0, result.volume_30d or 0, tier, product_id),
+            (
+                result.volume_7d or 0,
+                result.volume_30d or 0,
+                tier,
+                next_check_at.strftime("%Y-%m-%d %H:%M:%S"),
+                product_id,
+            ),
         )
     elif result.state == RETRYABLE:
+        attempt_count = await _current_attempt_count(db, product_id) + 1
+        backoff_seconds = int(retry_backoff(attempt_count).total_seconds())
         await db.execute(
             """
             UPDATE kream_products SET
@@ -284,7 +350,7 @@ async def _apply_state(db: aiosqlite.Connection, product_id: str, result: Classi
                 last_volume_error = ?
             WHERE product_id = ?
             """,
-            (f"+{RETRYABLE_BACKOFF_HOURS} hours", result.error, product_id),
+            (f"+{backoff_seconds} seconds", result.error, product_id),
         )
     elif result.state == QUARANTINED:
         await db.execute(
@@ -463,6 +529,11 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="크림 cold-tier 거래량 부트스트랩 (light, 정식화 — 조각 2-1)",
     )
+    p.add_argument(
+        "--mode", type=str, choices=(MODE_BOOTSTRAP, MODE_RECHECK), default=MODE_BOOTSTRAP,
+        help=f"'{MODE_BOOTSTRAP}'(기본, 미확인 최초 조회) 또는 "
+             f"'{MODE_RECHECK}'(조각 2-3, 정기 재검사 마감 도래분).",
+    )
     p.add_argument("--sources", type=str, default=None,
                    help="콤마구분 어댑터(소싱처) 이름. 미지정 시 전 어댑터 매칭.")
     p.add_argument("--dry-run", action="store_true",
@@ -490,12 +561,14 @@ async def main() -> int:
     await db_manager.connect()
     db = db_manager.db
 
+    label = "recheck" if args.mode == MODE_RECHECK else "bootstrap"
+
     try:
-        rows = await fetch_targets(db, sources=sources, limit=args.limit)
+        rows = await fetch_targets(db, sources=sources, limit=args.limit, mode=args.mode)
 
         if args.dry_run:
             report = await build_dry_run_report(db, rows)
-            print("[bootstrap-light] DRY RUN (정식화 — 2-0 배선/lease/상태모델, 네트워크 0)")
+            print(f"[bootstrap-light:{label}] DRY RUN (2-0 배선/lease/상태모델, 네트워크 0)")
             print(f"  고유 대상 수         : {report['unique_targets']:,}")
             print(f"  기존 재시도 대상     : {report['already_attempted_before']:,}")
             print(
@@ -517,11 +590,11 @@ async def main() -> int:
             return 0
 
         if not rows:
-            print("[bootstrap-light] 대상 없음 — 종료 (이미 갱신됐거나 매칭 0건)")
+            print(f"[bootstrap-light:{label}] 대상 없음 — 종료 (이미 갱신됐거나 매칭 0건)")
             return 0
 
         product_ids = [r["product_id"] for r in rows]
-        print(f"[bootstrap-light] 시작 | 대상 {len(product_ids):,}건 | owner={owner}")
+        print(f"[bootstrap-light:{label}] 시작 | 대상 {len(product_ids):,}건 | owner={owner}")
 
         summary = await run_batch(
             db, product_ids, owner=owner,
@@ -530,7 +603,7 @@ async def main() -> int:
 
         print()
         print(
-            f"[bootstrap-light] 종료 | 처리 {summary.processed}/{len(product_ids)} | "
+            f"[bootstrap-light:{label}] 종료 | 처리 {summary.processed}/{len(product_ids)} | "
             f"양성 {summary.counts[SUCCESS_POSITIVE]} / 확인0 {summary.counts[SUCCESS_ZERO]} / "
             f"재시도대기 {summary.counts[RETRYABLE]} / 격리 {summary.counts[QUARANTINED]}"
         )
