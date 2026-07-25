@@ -22,6 +22,7 @@ from curl_cffi.requests import AsyncSession
 from src.config import settings
 from src.core.kream_budget import (
     KreamBudgetExceeded,
+    assert_kream_config_safe,
     check_budget,
     current_purpose,
     record_call,
@@ -278,6 +279,10 @@ class KreamCrawler:
             # 안전벨트는 **실 세션을 새로 만들 때만** — 테스트가 가짜 세션을 주입해
             # 둔 경우(mock 완료 상태)까지 막으면 오탐이다(2026-07-25 실측).
             _assert_not_under_test()
+            # 예산 설정 fail-closed — 캡이 절대 상한을 넘거나 파싱 불가면 크림
+            # 워커를 시작조차 하지 않는다. `.env` 를 고쳐도 실행 중 프로세스는
+            # 새 값을 안 읽으므로, **이 프로세스의 유효값**을 여기서 확인한다.
+            assert_kream_config_safe()
             self._session = AsyncSession(
                 impersonate="safari17_0",
                 timeout=30,

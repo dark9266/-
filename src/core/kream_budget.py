@@ -56,11 +56,42 @@ from src.utils.logging import setup_logger
 
 logger = setup_logger("kream_budget")
 
-BUDGET: int = int(os.getenv("KREAM_DAILY_CAP", "10000"))
+# 실계정 보호 절대 상한 — 설정으로 **올릴 수 없다**.
+# 2026-07-25: `.env` 에 KREAM_DAILY_CAP=50000 이 들어가 있어 최후 방어벽이 5배 열려
+# 있었다(오늘 사고가 311콜로 끝난 건 운이었다). 캡은 "낮추는 방향"만 허용하고,
+# 이보다 큰 값이면 KREAM 워커를 **시작 거부**한다(fail-closed).
+KREAM_HARD_CAP_CEILING: int = 10000
+
+
+def _parse_positive_int(env_name: str, default: int) -> int | None:
+    """환경변수 정수 파싱 — 부적합하면 None(설정 오류로 처리)."""
+    raw = os.getenv(env_name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+# 설정 원본(부적합하면 None) — 판정용. 실제 계산에는 아래 클램프된 값을 쓴다.
+_RAW_BUDGET: int | None = _parse_positive_int("KREAM_DAILY_CAP", 10000)
+_RAW_BG_LIVE_RESERVE: int | None = _parse_positive_int("KREAM_BG_LIVE_RESERVE", 1000)
+
+# 실제 계산에 쓰는 값 — **항상 안전 범위로 클램프**한다(이중 방어).
+# 설정이 잘못돼 있어도 산술은 보수적으로 돌고, 동시에 워커는 시작을 거부한다.
+# 둘 중 하나만 두면: 클램프만 → 잘못된 설정을 아무도 모른 채 계속 돈다 /
+# 거부만 → 가드를 우회한 경로가 50,000 으로 계산한다.
+BUDGET: int = min(_RAW_BUDGET or KREAM_HARD_CAP_CEILING, KREAM_HARD_CAP_CEILING)
 WARN_RATIO: float = 0.9
 
 # --- 백그라운드 예산 브로커 상수 ---------------------------------------------
-BG_LIVE_RESERVE: int = int(os.getenv("KREAM_BG_LIVE_RESERVE", "1000"))
+BG_LIVE_RESERVE: int = (
+    _RAW_BG_LIVE_RESERVE
+    if _RAW_BG_LIVE_RESERVE is not None and _RAW_BG_LIVE_RESERVE < BUDGET
+    else min(1000, BUDGET - 1)
+)
 BG_RAMP_STAGES: dict[str, int] = {
     "canary": 100,
     "day1": 500,
@@ -70,6 +101,73 @@ BG_RAMP_STAGES: dict[str, int] = {
 }
 BG_RAMP_ORDER: tuple[str, ...] = ("canary", "day1", "day2", "ramp2000", "ramp3000")
 _BG_5XX_TRIP_THRESHOLD: int = 3
+
+
+class KreamConfigUnsafe(RuntimeError):
+    """크림 호출 예산 설정이 안전 범위를 벗어났다 — 워커 시작 거부(fail-closed).
+
+    `Exception` 계열이지만 **워커 시작 경로에서만** 던진다. Discord 제어면·상태
+    조회는 계속 살아 있어야 폰에서 상황을 볼 수 있다(2026-07-25 코덱스 자문).
+    """
+
+
+def kream_budget_config_error() -> str | None:
+    """현재 예산 설정의 문제를 한 줄로. 정상이면 None.
+
+    검사 4종:
+      1. `KREAM_DAILY_CAP` 파싱 불가/0 이하
+      2. 캡이 절대 상한(10,000) 초과 — **설정으로 올릴 수 없다**
+      3. `KREAM_BG_LIVE_RESERVE` 파싱 불가/0 이하
+      4. 라이브 예약분이 캡 이상 — 백그라운드 허용치가 영구 0 이 된다
+    """
+    if _RAW_BUDGET is None:
+        return "KREAM_DAILY_CAP 이 양의 정수가 아니다"
+    if _RAW_BUDGET > KREAM_HARD_CAP_CEILING:
+        return (
+            f"KREAM_DAILY_CAP={_RAW_BUDGET} 이 절대 상한 {KREAM_HARD_CAP_CEILING} 을 넘는다 "
+            "— 캡은 낮추는 방향만 허용한다"
+        )
+    if _RAW_BG_LIVE_RESERVE is None:
+        return "KREAM_BG_LIVE_RESERVE 가 양의 정수가 아니다"
+    if _RAW_BG_LIVE_RESERVE >= _RAW_BUDGET:
+        return (
+            f"KREAM_BG_LIVE_RESERVE={_RAW_BG_LIVE_RESERVE} 가 캡({_RAW_BUDGET}) 이상이다 "
+            "— 백그라운드 허용치가 영구 0 이 된다"
+        )
+    return None
+
+
+def assert_kream_config_safe() -> None:
+    """KREAM 송신 워커 시작 관문 — 설정이 안전 범위 밖이면 시작 거부.
+
+    2026-07-25 실측 교훈: `.env` 를 고쳐도 **실행 중 프로세스는 새 값을 안 읽는다**
+    (price_refresher 를 5/1 에 껐는데 5/5 까지 호출이 나갔다). 그래서 "파일이
+    맞다" 가 아니라 **이 프로세스에 적용된 유효값**을 시작 시점에 확인한다.
+    """
+    error = kream_budget_config_error()
+    if error is None:
+        return
+    logger.critical("크림 예산 설정 불안전 — 워커 시작 거부: %s", error)
+    raise KreamConfigUnsafe(
+        f"{error}\n"
+        "  → .env 를 고친 뒤 **프로세스를 재시작**해야 반영된다(실행 중 반영 안 됨).\n"
+        f"  현재 유효값: cap={BUDGET} reserve={BG_LIVE_RESERVE} "
+        f"ceiling={KREAM_HARD_CAP_CEILING}"
+    )
+
+
+def effective_budget_config() -> dict[str, object]:
+    """지금 이 프로세스에 적용된 예산 설정 — 시작 로그·상태 보고용.
+
+    commit·PID 와 함께 남겨야 "어떤 설정으로 측정한 clean window 인지" 증명된다.
+    """
+    return {
+        "pid": os.getpid(),
+        "daily_cap": BUDGET,
+        "live_reserve": BG_LIVE_RESERVE,
+        "cap_ceiling": KREAM_HARD_CAP_CEILING,
+        "config_error": kream_budget_config_error(),
+    }
 _BG_BLOCK_STATUSES: frozenset[int] = frozenset({403, 429})
 
 # 백그라운드 purpose 레지스트리 (2-v F1 — 코덱스 적대검증 실결함 반영).
