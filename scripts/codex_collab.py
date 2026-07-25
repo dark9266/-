@@ -134,6 +134,22 @@ def build_prompt(mode: CodexMode, task: str, paths: tuple[str, ...], snap: str) 
 
 
 # ── 큐 ────────────────────────────────────────────────────────────────────────
+# 브리프 상한 — 큐 파일이 무한정 커지는 것만 막는 안전장치다.
+# ⚠️ 2026-07-25 실사고: 이전 상한 2,000자가 **조용히** 브리프를 잘라, S등급
+# 협업(램프 전략)에서 질문 5개 중 2개만 코덱스에 전달됐다. 답변은 멀쩡해 보였고
+# 코덱스가 "브리프가 잘렸다"고 먼저 말해주지 않았으면 반쪽 답을 그대로 받았다.
+# → 상한을 실사용 브리프 크기 이상으로 올리고, 잘릴 때는 **표시**한다(조용히 금지).
+_TASK_MAX_CHARS = 20000
+_TASK_CLIP_MARK = "\n\n…[브리프가 상한을 넘어 잘렸다 — 나눠서 보낼 것]"
+
+
+def _clip_task(task: str) -> str:
+    task = task or ""
+    if len(task) <= _TASK_MAX_CHARS:
+        return task
+    return task[: _TASK_MAX_CHARS - len(_TASK_CLIP_MARK)] + _TASK_CLIP_MARK
+
+
 def enqueue(plan, task: str, paths: tuple[str, ...], snap: str) -> bool:
     """PENDING 항목 추가. 이미 있으면 False."""
     with locked_queue(QUEUE) as (items, save):
@@ -146,7 +162,7 @@ def enqueue(plan, task: str, paths: tuple[str, ...], snap: str) -> bool:
             "model": plan.model,
             "effort": plan.effort,
             "reason": plan.reason,
-            "task": task[:2000],
+            "task": _clip_task(task),
             "paths": list(paths),
             "target": _git("rev-parse", "--short", "HEAD").strip() or "no-head",
             "status": "PENDING",
