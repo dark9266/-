@@ -68,6 +68,7 @@ from src.config import settings  # noqa: E402
 from src.core.kream_budget import (  # noqa: E402
     KreamBackgroundBudgetExceeded,
     KreamBatchLockHeld,
+    KreamBatchLockLost,
     KreamBudgetExceeded,
     KreamCircuitTripped,
     acquire_background,
@@ -436,6 +437,11 @@ async def run_batch(
         for pid in leased:
             try:
                 result = await _process_one(db, pid)
+            except KreamBatchLockLost:
+                # 2-vr F3-1: 실행 중 잠금 상실 = 다른 배치와 동시 실행 상태.
+                # 진행분은 이미 DB 에 반영됐고, 여기서 즉시 멈춘다.
+                summary.stopped_reason = "batch_lock_lost"
+                break
             except KreamCircuitTripped:
                 summary.stopped_reason = "circuit_tripped"
                 break

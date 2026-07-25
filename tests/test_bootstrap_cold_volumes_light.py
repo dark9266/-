@@ -34,10 +34,12 @@ from src.models.database import Database
 
 @pytest.fixture(autouse=True)
 def _reset_bg_circuit_counters():
-    """모듈 전역 연속실패 카운터 — 테스트 간 누적 방지 (test_kream_bg_budget.py 관례)."""
+    """모듈 전역 연속실패 카운터 + 잠금상실 플래그 — 테스트 간 누적 방지."""
     kb._bg_consecutive_failures.clear()
+    kb._batch_lock_lost = False
     yield
     kb._bg_consecutive_failures.clear()
+    kb._batch_lock_lost = False
 
 
 @pytest.fixture
@@ -918,3 +920,19 @@ async def test_main_releases_lock_after_run(db, monkeypatch):
 
     assert rc == 0
     assert await kb.try_acquire_batch_lock("drain-999") is True
+
+
+async def test_run_batch_stops_when_batch_lock_lost(db, spy_pacer, monkeypatch):
+    """2-vr F3-1 — 실행 중 잠금 상실이 감지되면 다음 호출에서 우아하게 중단."""
+    await _insert_kream_product(db, "P1")
+    await _insert_kream_product(db, "P2")
+    monkeypatch.setattr(kb, "_batch_lock_lost", True)
+    monkeypatch.setattr(
+        boot, "_fetch_screens_raw", AsyncMock(return_value=(200, _stats_result(1, 1)))
+    )
+
+    summary = await boot.run_batch(db, ["P1", "P2"], owner="lock-lost-test")
+
+    assert summary.stopped_reason == "batch_lock_lost"
+    assert summary.processed == 0
+    assert spy_pacer.wait_turn_calls == 0  # 크림 호출 0회

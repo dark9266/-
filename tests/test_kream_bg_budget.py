@@ -63,10 +63,12 @@ def _insert_calls_last_24h(
 
 @pytest.fixture(autouse=True)
 def _reset_bg_circuit_counters():
-    """모듈 전역 연속실패 카운터 — 테스트 간 누적되지 않도록 매번 리셋."""
+    """모듈 전역 연속실패 카운터 + 잠금상실 플래그 — 테스트 간 누적 방지."""
     kb._bg_consecutive_failures.clear()
+    kb._batch_lock_lost = False
     yield
     kb._bg_consecutive_failures.clear()
+    kb._batch_lock_lost = False
 
 
 @pytest.fixture
@@ -444,6 +446,68 @@ async def test_batch_run_lock_heartbeat_stops_after_exit(bg_db):
     assert await kb.try_acquire_batch_lock("owner-B", ttl_seconds=5) is True
     await asyncio.sleep(0.15)  # 유령 하트비트가 있었다면 이 사이에 뺏어갔을 것
     assert await kb.try_acquire_batch_lock("owner-B", ttl_seconds=5) is True
+
+
+async def test_batch_lock_lost_blocks_further_background_calls(bg_db, spy_pacer):
+    """2-vr F3-1 — 실행 중 잠금을 빼앗기면 신규 백그라운드 호출을 거부한다.
+
+    갱신 주기가 TTL 보다 길게 밀린 상황(이벤트루프 장기 블로킹 등)을 재현:
+    만료 직후 owner-B 가 선점 → 하트비트가 상실을 감지 → 이후 호출 차단.
+    """
+    async with kb.batch_run_lock("owner-A", ttl_seconds=0.05, renew_interval=0.15):
+        await asyncio.sleep(0.08)  # TTL 경과
+        assert await kb.try_acquire_batch_lock("owner-B", ttl_seconds=5) is True
+        await asyncio.sleep(0.15)  # 하트비트가 깨어나 상실 감지
+
+        assert kb.batch_lock_lost() is True
+        with pytest.raises(kb.KreamBatchLockLost):
+            async with kb.acquire_background("bootstrap_light"):
+                pytest.fail("잠금 상실 후 백그라운드 호출이 통과하면 안 된다")
+        assert spy_pacer.wait_turn_calls == 0  # 페이서 소비 전에 거부
+
+    # 컨텍스트 종료 시 플래그 원복 + 남의 잠금은 건드리지 않는다
+    assert kb.batch_lock_lost() is False
+    assert await kb.try_acquire_batch_lock("owner-C") is False
+
+
+async def test_batch_lock_lost_flag_cleared_on_next_acquisition(bg_db, spy_pacer):
+    """다음 실행이 잠금을 정상 획득하면 이전 런의 상실 상태를 끌고 가지 않는다."""
+    kb._batch_lock_lost = True
+    async with kb.batch_run_lock("owner-A"):
+        assert kb.batch_lock_lost() is False
+        async with kb.acquire_background("bootstrap_light"):
+            pass
+    assert spy_pacer.wait_turn_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# 2-vr M1/M2 — 접두 매칭 규약(밑줄 와일드카드) · 단일 스냅샷 집계
+# ---------------------------------------------------------------------------
+
+
+async def test_background_count_does_not_treat_underscore_as_wildcard(bg_db):
+    """`bootstrap_light` 의 `_` 는 LIKE 와일드카드가 아니라 리터럴이어야 한다."""
+    _insert_calls_last_24h(bg_db, 40, "bootstrapXlight:session_init")
+    assert await kb._count_background_used_24h() == 0
+    assert await kb.background_allowance() == 100
+
+
+async def test_background_count_still_matches_real_prefixes(bg_db):
+    """이스케이프가 정상 매칭까지 죽이지 않는다 (과잉 수정 방어)."""
+    _insert_calls_last_24h(bg_db, 5, "bootstrap_light")
+    _insert_calls_last_24h(bg_db, 5, "bootstrap_light:session_init")
+    _insert_calls_last_24h(bg_db, 5, "collect_queue_drain:session_init")
+    assert await kb._count_background_used_24h() == 15
+
+
+async def test_count_24h_total_and_background_single_snapshot(bg_db):
+    """전체/백그라운드를 한 문장에서 센다 — 두 수치가 같은 스냅샷."""
+    _insert_calls_last_24h(bg_db, 7, "bootstrap_light")
+    _insert_calls_last_24h(bg_db, 3, "v3_delta")
+    _insert_calls_last_24h(bg_db, 5, "bootstrap_light", age_hours=25)  # 24h 밖
+
+    total, bg = await kb._count_24h_total_and_background()
+    assert (total, bg) == (10, 7)
 
 
 async def test_batch_lock_does_not_consume_budget_or_pacer(bg_db, spy_pacer):

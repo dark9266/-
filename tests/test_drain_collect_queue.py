@@ -32,8 +32,10 @@ from src.models.database import Database
 @pytest.fixture(autouse=True)
 def _reset_bg_circuit_counters():
     kb._bg_consecutive_failures.clear()
+    kb._batch_lock_lost = False
     yield
     kb._bg_consecutive_failures.clear()
+    kb._batch_lock_lost = False
 
 
 @pytest.fixture
@@ -591,3 +593,22 @@ async def test_main_releases_lock_after_run(db, monkeypatch):
 
     assert rc == 0
     assert await kb.try_acquire_batch_lock("bootstrap-999") is True
+
+
+async def test_run_batch_stops_when_batch_lock_lost(db, spy_pacer, monkeypatch):
+    """2-vr F3-1 — 실행 중 잠금 상실이 감지되면 다음 검색 호출에서 우아하게 중단."""
+    await _insert_queue(db, "M1")
+    rows = await drain.fetch_search_targets(db)
+    targets = drain.group_search_targets(rows)
+    assert targets
+
+    monkeypatch.setattr(kb, "_batch_lock_lost", True)
+    fake_fetch = AsyncMock(return_value=(200, []))
+    monkeypatch.setattr(drain, "_fetch_search_raw", fake_fetch)
+
+    summary = await drain.run_batch(db, targets, run_cap=100)
+
+    assert summary.stopped_reason == "batch_lock_lost"
+    assert summary.search_calls_made == 0
+    fake_fetch.assert_not_awaited()
+    assert spy_pacer.wait_turn_calls == 0

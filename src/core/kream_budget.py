@@ -315,6 +315,51 @@ async def advance_ramp_stage() -> str:
     return next_stage
 
 
+def _like_escape(value: str) -> str:
+    r"""LIKE 패턴에서 리터럴로 다뤄야 할 문자 이스케이프 (`ESCAPE '\'` 전제).
+
+    2-vr M1 — 등록 purpose 는 `bootstrap_light` 처럼 밑줄을 포함하는데, SQL
+    LIKE 에서 `_` 는 "임의의 1문자" 와일드카드다. 이스케이프하지 않으면
+    `bootstrapXlight:...` 같은 무관한 purpose 까지 백그라운드로 오집계된다.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _bg_purpose_sql() -> tuple[str, list[str]]:
+    """`BG_PURPOSE_PREFIXES` 매칭 조건식 + 바인딩 파라미터.
+
+    규약: purpose 가 등록 원소와 **정확히 같거나** `"{원소}:"` 로 시작.
+    등록이 비어 있으면 항상 거짓인 식("0")을 돌려준다.
+    """
+    if not BG_PURPOSE_PREFIXES:
+        return "0", []
+    clauses = []
+    params: list[str] = []
+    for prefix in sorted(BG_PURPOSE_PREFIXES):
+        clauses.append("purpose = ? OR purpose LIKE ? ESCAPE '\\'")
+        params.extend([prefix, f"{_like_escape(prefix)}:%"])
+    return " OR ".join(clauses), params
+
+
+async def _count_24h_total_and_background() -> tuple[int, int]:
+    """최근 24h (전체 호출수, 백그라운드 호출수) — **단일 SELECT 스냅샷**.
+
+    2-vr M2 — 전체/백그라운드를 각각 따로 조회하면 그 사이 라이브 봇이 새 행을
+    커밋했을 때 서로 다른 시점을 본 두 수치로 예약분을 계산하게 된다. 한 문장
+    안에서 세면 그런 창 자체가 없고, 백그라운드 호출마다 열던 DB 커넥션도
+    2회 → 1회로 준다.
+    """
+    where, params = _bg_purpose_sql()
+    async with async_connect(settings.db_path) as db:
+        cur = await db.execute(
+            f"SELECT COUNT(*), COALESCE(SUM(CASE WHEN ({where}) THEN 1 ELSE 0 END), 0) "
+            f"FROM kream_api_calls WHERE ts >= datetime('now','-1 day')",
+            params,
+        )
+        row = await cur.fetchone()
+        return (int(row[0]), int(row[1])) if row else (0, 0)
+
+
 async def _count_background_used_24h() -> int:
     """최근 24h `BG_PURPOSE_PREFIXES` 에 매칭되는 호출수 (소프트캡 소비량).
 
@@ -322,22 +367,8 @@ async def _count_background_used_24h() -> int:
     이 집계에서 제외된다 — 소프트캡은 백그라운드 소비만 차감하고, 라이브
     사용량은 하드캡(`_count_last_24h`) 쪽에서만 영향을 준다.
     """
-    if not BG_PURPOSE_PREFIXES:
-        return 0
-    clauses = []
-    params: list[str] = []
-    for prefix in BG_PURPOSE_PREFIXES:
-        clauses.append("purpose = ? OR purpose LIKE ?")
-        params.extend([prefix, f"{prefix}:%"])
-    where = " OR ".join(clauses)
-    async with async_connect(settings.db_path) as db:
-        cur = await db.execute(
-            f"SELECT COUNT(*) FROM kream_api_calls "
-            f"WHERE ts >= datetime('now','-1 day') AND ({where})",
-            params,
-        )
-        row = await cur.fetchone()
-        return int(row[0]) if row else 0
+    _total, used_bg = await _count_24h_total_and_background()
+    return used_bg
 
 
 async def background_allowance() -> int:
@@ -352,8 +383,7 @@ async def background_allowance() -> int:
     허용되는 실결함이 있었다), ② 예약분은 라이브 알림 경로를 위해 항상
     남겨둔다. 어느 쪽이든 음수가 나오면 0 으로 클램프.
     """
-    used_total = await _count_last_24h()
-    used_bg = await _count_background_used_24h()
+    used_total, used_bg = await _count_24h_total_and_background()
     soft = await current_soft_cap()
     soft_room = soft - used_bg
     reserved_room = BUDGET - used_total - BG_LIVE_RESERVE
@@ -464,6 +494,25 @@ class KreamBatchLockHeld(RuntimeError):
     """다른 owner 가 이미 백그라운드 배치 실행 잠금을 보유 중 — 동시 실행 거부."""
 
 
+class KreamBatchLockLost(RuntimeError):
+    """실행 도중 잠금을 다른 owner 에게 빼앗겼다 — 신규 백그라운드 호출 거부.
+
+    2-vr F3-1(리뷰 Important): 하트비트가 상실을 감지해도 경고 로그만 남기면
+    본문이 그대로 완주해, F3 가 닫으려던 "두 배치 동시 실행" 이 그대로 재발한다.
+    이제 상실 시점 이후의 `acquire_background()` 진입을 막아 배치가 다음 호출에서
+    우아하게 멈춘다(진행 중이던 lease/DB 반영을 중간에 끊지는 않는다).
+    """
+
+
+# 프로세스당 배치 1개 전제 — 하트비트(별도 태스크)가 세우고 본문 태스크가 읽는다.
+_batch_lock_lost: bool = False
+
+
+def batch_lock_lost() -> bool:
+    """이 프로세스의 배치가 실행 도중 잠금을 잃었는지."""
+    return _batch_lock_lost
+
+
 async def _ensure_batch_lock_schema(db) -> None:
     await db.execute(_BATCH_LOCK_SCHEMA)
     await db.execute(
@@ -519,11 +568,15 @@ async def _renew_batch_lock_loop(owner: str, ttl_seconds: float, interval: float
     """실행 중인 배치의 잠금을 주기적으로 연장 (하트비트).
 
     같은 owner 의 재획득은 idempotent 하게 `lock_until` 을 밀어주므로
-    `try_acquire_batch_lock` 을 그대로 재사용한다. 갱신 실패(=만료 후 다른
-    owner 가 선점)는 이미 동시 실행이 벌어진 상황이라 경고만 남긴다 — 여기서
-    배치를 강제 중단시키지는 않는다(진행 중인 lease/DB 반영을 중간에
-    끊는 편이 더 위험하다). DB 일시 오류는 무시하고 다음 주기에 재시도한다.
+    `try_acquire_batch_lock` 을 그대로 재사용한다. DB 일시 오류는 무시하고
+    다음 주기에 재시도한다(잠금을 잃었다는 증거가 아니다).
+
+    갱신이 "다른 owner 가 선점" 으로 실패하면(=이미 동시 실행 상태)
+    `_batch_lock_lost` 를 세워 이후 `acquire_background()` 진입을 거부시킨다
+    (2-vr F3-1). 본문을 강제로 죽이지는 않는다 — 진행 중인 lease/DB 반영은
+    끝내고 다음 크림 호출 시도에서 우아하게 멈춘다.
     """
+    global _batch_lock_lost
     while True:
         await asyncio.sleep(interval)
         try:
@@ -532,9 +585,12 @@ async def _renew_batch_lock_loop(owner: str, ttl_seconds: float, interval: float
             logger.warning("배치 잠금 갱신 실패(계속 진행): %s", exc)
             continue
         if not still_mine:
-            logger.warning(
-                "배치 잠금을 다른 owner 에게 빼앗김 — 동시 실행 가능성 (owner=%s)", owner
+            _batch_lock_lost = True
+            logger.error(
+                "배치 잠금을 다른 owner 에게 빼앗김 — 신규 백그라운드 호출 차단 (owner=%s)",
+                owner,
             )
+            return  # 더 갱신해도 의미 없다 — 소유권은 이미 넘어갔다
 
 
 @asynccontextmanager
@@ -558,13 +614,17 @@ async def batch_run_lock(
 
     본문이 도는 동안에는 하트비트 태스크가 `ttl_seconds/4`(기본 30분) 주기로
     잠금을 연장한다 — 배치가 TTL 보다 오래 걸려도(램프 상위 단계에서는 정상)
-    실행 도중 만료돼 다른 배치가 끼어드는 일이 없다.
+    실행 도중 만료돼 다른 배치가 끼어드는 일이 없다. 그럼에도 잠금을 잃으면
+    (이벤트루프 장기 블로킹 등) `acquire_background()` 가 `KreamBatchLockLost`
+    로 거부해 배치가 다음 호출에서 멈춘다(2-vr F3-1).
     """
+    global _batch_lock_lost
     acquired = await try_acquire_batch_lock(owner, ttl_seconds=ttl_seconds)
     if not acquired:
         raise KreamBatchLockHeld(
             f"백그라운드 배치 잠금 보유 중(owner={owner} 아님) — 동시 실행 거부"
         )
+    _batch_lock_lost = False
     interval = (
         renew_interval
         if renew_interval is not None
@@ -578,6 +638,7 @@ async def batch_run_lock(
         with suppress(asyncio.CancelledError):
             await renewer
         await release_batch_lock(owner)
+        _batch_lock_lost = False
 
 
 @asynccontextmanager
@@ -593,6 +654,12 @@ async def acquire_background(purpose: str) -> AsyncIterator[None]:
     예산 초과/서킷 트립 시에는 페이서를 소비하기 전에 즉시 예외를 던진다
     (거부될 호출로 대기 시간을 낭비하지 않기 위함).
     """
+    if _batch_lock_lost:
+        # 2-vr F3-1: 이 프로세스는 배치 잠금을 잃었다 = 다른 배치가 동시에 돌고
+        # 있다. 페이서·예산 판정이 프로세스 경계를 못 넘으므로 신규 호출 거부.
+        raise KreamBatchLockLost(
+            "배치 잠금 상실 — 다른 배치가 동시 실행 중, 신규 백그라운드 호출 거부"
+        )
     state = await get_ramp_state()
     if state["circuit_tripped"]:
         raise KreamCircuitTripped(
