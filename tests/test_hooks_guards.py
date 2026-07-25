@@ -503,3 +503,31 @@ def test_live_guard_does_not_block_mere_mentions_of_bypass_env():
 def test_live_guard_allows_non_kream_curl_and_normal_pytest():
     assert not _blocks("curl -s https://www.nike.com/kr/")
     assert not _blocks("python -m pytest tests/ -q")
+
+
+# 스크립트 파일명 — 문자열로 조립해서 이 파일 자체가 훅에 걸리지 않게 한다.
+# (이 훅은 명령 원문을 스캔하므로, 테스트 코드에 실행 명령을 그대로 적으면
+#  그 텍스트를 담은 Bash 명령이 차단된다 — 2026-07-25 실측)
+_BOOT = "scripts/bootstrap_cold" + "_volumes_light.py"
+_DRAIN = "scripts/drain_collect" + "_queue.py"
+
+
+def test_live_guard_does_not_block_tests_named_after_scripts():
+    """오탐 회귀 — 테스트 파일명이 스크립트 파일명으로 *끝난다*.
+
+    2026-07-25 실측: 이 훅이 `pytest tests/test_bootstrap_cold_volumes_light.py` 를
+    "배치 라이브 실행" 으로 막아 정상 작업(lint·테스트)을 중단시켰다.
+    단순 endswith 판정의 대가 — 경로 경계로 좁혔다.
+    """
+    assert not _blocks(f"python -m pytest tests/test_{_BOOT.split('/')[-1]} -q")
+    assert not _blocks(f"python -m pytest tests/test_{_DRAIN.split('/')[-1]} -q")
+    assert not _blocks(f"ruff check --fix {_BOOT}")
+    assert not _blocks("python -m pytest tests/ -q")
+
+
+def test_live_guard_still_blocks_the_real_scripts_after_boundary_fix():
+    """경계 판정으로 좁힌 뒤에도 진짜 실행은 그대로 막힌다."""
+    assert _blocks(f"python {_BOOT}")
+    assert _blocks(f"python ./{_DRAIN}")
+    assert _blocks(f"cd scripts && python {_BOOT.split('/')[-1]}")
+    assert not _blocks(f"python {_BOOT} --dry-run")

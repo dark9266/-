@@ -142,6 +142,23 @@ def _shell_string_payloads(toks: list[str]) -> list[str]:
     return []
 
 
+def _token_is_script(token: str, script: str) -> bool:
+    """토큰이 **그 스크립트 자체**를 가리키는가 — 경로 경계까지 본다.
+
+    ⚠️ 단순 `endswith(basename)` 은 오탐이다(2026-07-25 실측: 이 훅이
+    `pytest tests/test_bootstrap_cold_volumes_light.py` 를 "배치 라이브 실행" 으로
+    막았다 — 테스트 파일명이 스크립트 파일명으로 *끝나기* 때문). 오탐이 나면
+    사람이 훅을 꺼버리므로, 경로 구분자나 완전 일치로만 인정한다.
+    """
+    basename = script.split("/")[-1]
+    return (
+        token == script
+        or token.endswith("/" + script)
+        or token == basename
+        or token.endswith("/" + basename)
+    )
+
+
 def _executes(seg: str, script: str, _depth: int = 0) -> bool:
     """세그먼트가 그 스크립트를 **실행**하는가 (언급만 하는 건 아니고).
 
@@ -165,11 +182,10 @@ def _executes(seg: str, script: str, _depth: int = 0) -> bool:
     head = segment_head(" ".join(toks))
     if not head:
         return False
-    basename = script.split("/")[-1]
-    if head.endswith(script) or head.endswith("/" + basename) or head == basename:
+    if _token_is_script(head, script):
         return True  # 직접 실행 (./scripts/x.py, cd scripts && ./x.py)
     if _PY_HEADS.match(os.path.basename(head)):
-        return any(t.endswith(script) or t.endswith(basename) for t in toks[1:])
+        return any(_token_is_script(t, script) for t in toks[1:])
     return False
 
 

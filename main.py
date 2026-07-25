@@ -13,6 +13,7 @@ import sys
 import discord
 
 from src.config import settings
+from src.core.kream_budget import effective_budget_config
 from src.core.runtime import V3Runtime, _safe_start_v3
 from src.discord_bot.bot import bot
 from src.utils.logging import setup_logger
@@ -160,6 +161,23 @@ def main():
         sys.exit(1)
 
     _acquire_pid_lock()
+
+    # 크림 예산 설정을 **부팅 시점에** 기록한다 (2026-07-25 리뷰 Important #2).
+    # 파일이 아니라 "이 프로세스에 적용된 유효값" 이어야 한다 — price_refresher 를
+    # 5/1 에 껐는데 5/5 까지 호출이 나간 실측 사례가 그 이유다.
+    # 여기서는 로그만 남기고 **중단하지 않는다**: 설정이 불안전해도 Discord 제어면·
+    # 상태 조회는 살아 있어야 배달 중 폰으로 상황을 본다. 실제 크림 송신은
+    # `KreamCrawler._get_session()` 의 fail-closed 관문이 막는다.
+    _budget_cfg = effective_budget_config()
+    if _budget_cfg["config_error"]:
+        logger.critical(
+            "크림 예산 설정 불안전 — 크림 워커는 시작을 거부한다(제어면은 유지): %s | %s",
+            _budget_cfg["config_error"],
+            _budget_cfg,
+        )
+    else:
+        logger.info("크림 예산 유효설정: %s", _budget_cfg)
+
     logger.info("크림봇 시작")
     try:
         _register_v3_runtime_hook()

@@ -63,6 +63,10 @@ logger = setup_logger("kream_budget")
 KREAM_HARD_CAP_CEILING: int = 10000
 
 
+# 인자 미지정과 "None 을 명시적으로 넘김"을 구분하는 표식
+_SENTINEL: object = object()
+
+
 def _parse_positive_int(env_name: str, default: int) -> int | None:
     """환경변수 정수 파싱 — 부적합하면 None(설정 오류로 처리)."""
     raw = os.getenv(env_name)
@@ -79,19 +83,32 @@ def _parse_positive_int(env_name: str, default: int) -> int | None:
 _RAW_BUDGET: int | None = _parse_positive_int("KREAM_DAILY_CAP", 10000)
 _RAW_BG_LIVE_RESERVE: int | None = _parse_positive_int("KREAM_BG_LIVE_RESERVE", 1000)
 
-# 실제 계산에 쓰는 값 — **항상 안전 범위로 클램프**한다(이중 방어).
-# 설정이 잘못돼 있어도 산술은 보수적으로 돌고, 동시에 워커는 시작을 거부한다.
-# 둘 중 하나만 두면: 클램프만 → 잘못된 설정을 아무도 모른 채 계속 돈다 /
-# 거부만 → 가드를 우회한 경로가 50,000 으로 계산한다.
-BUDGET: int = min(_RAW_BUDGET or KREAM_HARD_CAP_CEILING, KREAM_HARD_CAP_CEILING)
-WARN_RATIO: float = 0.9
+def clamp_budget_config(
+    raw_budget: int | None, raw_reserve: int | None
+) -> tuple[int, int]:
+    """설정 원본 → **항상 안전 범위로 클램프된** (캡, 라이브 예약분).
 
-# --- 백그라운드 예산 브로커 상수 ---------------------------------------------
-BG_LIVE_RESERVE: int = (
-    _RAW_BG_LIVE_RESERVE
-    if _RAW_BG_LIVE_RESERVE is not None and _RAW_BG_LIVE_RESERVE < BUDGET
-    else min(1000, BUDGET - 1)
-)
+    이중 방어의 한 축이다. 설정이 잘못돼 있어도 산술은 보수적으로 돌고, 동시에
+    워커는 시작을 거부한다(`assert_kream_config_safe`). 둘 중 하나만 두면:
+    클램프만 → 잘못된 설정을 아무도 모른 채 계속 돈다 /
+    거부만 → 가드를 우회한 경로가 50,000 으로 계산한다.
+
+    순수 함수로 분리한 이유(2026-07-25 리뷰): 모듈 상수를 검증하려고 테스트에서
+    `importlib.reload` 를 쓰면 예외 **클래스 identity** 가 갈려서, import 시점에
+    `from ... import KreamBatchLockLost` 로 이름을 캡처해 둔 배치 스크립트의
+    `except` 절이 조용히 무력화된다(실측: 무관한 테스트 6건이 파일 실행 순서에
+    따라 깨졌다). 로직을 함수로 빼면 reload 없이 검증할 수 있다.
+    """
+    budget = min(raw_budget or KREAM_HARD_CAP_CEILING, KREAM_HARD_CAP_CEILING)
+    if raw_reserve is not None and 0 < raw_reserve < budget:
+        reserve = raw_reserve
+    else:
+        reserve = max(0, min(1000, budget - 1))
+    return budget, reserve
+
+
+BUDGET, BG_LIVE_RESERVE = clamp_budget_config(_RAW_BUDGET, _RAW_BG_LIVE_RESERVE)
+WARN_RATIO: float = 0.9
 BG_RAMP_STAGES: dict[str, int] = {
     "canary": 100,
     "day1": 500,
@@ -111,8 +128,14 @@ class KreamConfigUnsafe(RuntimeError):
     """
 
 
-def kream_budget_config_error() -> str | None:
-    """현재 예산 설정의 문제를 한 줄로. 정상이면 None.
+def kream_budget_config_error(
+    raw_budget: int | None = _SENTINEL,
+    raw_reserve: int | None = _SENTINEL,
+) -> str | None:
+    """예산 설정의 문제를 한 줄로. 정상이면 None.
+
+    인자를 주면 그 값으로, 안 주면 이 프로세스의 유효 설정으로 판정한다
+    (테스트가 모듈을 reload 하지 않고 검증할 수 있게 — 2026-07-25 리뷰).
 
     검사 4종:
       1. `KREAM_DAILY_CAP` 파싱 불가/0 이하
@@ -120,18 +143,27 @@ def kream_budget_config_error() -> str | None:
       3. `KREAM_BG_LIVE_RESERVE` 파싱 불가/0 이하
       4. 라이브 예약분이 캡 이상 — 백그라운드 허용치가 영구 0 이 된다
     """
-    if _RAW_BUDGET is None:
-        return "KREAM_DAILY_CAP 이 양의 정수가 아니다"
-    if _RAW_BUDGET > KREAM_HARD_CAP_CEILING:
+    if raw_budget is _SENTINEL:
+        raw_budget = _RAW_BUDGET
+    if raw_reserve is _SENTINEL:
+        raw_reserve = _RAW_BG_LIVE_RESERVE
+
+    if raw_budget is None:
+        # 원문을 함께 실어야 오타를 로그만으로 진단할 수 있다(리뷰 Suggestion)
+        return f"KREAM_DAILY_CAP 이 양의 정수가 아니다 (입력: {os.getenv('KREAM_DAILY_CAP', '')!r})"
+    if raw_budget > KREAM_HARD_CAP_CEILING:
         return (
-            f"KREAM_DAILY_CAP={_RAW_BUDGET} 이 절대 상한 {KREAM_HARD_CAP_CEILING} 을 넘는다 "
+            f"KREAM_DAILY_CAP={raw_budget} 이 절대 상한 {KREAM_HARD_CAP_CEILING} 을 넘는다 "
             "— 캡은 낮추는 방향만 허용한다"
         )
-    if _RAW_BG_LIVE_RESERVE is None:
-        return "KREAM_BG_LIVE_RESERVE 가 양의 정수가 아니다"
-    if _RAW_BG_LIVE_RESERVE >= _RAW_BUDGET:
+    if raw_reserve is None:
         return (
-            f"KREAM_BG_LIVE_RESERVE={_RAW_BG_LIVE_RESERVE} 가 캡({_RAW_BUDGET}) 이상이다 "
+            "KREAM_BG_LIVE_RESERVE 가 양의 정수가 아니다 "
+            f"(입력: {os.getenv('KREAM_BG_LIVE_RESERVE', '')!r})"
+        )
+    if raw_reserve >= raw_budget:
+        return (
+            f"KREAM_BG_LIVE_RESERVE={raw_reserve} 가 캡({raw_budget}) 이상이다 "
             "— 백그라운드 허용치가 영구 0 이 된다"
         )
     return None
@@ -474,7 +506,10 @@ async def background_allowance() -> int:
     """이번 순간 백그라운드가 쓸 수 있는 호출 허용치.
 
     = max(0, min(현재 단계 소프트캡 - 최근24h 백그라운드 사용량,
-                 10000(하드캡) - 최근24h 전체사용량 - 1000(라이브 예약분)))
+                 BUDGET(하드캡) - 최근24h 전체사용량 - BG_LIVE_RESERVE(라이브 예약분)))
+
+    숫자를 하드코딩하지 않는다 — 캡은 **낮추는 방향으로 운용 가능**하고(예: 2,000),
+    그때 "10000/1000" 서술은 틀린 설명이 된다(2026-07-25 리뷰).
 
     두 축을 모두 만족해야 한다: ① 소프트캡은 "이 램프 단계에서 백그라운드가
     실제로 이미 쓴 만큼" 을 차감해 계속 소진되게 하고(2-v F1 — 이전에는
