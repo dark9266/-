@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -911,10 +911,13 @@ async def test_main_refuses_to_run_while_other_batch_holds_lock(db, monkeypatch)
     fake_run.assert_not_awaited()  # 크림 호출 경로 진입 자체가 없어야 한다
 
 
-async def test_main_releases_lock_after_run(db, monkeypatch):
+async def test_main_releases_lock_after_run(db, spy_pacer, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["bootstrap_cold_volumes_light.py"])
     monkeypatch.setattr(boot, "fetch_targets", AsyncMock(return_value=[{"product_id": "P1"}]))
     monkeypatch.setattr(boot, "run_batch", AsyncMock(return_value=boot.RunSummary()))
+    monkeypatch.setattr(
+        boot.kream_crawler, "ensure_session_ready", AsyncMock(return_value=200)
+    )
 
     rc = await boot.main()
 
@@ -936,3 +939,88 @@ async def test_run_batch_stops_when_batch_lock_lost(db, spy_pacer, monkeypatch):
     assert summary.stopped_reason == "batch_lock_lost"
     assert summary.processed == 0
     assert spy_pacer.wait_turn_calls == 0  # 크림 호출 0회
+
+
+# ---------------------------------------------------------------------------
+# 2-v2 F2 — 세션 워밍 (초기화 GET 을 자기 몫의 broker 거래로 소비)
+# ---------------------------------------------------------------------------
+
+
+async def test_warm_session_goes_through_acquire_background(db, spy_pacer, monkeypatch):
+    """워밍도 브로커/페이서를 통과한다 — 초기화 GET 이 공짜로 나가지 않는다."""
+    monkeypatch.setattr(
+        boot.kream_crawler, "ensure_session_ready", AsyncMock(return_value=200)
+    )
+
+    status = await boot.warm_session()
+
+    assert status == 200
+    assert spy_pacer.wait_turn_calls == 1
+
+
+async def test_warm_session_refused_when_circuit_tripped(db, spy_pacer, monkeypatch):
+    """서킷 트립 상태면 워밍조차 거부 — 실 요청 0회."""
+    await kb.report_block(403)
+    ensure = AsyncMock(return_value=200)
+    monkeypatch.setattr(boot.kream_crawler, "ensure_session_ready", ensure)
+
+    with pytest.raises(kb.KreamCircuitTripped):
+        await boot.warm_session()
+    ensure.assert_not_awaited()
+    assert spy_pacer.wait_turn_calls == 0
+
+
+async def test_main_stops_without_batch_when_session_init_blocked(db, spy_pacer, monkeypatch):
+    """초기화가 403 이면 본 배치에 진입하지 않고 서킷을 트립시킨다."""
+    fake_run = AsyncMock()
+    monkeypatch.setattr(sys, "argv", ["bootstrap_cold_volumes_light.py"])
+    monkeypatch.setattr(boot, "fetch_targets", AsyncMock(return_value=[{"product_id": "P1"}]))
+    monkeypatch.setattr(boot, "run_batch", fake_run)
+    monkeypatch.setattr(
+        boot.kream_crawler, "ensure_session_ready", AsyncMock(return_value=403)
+    )
+
+    rc = await boot.main()
+
+    assert rc == 1
+    fake_run.assert_not_awaited()
+    assert await kb.is_circuit_tripped() is True
+
+
+async def test_main_runs_batch_when_session_init_ok(db, spy_pacer, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["bootstrap_cold_volumes_light.py"])
+    monkeypatch.setattr(boot, "fetch_targets", AsyncMock(return_value=[{"product_id": "P1"}]))
+    monkeypatch.setattr(boot, "run_batch", AsyncMock(return_value=boot.RunSummary()))
+    monkeypatch.setattr(
+        boot.kream_crawler, "ensure_session_ready", AsyncMock(return_value=200)
+    )
+
+    assert await boot.main() == 0
+
+
+# ---------------------------------------------------------------------------
+# 2-v2 F1 — 레거시 bootstrap_cold_volumes.py 실행 차단
+# ---------------------------------------------------------------------------
+
+
+async def test_legacy_bootstrap_script_refuses_to_run(db, monkeypatch, capsys):
+    """브로커·페이서·잠금을 전부 우회하는 레거시 경로는 기본 거부다.
+
+    ⚠️ 이 테스트는 **가드가 사라져도 안전해야 한다**. 2026-07-25 변이 검증에서
+    가드만 끄고 돌렸다가 이 테스트가 실 DB 를 읽어 실계정 크림 호출 311건을
+    냈다(전부 200, 서킷 정상, 24h 353/10000 — 지속 피해 없음). 그래서 이제
+    ① `db` 픽스처로 `settings.db_path` 를 tmp 로 격리하고
+    ② 네트워크를 타는 `KreamPriceRefresher` 를 mock 으로 막는다.
+    가드 검증은 "거부 반환값 + 메시지 + refresher 미사용" 으로만 한다.
+    """
+    import scripts.bootstrap_cold_volumes as legacy
+
+    monkeypatch.delenv(legacy.LEGACY_GO_ENV, raising=False)
+    refresher_cls = MagicMock()
+    monkeypatch.setattr(legacy, "KreamPriceRefresher", refresher_cls)
+
+    rc = await legacy.main()
+
+    assert rc == 1
+    assert "실행 거부" in capsys.readouterr().out
+    refresher_cls.assert_not_called()  # 크림 경로 진입 자체가 없어야 한다

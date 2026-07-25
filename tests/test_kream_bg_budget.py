@@ -510,6 +510,54 @@ async def test_count_24h_total_and_background_single_snapshot(bg_db):
     assert (total, bg) == (10, 7)
 
 
+# ---------------------------------------------------------------------------
+# 2-v2 (코덱스 수렴 라운드) — 잠금 토큰 · 페이서 대기 중 상실
+# ---------------------------------------------------------------------------
+
+
+async def test_batch_run_lock_same_owner_label_two_runs_are_exclusive(bg_db):
+    """같은 `--owner` 라벨을 두 프로세스에 줘도 동시 실행은 거부된다 (2-v2 F3).
+
+    `--owner` 는 resume 를 위해 재사용하도록 만들어진 lease 라벨이다. 이걸
+    그대로 잠금 owner 로 쓰면 재진입 규칙을 타고 둘 다 잠금을 얻어버렸다.
+    """
+    async with kb.batch_run_lock("bootstrap-fixed-label"):
+        with pytest.raises(kb.KreamBatchLockHeld):
+            async with kb.batch_run_lock("bootstrap-fixed-label"):
+                pytest.fail("같은 라벨의 두 번째 실행이 잠금을 얻으면 안 된다")
+
+
+async def test_batch_run_lock_same_label_release_does_not_free_other_run(bg_db):
+    """먼저 끝난 실행이 같은 라벨의 다른 실행 잠금을 풀어버리지 않는다."""
+    async with kb.batch_run_lock("bootstrap-fixed-label"):
+        with pytest.raises(kb.KreamBatchLockHeld):
+            async with kb.batch_run_lock("bootstrap-fixed-label"):
+                pass
+        # 두 번째(거부된) 실행의 컨텍스트 종료가 첫 실행의 잠금을 건드리면 안 된다
+        assert await kb.try_acquire_batch_lock("outsider") is False
+
+
+async def test_acquire_background_rechecks_lock_loss_after_pacer_wait(bg_db, monkeypatch):
+    """페이서 대기 중에 상실이 감지되면 yield 전에 다시 막는다 (2-v2 F4)."""
+
+    class _LosingPacer:
+        def __init__(self) -> None:
+            self.wait_turn_calls = 0
+
+        async def wait_turn(self) -> float:
+            self.wait_turn_calls += 1
+            kb._batch_lock_lost = True  # 대기 도중 하트비트가 상실 감지
+            return 0.0
+
+    pacer = _LosingPacer()
+    monkeypatch.setattr(kb, "get_pacer", lambda: pacer)
+
+    with pytest.raises(kb.KreamBatchLockLost):
+        async with kb.acquire_background("bootstrap_light"):
+            pytest.fail("잠금 상실 후 크림 호출이 나가면 안 된다")
+    assert pacer.wait_turn_calls == 1
+
+
 async def test_batch_lock_does_not_consume_budget_or_pacer(bg_db, spy_pacer):
     """잠금 판정 자체는 크림 호출이 아니다 — 예산 소비/페이서 대기 0."""
     before = await kb.background_allowance()

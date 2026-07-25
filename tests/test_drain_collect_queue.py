@@ -579,7 +579,7 @@ async def test_main_refuses_to_run_while_other_batch_holds_lock(db, monkeypatch)
     fake_run.assert_not_awaited()
 
 
-async def test_main_releases_lock_after_run(db, monkeypatch):
+async def test_main_releases_lock_after_run(db, spy_pacer, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["drain_collect_queue.py"])
     monkeypatch.setattr(
         drain, "local_rematch", AsyncMock(return_value={"checked": 0, "found": 0})
@@ -588,6 +588,9 @@ async def test_main_releases_lock_after_run(db, monkeypatch):
     monkeypatch.setattr(drain, "group_search_targets", lambda rows: [_one_target()])
     monkeypatch.setattr(drain, "compute_run_budget", AsyncMock(return_value=10))
     monkeypatch.setattr(drain, "run_batch", AsyncMock(return_value=drain.RunSummary()))
+    monkeypatch.setattr(
+        drain.kream_crawler, "ensure_session_ready", AsyncMock(return_value=200)
+    )
 
     rc = await drain.main()
 
@@ -612,3 +615,38 @@ async def test_run_batch_stops_when_batch_lock_lost(db, spy_pacer, monkeypatch):
     assert summary.search_calls_made == 0
     fake_fetch.assert_not_awaited()
     assert spy_pacer.wait_turn_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# 2-v2 F2 — 세션 워밍
+# ---------------------------------------------------------------------------
+
+
+async def test_warm_session_goes_through_acquire_background(db, spy_pacer, monkeypatch):
+    monkeypatch.setattr(
+        drain.kream_crawler, "ensure_session_ready", AsyncMock(return_value=200)
+    )
+
+    assert await drain.warm_session() == 200
+    assert spy_pacer.wait_turn_calls == 1
+
+
+async def test_main_stops_without_batch_when_session_init_blocked(db, spy_pacer, monkeypatch):
+    fake_run = AsyncMock()
+    monkeypatch.setattr(sys, "argv", ["drain_collect_queue.py"])
+    monkeypatch.setattr(
+        drain, "local_rematch", AsyncMock(return_value={"checked": 0, "found": 0})
+    )
+    monkeypatch.setattr(drain, "fetch_search_targets", AsyncMock(return_value=[]))
+    monkeypatch.setattr(drain, "group_search_targets", lambda rows: [_one_target()])
+    monkeypatch.setattr(drain, "compute_run_budget", AsyncMock(return_value=10))
+    monkeypatch.setattr(drain, "run_batch", fake_run)
+    monkeypatch.setattr(
+        drain.kream_crawler, "ensure_session_ready", AsyncMock(return_value=429)
+    )
+
+    rc = await drain.main()
+
+    assert rc == 1
+    fake_run.assert_not_awaited()
+    assert await kb.is_circuit_tripped() is True

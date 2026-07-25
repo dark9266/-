@@ -380,6 +380,26 @@ async def _apply_state(db: aiosqlite.Connection, product_id: str, result: Classi
 # ─── 단일 상품 처리 (2-0 배선) ──────────────────────────────────────────────
 
 
+# ─── 세션 워밍 (2-v2 F2) ────────────────────────────────────────────────────
+
+
+SESSION_INIT_PATH = "session_init"
+
+
+async def warm_session() -> int | None:
+    """루프 진입 전에 세션 초기화 GET 을 **자기 몫의 broker 거래**로 소비한다.
+
+    2-v2 F2(코덱스 수렴): 이걸 하지 않으면 배치 첫 raw 호출이 허가 1회로
+    초기화 GET + 본 GET 두 건을 내보내, 잔여 허용치가 1일 때 소프트캡·
+    예약분·페이싱을 정확히 1건 초과한다. 워밍 이후에는 세션이 초기화된
+    상태라 이후 호출은 항상 1거래 = 1요청이다.
+
+    반환: 초기화 GET 의 상태코드(이미 초기화됐으면 추가 요청 0회).
+    """
+    async with acquire_background(PURPOSE):
+        return await kream_crawler.ensure_session_ready()
+
+
 async def _process_one(db: aiosqlite.Connection, product_id: str) -> ClassifyResult:
     """acquire_background 경유 1회 시도 → 상태분류 → report_block/success → DB 반영.
 
@@ -619,6 +639,24 @@ async def main() -> int:
                     f"[bootstrap-light:{label}] 시작 | 대상 {len(product_ids):,}건 | "
                     f"owner={owner}"
                 )
+                try:
+                    init_status = await warm_session()
+                except (
+                    KreamCircuitTripped,
+                    KreamBackgroundBudgetExceeded,
+                    KreamBudgetExceeded,
+                    KreamBatchLockLost,
+                ) as exc:
+                    # 워밍 자체가 서킷/예산/잠금으로 거부 — 트레이스백 대신 우아한 종료
+                    print(f"[bootstrap-light:{label}] 세션 워밍 거부 — 종료: {exc}")
+                    return 1
+                if init_status in _BLOCK_STATUSES:
+                    await report_block(init_status, path=SESSION_INIT_PATH)
+                    print(
+                        f"[bootstrap-light:{label}] 세션 초기화가 차단됨"
+                        f"(status={init_status}) — 본 요청 없이 종료"
+                    )
+                    return 1
                 summary = await run_batch(
                     db, product_ids, owner=owner,
                     chunk_size=args.chunk_size, lease_ttl=args.lease_ttl,

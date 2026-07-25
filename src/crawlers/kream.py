@@ -303,6 +303,21 @@ class KreamCrawler:
             logger.warning("초기 쿠키 확보 실패 (계속 진행): %s", e)
             self._initialized = True
 
+    async def ensure_session_ready(self) -> int | None:
+        """세션 초기화(쿠키·API 버전)를 **지금** 끝내고 그 GET 의 상태코드를 반환.
+
+        2-v2 F2(코덱스 수렴): 배치 raw 경로는 첫 호출에서 초기화 GET + 본 GET
+        두 건을 broker 허가 1회로 내보냈다 — 잔여 허용치가 1일 때 소프트캡·
+        예약분·페이싱을 1건 초과한다. 배치가 루프 진입 **전에** 이 메서드를
+        자기 몫의 `acquire_background` 거래로 한 번 호출하면, 이후 본 요청은
+        항상 1거래 = 1요청이 된다.
+
+        이미 초기화된 세션이면 추가 요청 0회로 마지막 초기화 상태를 그대로
+        돌려준다. 반환: 200/403/429 등 상태코드, 연결 실패·미시도 시 None.
+        """
+        await self._get_session()
+        return self._last_init_status
+
     async def close(self) -> None:
         if self._session is not None:
             await self._session.close()

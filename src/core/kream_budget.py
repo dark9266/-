@@ -44,6 +44,7 @@ import asyncio
 import contextvars
 import os
 import time
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime
@@ -619,7 +620,13 @@ async def batch_run_lock(
     로 거부해 배치가 다음 호출에서 멈춘다(2-vr F3-1).
     """
     global _batch_lock_lost
-    acquired = await try_acquire_batch_lock(owner, ttl_seconds=ttl_seconds)
+    # 2-v2 F3 (코덱스 수렴): 잠금 소유자는 **실행별 토큰** 이어야 한다.
+    # `--owner` 는 resume 를 위해 같은 값을 재사용하도록 만들어진 lease 라벨이라,
+    # 그대로 잠금 owner 로 쓰면 같은 라벨의 두 프로세스가 재진입 규칙(`lock_owner=?`)
+    # 을 타고 **둘 다** 잠금을 얻고, 먼저 끝난 쪽이 남의 잠금을 풀어버린다.
+    # 라벨은 진단용으로 남기고 뒤에 프로세스별 난수를 붙인다.
+    token = f"{owner}#{uuid.uuid4().hex[:8]}"
+    acquired = await try_acquire_batch_lock(token, ttl_seconds=ttl_seconds)
     if not acquired:
         raise KreamBatchLockHeld(
             f"백그라운드 배치 잠금 보유 중(owner={owner} 아님) — 동시 실행 거부"
@@ -630,14 +637,14 @@ async def batch_run_lock(
         if renew_interval is not None
         else max(1.0, ttl_seconds / _BATCH_LOCK_RENEW_DIVISOR)
     )
-    renewer = asyncio.create_task(_renew_batch_lock_loop(owner, ttl_seconds, interval))
+    renewer = asyncio.create_task(_renew_batch_lock_loop(token, ttl_seconds, interval))
     try:
         yield
     finally:
         renewer.cancel()
         with suppress(asyncio.CancelledError):
             await renewer
-        await release_batch_lock(owner)
+        await release_batch_lock(token)
         _batch_lock_lost = False
 
 
@@ -671,5 +678,12 @@ async def acquire_background(purpose: str) -> AsyncIterator[None]:
             f"백그라운드 예산 소진 (stage={state['stage']} soft={ramp_soft_cap(state['stage'])})"
         )
     await get_pacer().wait_turn()
+    # 2-v2 F4 (코덱스 수렴): 위 검사 이후 DB 조회·페이서 대기 동안 하트비트가
+    # 상실을 감지했을 수 있다. yield 직전에 한 번 더 확인해야 "상실 후 1건이
+    # 더 나가는" 창이 닫힌다.
+    if _batch_lock_lost:
+        raise KreamBatchLockLost(
+            "배치 잠금 상실(페이서 대기 중 감지) — 신규 백그라운드 호출 거부"
+        )
     with kream_purpose(purpose):
         yield

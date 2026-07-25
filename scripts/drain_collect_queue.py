@@ -356,6 +356,26 @@ async def _apply_result(
 # ─── 단일 그룹 처리 (2-0 배선) ──────────────────────────────────────────────
 
 
+# ─── 세션 워밍 (2-v2 F2) ────────────────────────────────────────────────────
+
+
+SESSION_INIT_PATH = "session_init"
+
+
+async def warm_session() -> int | None:
+    """루프 진입 전에 세션 초기화 GET 을 **자기 몫의 broker 거래**로 소비한다.
+
+    2-v2 F2(코덱스 수렴): 이걸 하지 않으면 배치 첫 raw 호출이 허가 1회로
+    초기화 GET + 본 GET 두 건을 내보내, 잔여 허용치가 1일 때 소프트캡·
+    예약분·페이싱을 정확히 1건 초과한다. 워밍 이후에는 세션이 초기화된
+    상태라 이후 호출은 항상 1거래 = 1요청이다.
+
+    반환: 초기화 GET 의 상태코드(이미 초기화됐으면 추가 요청 0회).
+    """
+    async with acquire_background(PURPOSE):
+        return await kream_crawler.ensure_session_ready()
+
+
 async def _process_group(db: aiosqlite.Connection, target: SearchTarget) -> ClassifyResult:
     """acquire_background 경유 대표 1회 검색 → 분류 → report_block/success → DB 반영.
 
@@ -553,6 +573,23 @@ async def main() -> int:
         owner = f"drain-{os.getpid()}"
         try:
             async with batch_run_lock(owner):
+                try:
+                    init_status = await warm_session()
+                except (
+                    KreamCircuitTripped,
+                    KreamBackgroundBudgetExceeded,
+                    KreamBudgetExceeded,
+                    KreamBatchLockLost,
+                ) as exc:
+                    print(f"[drain-queue] 세션 워밍 거부 — 종료: {exc}")
+                    return 1
+                if init_status in _BLOCK_STATUSES:
+                    await report_block(init_status, path=SESSION_INIT_PATH)
+                    print(
+                        f"[drain-queue] 세션 초기화가 차단됨(status={init_status}) — "
+                        "본 요청 없이 종료"
+                    )
+                    return 1
                 summary = await run_batch(db, targets, run_cap=run_cap)
         except KreamBatchLockHeld as exc:
             print(f"[drain-queue] 배치 잠금 보유 중 — 동시 실행 거부: {exc}")
