@@ -185,7 +185,14 @@ def _executes(seg: str, script: str, _depth: int = 0) -> bool:
     if _token_is_script(head, script):
         return True  # 직접 실행 (./scripts/x.py, cd scripts && ./x.py)
     if _PY_HEADS.match(os.path.basename(head)):
-        return any(_token_is_script(t, script) for t in toks[1:])
+        # ⚠️ 인터프리터 뒤의 **첫 .py 토큰**만 "실행되는 스크립트" 다. 그 뒤는 그
+        # 스크립트의 인자다 — 전부 검사하면
+        # `python scripts/codex_collab.py --paths scripts/bootstrap_...py` 처럼
+        # 다른 프로그램에 경로를 넘기는 정상 명령이 막힌다(2026-07-25 실측).
+        for tok in toks[1:]:
+            if tok.endswith(".py"):
+                return _token_is_script(tok, script)
+        return False
     return False
 
 
@@ -237,9 +244,33 @@ def _module_form_executes(seg: str, script: str) -> bool:
     return False
 
 
+def _has_inline_go(cmd: str) -> bool:
+    """명령 자체에 `KREAM_LIVE_BATCH_GO=1` 을 **선행 env 로** 붙였는가.
+
+    세션 전역 export 보다 이쪽이 안전하다 — GO 가 그 한 줄에만 걸리므로 다음
+    명령에 실수로 딸려가지 않는다(코덱스 P1 브리프: "각 명령에 개별적으로 붙이고
+    shell 전역으로 export 하지 마라"). 사고는 실수로 일어나는데, 이 접두사는
+    실수로 타이핑되지 않는다.
+    """
+    try:
+        segments = shell_segments(_strip_comment(cmd or ""))
+    except ShellParseError:
+        segments = [cmd or ""]
+    for seg in segments:
+        toks = seg.split()
+        i = 0
+        if toks and os.path.basename(toks[0]) in {"env"}:
+            i = 1
+        while i < len(toks) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", toks[i]):
+            if toks[i] == f"{LIVE_GO}=1":
+                return True
+            i += 1
+    return False
+
+
 def evaluate(cmd: str, go_enabled: bool) -> Decision:
-    """Bash 명령 판정. GO 가 켜져 있으면 전부 통과."""
-    if go_enabled:
+    """Bash 명령 판정. GO(세션 env 또는 명령 선행 env)면 전부 통과."""
+    if go_enabled or _has_inline_go(cmd):
         return Decision(True)
 
     cmd = _strip_comment(cmd or "")

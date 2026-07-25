@@ -531,3 +531,17 @@ def test_live_guard_still_blocks_the_real_scripts_after_boundary_fix():
     assert _blocks(f"python ./{_DRAIN}")
     assert _blocks(f"cd scripts && python {_BOOT.split('/')[-1]}")
     assert not _blocks(f"python {_BOOT} --dry-run")
+
+
+def test_live_guard_distinguishes_execution_from_argument():
+    """2026-07-25 오탐 — `python scripts/codex_collab.py plan --paths <배치스크립트>` 가 막혔다.
+
+    실행되는 건 `codex_collab.py` 인데, 훅이 **인자로 넘긴 경로**(배치 스크립트 이름)를
+    보고 그 배치를 실행하는 것으로 오인했다. 인터프리터 뒤 **첫 `.py` 토큰만 실행
+    대상**으로 보도록 고쳤다 — 이 판정을 고정한다. 오탐이 나면 사람이 훅을 꺼버린다.
+    """
+    assert not _blocks(f"python scripts/codex_collab.py plan --paths {_BOOT}")
+    assert not _blocks(f"python scripts/codex_collab.py verify --paths {_BOOT} {_DRAIN}")
+    assert not _blocks(f"python -m pytest tests/test_{_BOOT.split('/')[-1]}")
+    # 그래도 진짜 실행은 그대로 막혀야 한다 — 판정이 느슨해진 게 아니라 정확해진 것.
+    assert _blocks(f"python {_BOOT} --limit 5")
