@@ -72,6 +72,7 @@ from src.core.kream_budget import (  # noqa: E402
     KreamBudgetExceeded,
     KreamCircuitTripped,
     KreamConfigUnsafe,
+    KreamLocalDropStorm,
     acquire_background,
     background_allowance,
     batch_run_lock,
@@ -648,8 +649,9 @@ async def main() -> int:
                     KreamBudgetExceeded,
                     KreamBatchLockLost,
                     KreamConfigUnsafe,
+                    KreamLocalDropStorm,
                 ) as exc:
-                    # 워밍 자체가 서킷/예산/잠금으로 거부 — 트레이스백 대신 우아한 종료
+                    # 워밍 자체가 서킷/예산/잠금/로컬폭주로 거부 — 트레이스백 대신 우아한 종료
                     print(f"[bootstrap-light:{label}] 세션 워밍 거부 — 종료: {exc}")
                     return 1
                 if init_status in _BLOCK_STATUSES:

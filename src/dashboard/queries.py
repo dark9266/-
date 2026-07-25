@@ -8,6 +8,7 @@ from typing import Any
 
 from src.config import settings
 from src.core.db import sync_connect
+from src.core.kream_budget import ACTUAL_SEND_WHERE
 
 # 크림 일일 호출 캡 — src.core.kream_budget 의 BUDGET 과 동일 기본값.
 # 여기서 import 하지 않는 이유: 대시보드는 완전히 읽기 전용 의존성만 유지하고,
@@ -226,9 +227,11 @@ def kream_budget_usage(cap: int = KREAM_DAILY_CAP_DEFAULT) -> dict[str, Any]:
     """
     with _conn() as c:
         try:
+            # 캡 사용량은 **실송신**만 센다 — 로컬 스킵(599)은 네트워크로 안 나갔다.
+            # 정의는 kream_budget 단일 기준을 그대로 쓴다(화면마다 달라지면 안 됨).
             row = c.execute(
                 "SELECT COUNT(*) FROM kream_api_calls "
-                "WHERE ts >= datetime('now','-1 day')"
+                f"WHERE ts >= datetime('now','-1 day') AND {ACTUAL_SEND_WHERE}"
             ).fetchone()
             used = int(row[0]) if row else 0
         except sqlite3.OperationalError:
@@ -236,9 +239,11 @@ def kream_budget_usage(cap: int = KREAM_DAILY_CAP_DEFAULT) -> dict[str, Any]:
 
         purposes: list[dict[str, Any]] = []
         try:
+            # purpose 분포는 실송신/로컬드롭을 나눠 보여준다 — 드롭 폭주 진단용
             prows = c.execute(
                 "SELECT COALESCE(NULLIF(purpose,''),'-') as purpose, "
-                "       COUNT(*) as cnt "
+                f"       SUM(CASE WHEN {ACTUAL_SEND_WHERE} THEN 1 ELSE 0 END) as cnt, "
+                f"       SUM(CASE WHEN {ACTUAL_SEND_WHERE} THEN 0 ELSE 1 END) as local_drops "
                 "FROM kream_api_calls "
                 "WHERE ts >= datetime('now','-1 day') "
                 "GROUP BY purpose ORDER BY cnt DESC"

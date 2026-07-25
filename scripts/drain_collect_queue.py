@@ -59,6 +59,7 @@ from src.core.kream_budget import (  # noqa: E402
     KreamBudgetExceeded,
     KreamCircuitTripped,
     KreamConfigUnsafe,
+    KreamLocalDropStorm,
     acquire_background,
     background_allowance,
     batch_run_lock,
@@ -582,6 +583,7 @@ async def main() -> int:
                     KreamBudgetExceeded,
                     KreamBatchLockLost,
                     KreamConfigUnsafe,
+                    KreamLocalDropStorm,
                 ) as exc:
                     print(f"[drain-queue] 세션 워밍 거부 — 종료: {exc}")
                     return 1

@@ -61,7 +61,8 @@ def db_counts(since_iso: str) -> dict:
     # strftime('%s',..) (unix second) 와 비교하면 문자열 사전순으로 전 기간이
     # 통과되어 누적 수치가 24h 로 오집계된다. datetime(..) 로 ISO 비교.
     row = cur.execute(
-        "SELECT COUNT(*) AS n FROM kream_api_calls WHERE ts >= datetime('now','-1 day')"
+        "SELECT COUNT(*) AS n FROM kream_api_calls "
+        "WHERE ts >= datetime('now','-1 day') AND (status IS NULL OR status <> 599)"
     ).fetchone()
     out["kream_calls_24h"] = row["n"]
     # decision_log since (optional)

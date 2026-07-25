@@ -21,11 +21,14 @@ from curl_cffi.requests import AsyncSession
 
 from src.config import settings
 from src.core.kream_budget import (
+    LOCAL_DROP_STATUS,
     KreamBudgetExceeded,
     assert_kream_config_safe,
     check_budget,
     current_purpose,
+    record_actual_send,
     record_call,
+    record_local_drop,
 )
 from src.models.product import KreamProduct, KreamSizePrice
 from src.utils.logging import setup_logger
@@ -452,8 +455,12 @@ class KreamCrawler:
         # 500 스킵리스트: 이미 최근 N회 500 관측된 엔드포인트는 즉시 drop.
         # cap 낭비 + 지수백오프로 인한 전체 throughput 저하 방지.
         if _is_500_blacklisted(endpoint):
-            await record_call(endpoint, method, 599, 0, f"{purpose}:blacklist_500")
+            await record_call(endpoint, method, LOCAL_DROP_STATUS, 0, f"{purpose}:blacklist_500")
             logger.debug("500 스킵리스트 드롭: %s", endpoint)
+            # 로컬 드롭은 캡을 소비하지 않는다(실송신이 아니므로) — 대신 폭주
+            # 가드가 "네트워크 0인데 계속 도는" 상태를 잡는다. 임계 초과 시
+            # KreamLocalDropStorm 이 올라가 해당 job 이 멈춘다.
+            record_local_drop(purpose, endpoint)
             return None
 
         # 직렬화 범인 판별용 계측 (2026-04-21):
@@ -480,6 +487,8 @@ class KreamCrawler:
                 latency_ms = int(_t_http * 1000)
                 _t_db_start = time.perf_counter()
                 await record_call(endpoint, method, status, latency_ms, purpose)
+                # 실송신 1건 — 이 경로의 연속 드롭 카운터를 끊는다
+                record_actual_send(purpose, endpoint)
                 _db_ms = int((time.perf_counter() - _t_db_start) * 1000)
                 logger.info(
                     "[kream-req-exit] task=%s sess=%s endpoint=%s "

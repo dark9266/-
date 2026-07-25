@@ -277,13 +277,102 @@ class KreamBudgetExceeded(RuntimeError):
     """일일 크림 호출 캡 초과."""
 
 
+# ─── 실송신(actual send) 정의 — 캡·대시보드·보고서 공통 단일 기준 ─────────────
+#
+# `kream_api_calls` 에는 **실제로 크림에 나간 요청**과 **로컬에서 끝난 스킵**이
+# 섞여 있다. 후자는 500-스킵리스트가 `status=599` 로 기록하는 행으로, 네트워크로
+# 나가지 않는다.
+#
+# 2026-07-25 실측: 2026-05-02 하루 10,000행 중 **3,917행(39%)이 로컬 드롭**이었다.
+# 이게 하드캡을 갉아먹어, 스킵리스트를 넣은 목적("cap 낭비 방지")을 절반 상쇄했다.
+# 하드캡이 보호하려는 대상은 IP·계정·크림 서버에 **전달된 요청**이므로 로컬에서
+# 끝난 작업을 섞으면 안 된다.
+#
+# ⚠️ 이 상수를 쓰는 곳이 갈라지면 화면마다 숫자가 달라진다 — 캡·대시보드·헬스
+# 리포트·파일럿 리포트가 **모두 이 정의를 import 해서** 쓴다.
+LOCAL_DROP_STATUS: int = 599
+ACTUAL_SEND_WHERE: str = f"(status IS NULL OR status <> {LOCAL_DROP_STATUS})"
+"""실송신 판정 SQL 조건. `status IS NULL` 은 타임아웃(=실제로 나갔다)이라 포함."""
+
+
 async def _count_last_24h() -> int:
+    """최근 24h **실송신** 수 (로컬 드롭 제외) — 하드캡 판정 기준."""
     async with async_connect(settings.db_path) as db:
         cur = await db.execute(
-            "SELECT COUNT(*) FROM kream_api_calls WHERE ts >= datetime('now','-1 day')"
+            "SELECT COUNT(*) FROM kream_api_calls "
+            f"WHERE ts >= datetime('now','-1 day') AND {ACTUAL_SEND_WHERE}"
         )
         row = await cur.fetchone()
         return int(row[0]) if row else 0
+
+
+# =============================================================================
+# 로컬 드롭 폭주 가드 — **599 캡 제외와 반드시 같은 배포 단위**
+#
+# 599 를 캡에서 빼면, 하드캡이 로컬 루프에 주던 (우연한) 제동이 사라진다.
+# 네트워크는 0인데 CPU·DB·스케줄러만 태우는 폭주가 가능해진다.
+# 실측 근거: `/api/p/options/display` 한 엔드포인트에 로컬 드롭이
+# delta_light 6,931 + price_refresh 3,856 건 집중돼 있었다.
+#
+# ⚠️ 이건 **크림 서킷이 아니다**. 크림이 응답한 게 아니라 우리가 안 보낸 것이므로,
+# 전역 크림 차단(`report_block`)으로 오인하면 안 된다 — 해당 job/path 만 멈춘다.
+# 임계값은 임시값이다(코덱스 S 자문). 카나리 clean window 후 재산정한다.
+# =============================================================================
+
+LOCAL_DROP_STREAK_LIMIT: int = 20  # 동일 (purpose, endpoint) 연속 드롭
+LOCAL_DROP_WINDOW_SEC: float = 300.0  # 5분
+LOCAL_DROP_WINDOW_LIMIT: int = 100  # 그 창 안의 전체 드롭
+
+
+class KreamLocalDropStorm(RuntimeError):
+    """로컬 스킵이 폭주한다 — 해당 job/path 중단. **크림 차단이 아니다**."""
+
+
+_local_drop_streak: dict[tuple[str, str], int] = {}
+_local_drop_window: list[float] = []
+
+
+def reset_local_drop_guard() -> None:
+    """카운터 초기화 (프로세스/테스트 경계)."""
+    _local_drop_streak.clear()
+    _local_drop_window.clear()
+
+
+def record_actual_send(purpose: str, endpoint: str) -> None:
+    """실송신 1건 — 그 (purpose, endpoint) 의 연속 드롭 카운터를 끊는다."""
+    _local_drop_streak.pop((purpose, endpoint), None)
+
+
+def record_local_drop(purpose: str, endpoint: str, *, now: float | None = None) -> None:
+    """로컬 스킵 1건 기록. 임계 초과면 `KreamLocalDropStorm`.
+
+    두 축을 본다:
+      · 동일 (purpose, endpoint) **연속** 20건 — 한 경로가 갇힌 경우
+      · 최근 5분 **전체** 100건 — 여러 경로에 걸쳐 도는 경우
+    """
+    now = time.time() if now is None else now
+
+    _local_drop_window.append(now)
+    cutoff = now - LOCAL_DROP_WINDOW_SEC
+    while _local_drop_window and _local_drop_window[0] < cutoff:
+        _local_drop_window.pop(0)
+
+    key = (purpose, endpoint)
+    streak = _local_drop_streak.get(key, 0) + 1
+    _local_drop_streak[key] = streak
+
+    if streak >= LOCAL_DROP_STREAK_LIMIT:
+        _local_drop_streak.pop(key, None)  # 같은 예외 반복 방지
+        raise KreamLocalDropStorm(
+            f"로컬 스킵 연속 {streak}건 (purpose={purpose} endpoint={endpoint}) "
+            "— 이 경로가 갇혔다. 크림 차단이 아니라 대상 선별 문제다."
+        )
+    if len(_local_drop_window) >= LOCAL_DROP_WINDOW_LIMIT:
+        _local_drop_window.clear()
+        raise KreamLocalDropStorm(
+            f"최근 {LOCAL_DROP_WINDOW_SEC:.0f}초 로컬 스킵 {LOCAL_DROP_WINDOW_LIMIT}건 초과 "
+            f"(직전 purpose={purpose} endpoint={endpoint}) — 네트워크 0 폭주."
+        )
 
 
 async def check_budget() -> None:
@@ -484,7 +573,8 @@ async def _count_24h_total_and_background() -> tuple[int, int]:
     async with async_connect(settings.db_path) as db:
         cur = await db.execute(
             f"SELECT COUNT(*), COALESCE(SUM(CASE WHEN ({where}) THEN 1 ELSE 0 END), 0) "
-            f"FROM kream_api_calls WHERE ts >= datetime('now','-1 day')",
+            f"FROM kream_api_calls "
+            f"WHERE ts >= datetime('now','-1 day') AND {ACTUAL_SEND_WHERE}",
             params,
         )
         row = await cur.fetchone()
