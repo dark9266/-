@@ -175,21 +175,89 @@ async def test_purge_removes_only_settled_old_tokens(token_db):
 
 
 # ---------------------------------------------------------------------------
-# 5. 아직 배선 전 — 기존 동작 불변
+# 5. 배선 (조각 b) — 캡이 미결 예약을 소비로 반영한다
 # ---------------------------------------------------------------------------
 
 
-async def test_api_is_not_wired_into_the_hot_path_yet():
-    """이 조각은 API 계층만이다. 프로덕션 호출부가 생기면 이 테스트를 갱신하라."""
+async def test_hard_cap_counts_open_reservations(token_db):
+    """"보냈는데 기록 전에 죽은" 호출이 캡에서 사라지지 않는다 — 예약의 존재 이유."""
+    conn = sqlite3.connect(token_db)
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS kream_api_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            endpoint TEXT NOT NULL, method TEXT NOT NULL,
+            status INTEGER, latency_ms INTEGER, purpose TEXT
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO kream_api_calls (ts, endpoint, method, status, latency_ms, purpose) "
+        "VALUES (datetime('now'), '/x', 'GET', 200, 10, 'p')",
+        [()] * 5,
+    )
+    conn.commit()
+    conn.close()
+
+    assert await kb._count_last_24h() == 5
+
+    await kb.reserve_send_token("p", "/x")  # 결론 미정 = 소비
+    assert await kb._count_last_24h() == 6, "미결 예약이 캡에 반영돼야 한다"
+
+
+async def test_settled_reservation_is_not_double_counted(token_db):
+    """확정 송신은 원장이 센다 — 토큰까지 세면 이중계산이다."""
+    conn = sqlite3.connect(token_db)
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS kream_api_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            endpoint TEXT NOT NULL, method TEXT NOT NULL,
+            status INTEGER, latency_ms INTEGER, purpose TEXT
+        );
+        INSERT INTO kream_api_calls (ts, endpoint, method, status, latency_ms, purpose)
+        VALUES (datetime('now'), '/x', 'GET', 200, 10, 'p');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    token = await kb.reserve_send_token("p", "/x")
+    await kb.settle_send_token(token, sent=True)
+
+    assert await kb._count_last_24h() == 1, "원장 1건 + 정산된 토큰 = 1이어야 한다"
+
+
+def test_hot_paths_reserve_before_sending():
+    """세 송신 지점이 전부 예약을 거치는지 소스로 확인.
+
+    한 곳이라도 빠지면 그 경로의 크래시 호출이 캡에서 사라진다.
+    """
     import pathlib
 
-    root = pathlib.Path(__file__).resolve().parents[1]
-    callers = []
-    for path in list((root / "src").rglob("*.py")) + list((root / "scripts").rglob("*.py")):
-        if path.name == "kream_budget.py":
-            continue
-        text = path.read_text(encoding="utf-8")
-        if "reserve_send_token" in text:
-            callers.append(str(path.relative_to(root)))
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "src" / "crawlers" / "kream.py"
+    ).read_text(encoding="utf-8")
 
-    assert callers == [], f"배선됨: {callers} — 배선 조각에서 이 테스트를 갱신할 것"
+    assert src.count("reserve_send_token(") >= 3, "송신 지점 3곳(_request + raw 2)"
+    # 예약한 만큼 정산 호출이 있어야 한다(성공 1 + 예외 2 + raw 각 2)
+    assert src.count("settle_send_token(") >= 5
+
+
+def test_local_drop_does_not_reserve_a_token():
+    """로컬 스킵(599)은 네트워크로 안 나간다 — 예약하면 캡만 갉아먹는다.
+
+    소스에서 드롭 분기가 `return None` 으로 **예약 전에** 끝나는지 확인.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "src" / "crawlers" / "kream.py"
+    ).read_text(encoding="utf-8")
+
+    drop_idx = src.index("_is_500_blacklisted(endpoint)")
+    reserve_idx = src.index("reserve_send_token(purpose, endpoint)")
+    between = src[drop_idx:reserve_idx]
+    assert "return None" in between, "드롭이 예약보다 뒤에 있으면 캡이 샌다"

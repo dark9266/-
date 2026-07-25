@@ -29,6 +29,8 @@ from src.core.kream_budget import (
     record_actual_send,
     record_call,
     record_local_drop,
+    reserve_send_token,
+    settle_send_token,
 )
 from src.models.product import KreamProduct, KreamSizePrice
 from src.utils.logging import setup_logger
@@ -477,6 +479,10 @@ class KreamCrawler:
                 "[kream-req-enter] task=%s sess=%s endpoint=%s purpose=%s",
                 _task_name, _sess_id, endpoint, purpose,
             )
+            # 송신 **직전** 토큰 예약 — 응답 후 record_call 만으로는 "보냈는데
+            # 기록 전에 죽은" 호출이 캡에서 사라진다. 로컬 드롭(599) 판정은 위에서
+            # 이미 끝났으므로, 여기 온 건 실제로 나갈 요청이다.
+            _token = await reserve_send_token(purpose, endpoint)
             try:
                 resp = await session.request(
                     method, url, headers=req_headers, params=params,
@@ -487,6 +493,7 @@ class KreamCrawler:
                 latency_ms = int(_t_http * 1000)
                 _t_db_start = time.perf_counter()
                 await record_call(endpoint, method, status, latency_ms, purpose)
+                await settle_send_token(_token, sent=True)  # 원장이 대신 센다
                 # 실송신 1건 — 이 경로의 연속 드롭 카운터를 끊는다
                 record_actual_send(purpose, endpoint)
                 _db_ms = int((time.perf_counter() - _t_db_start) * 1000)
@@ -539,12 +546,14 @@ class KreamCrawler:
             except asyncio.TimeoutError:
                 latency_ms = int((time.perf_counter() - t0) * 1000)
                 await record_call(endpoint, method, None, latency_ms, purpose)
+                await settle_send_token(_token, sent=True)
                 wait = (2 ** attempt) * 2
                 logger.warning("타임아웃 (%s) — %d초 후 재시도", url, wait)
                 await asyncio.sleep(wait)
             except Exception as e:
                 latency_ms = int((time.perf_counter() - t0) * 1000)
                 await record_call(endpoint, method, None, latency_ms, purpose)
+                await settle_send_token(_token, sent=True)
                 wait = (2 ** attempt) * 2
                 logger.warning("연결 에러 (%s): %s — %d초 후 재시도", url, e, wait)
                 await asyncio.sleep(wait)
@@ -598,16 +607,19 @@ class KreamCrawler:
         headers.update(self._build_api_auth_headers())
 
         t0 = time.perf_counter()
+        token = await reserve_send_token(purpose, endpoint)  # 송신 직전 예약
         try:
             resp = await session.request("GET", url, headers=headers, allow_redirects=True)
         except Exception:
             latency_ms = int((time.perf_counter() - t0) * 1000)
             await record_call(endpoint, "GET", None, latency_ms, purpose)
+            await settle_send_token(token, sent=True)  # 타임아웃도 실송신 취급
             return 0, None
 
         status = resp.status_code
         latency_ms = int((time.perf_counter() - t0) * 1000)
         await record_call(endpoint, "GET", status, latency_ms, purpose)
+        await settle_send_token(token, sent=True)
 
         if not (200 <= status < 300):
             return status, None
@@ -677,16 +689,19 @@ class KreamCrawler:
         headers["User-Agent"] = random.choice(_SAFARI_USER_AGENTS)
 
         t0 = time.perf_counter()
+        token = await reserve_send_token(purpose, endpoint)  # 송신 직전 예약
         try:
             resp = await session.request("GET", url, headers=headers, allow_redirects=True)
         except Exception:
             latency_ms = int((time.perf_counter() - t0) * 1000)
             await record_call(endpoint, "GET", None, latency_ms, purpose)
+            await settle_send_token(token, sent=True)  # 타임아웃도 실송신 취급
             return 0, None
 
         status = resp.status_code
         latency_ms = int((time.perf_counter() - t0) * 1000)
         await record_call(endpoint, "GET", status, latency_ms, purpose)
+        await settle_send_token(token, sent=True)
 
         if not (200 <= status < 300):
             return status, None

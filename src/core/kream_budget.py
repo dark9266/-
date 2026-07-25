@@ -296,14 +296,35 @@ ACTUAL_SEND_WHERE: str = f"(status IS NULL OR status <> {LOCAL_DROP_STATUS})"
 
 
 async def _count_last_24h() -> int:
-    """최근 24h **실송신** 수 (로컬 드롭 제외) — 하드캡 판정 기준."""
+    """최근 24h **실송신 + 미결 예약** 수 — 하드캡 판정 기준.
+
+    로컬 드롭(599)은 제외한다(네트워크로 안 나갔다).
+    미결 예약은 **더한다** — "보냈는데 기록 전에 죽은" 호출이 캡에서 사라지지
+    않게 하는 게 예약의 존재 이유다(2026-07-25 조각 b). 확정 송신은
+    `kream_api_calls` 가 이미 세므로 `settle` 된 토큰은 여기서 빠진다(이중계산 방지).
+    """
+    cutoff = time.time() - 86400.0
     async with async_connect(settings.db_path) as db:
+        # ⚠️ 커넥션은 **하나만** 연다. 예약 배선 초기에 두 함수를 각각 열었더니
+        # 크림 호출마다 SQLite 커넥션이 하나 더 늘어, 라이브 핫패스의 writer
+        # 경합이 커지고 테스트 전체 스위트에서 aiosqlite 워커 스레드가 닫힌
+        # 이벤트루프를 호출하는 경고까지 나왔다(2026-07-25 실측 — 배선 전 0건,
+        # 배선 후 1건). 같은 스냅샷을 쓰는 이점도 있다.
+        await _ensure_send_token_schema(db)
         cur = await db.execute(
-            "SELECT COUNT(*) FROM kream_api_calls "
-            f"WHERE ts >= datetime('now','-1 day') AND {ACTUAL_SEND_WHERE}"
+            "SELECT ("
+            "  SELECT COUNT(*) FROM kream_api_calls "
+            f"  WHERE ts >= datetime('now','-1 day') AND {ACTUAL_SEND_WHERE}"
+            "), ("
+            "  SELECT COUNT(*) FROM kream_send_token "
+            "  WHERE status = ? AND reserved_at >= ?"
+            ")",
+            (TOKEN_RESERVED, cutoff),
         )
         row = await cur.fetchone()
-        return int(row[0]) if row else 0
+        if not row:
+            return 0
+        return int(row[0]) + int(row[1])
 
 
 # =============================================================================
@@ -417,9 +438,21 @@ TOKEN_SENT: str = "sent"  # 송신 확인 + 원장 기록됨 (kream_api_calls �
 TOKEN_NOT_SENT: str = "not_sent"  # 송신 안 한 게 **확실** — 캡에서 뺀다
 
 
+# 스키마 생성은 **DB 경로당** 1회면 충분하다 — 크림 호출마다 DDL 을 다시 도는 건
+# 핫패스 낭비다.
+# ⚠️ 프로세스 전역 bool 로 뒀다가 즉시 깨졌다(2026-07-25 실측): 테스트는 테스트마다
+# `settings.db_path` 를 새 tmp 파일로 바꾸므로, 첫 DB 에서 세운 플래그 때문에
+# 두 번째 DB 에는 테이블이 안 생겨 11건이 실패했다. **경로별로** 기억해야 한다.
+_send_token_schema_ready: set[str] = set()
+
+
 async def _ensure_send_token_schema(db) -> None:
+    path = settings.db_path
+    if path in _send_token_schema_ready:
+        return
     await db.execute(_SEND_TOKEN_SCHEMA)
     await db.execute(_SEND_TOKEN_INDEX)
+    _send_token_schema_ready.add(path)
 
 
 async def reserve_send_token(purpose: str, endpoint: str) -> int:
