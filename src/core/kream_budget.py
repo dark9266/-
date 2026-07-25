@@ -40,11 +40,12 @@ Phase 0 보안 레이어 — 실계정 보호를 위한 하드 캡.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import os
 import time
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime
 
 from src.config import settings
@@ -69,6 +70,20 @@ BG_RAMP_STAGES: dict[str, int] = {
 BG_RAMP_ORDER: tuple[str, ...] = ("canary", "day1", "day2", "ramp2000", "ramp3000")
 _BG_5XX_TRIP_THRESHOLD: int = 3
 _BG_BLOCK_STATUSES: frozenset[int] = frozenset({403, 429})
+
+# 백그라운드 purpose 레지스트리 (2-v F1 — 코덱스 적대검증 실결함 반영).
+# `background_allowance()` 의 소프트캡은 "백그라운드가 실제로 쓴 최근24h
+# 호출수" 를 차감해야 한다 — 이 집합이 그 "무엇이 백그라운드냐"의 단일
+# 판정 기준이다. 규약: **prefix 매칭** — `kream_api_calls.purpose` 가
+# 이 집합의 어느 원소와 정확히 같거나 `"{원소}:"` 로 시작하면 백그라운드로
+# 센다 (예: "bootstrap_light" 자체는 물론 세션 초기화 계측용
+# "bootstrap_light:session_init" 도 포함 — 그 GET 도 같은 배치가 유발한
+# 실제 크림 히트이므로 소프트캡 소비에 포함되는 게 맞다).
+# 새 백그라운드 소비자 추가 시 여기 등록만 하면 자동으로 카운트된다.
+# 현재 등록: bootstrap_cold_volumes_light.py(PURPOSE="bootstrap_light",
+# --mode recheck 도 동일 PURPOSE 재사용) · drain_collect_queue.py
+# (PURPOSE="collect_queue_drain").
+BG_PURPOSE_PREFIXES: frozenset[str] = frozenset({"bootstrap_light", "collect_queue_drain"})
 
 _BG_STATE_SCHEMA: str = """
 CREATE TABLE IF NOT EXISTS kream_bg_budget_state (
@@ -300,16 +315,49 @@ async def advance_ramp_stage() -> str:
     return next_stage
 
 
+async def _count_background_used_24h() -> int:
+    """최근 24h `BG_PURPOSE_PREFIXES` 에 매칭되는 호출수 (소프트캡 소비량).
+
+    라이브 경로(purpose 가 bg 접두사와 무관 — "manual"/"v3_delta" 등)는
+    이 집계에서 제외된다 — 소프트캡은 백그라운드 소비만 차감하고, 라이브
+    사용량은 하드캡(`_count_last_24h`) 쪽에서만 영향을 준다.
+    """
+    if not BG_PURPOSE_PREFIXES:
+        return 0
+    clauses = []
+    params: list[str] = []
+    for prefix in BG_PURPOSE_PREFIXES:
+        clauses.append("purpose = ? OR purpose LIKE ?")
+        params.extend([prefix, f"{prefix}:%"])
+    where = " OR ".join(clauses)
+    async with async_connect(settings.db_path) as db:
+        cur = await db.execute(
+            f"SELECT COUNT(*) FROM kream_api_calls "
+            f"WHERE ts >= datetime('now','-1 day') AND ({where})",
+            params,
+        )
+        row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+
 async def background_allowance() -> int:
     """이번 순간 백그라운드가 쓸 수 있는 호출 허용치.
 
-    = max(0, min(현재 단계 소프트캡, 10000(하드캡) - 최근24h 전체사용량 - 1000(라이브 예약분)))
-    라이브 예약분을 침범할 수 없다 — 음수가 나오면 0으로 클램프.
+    = max(0, min(현재 단계 소프트캡 - 최근24h 백그라운드 사용량,
+                 10000(하드캡) - 최근24h 전체사용량 - 1000(라이브 예약분)))
+
+    두 축을 모두 만족해야 한다: ① 소프트캡은 "이 램프 단계에서 백그라운드가
+    실제로 이미 쓴 만큼" 을 차감해 계속 소진되게 하고(2-v F1 — 이전에는
+    소프트캡이 소비량과 무관한 상수라서 카나리 100 단계에서도 수천 건이
+    허용되는 실결함이 있었다), ② 예약분은 라이브 알림 경로를 위해 항상
+    남겨둔다. 어느 쪽이든 음수가 나오면 0 으로 클램프.
     """
-    used = await _count_last_24h()
+    used_total = await _count_last_24h()
+    used_bg = await _count_background_used_24h()
     soft = await current_soft_cap()
-    reserved_room = BUDGET - used - BG_LIVE_RESERVE
-    return max(0, min(soft, reserved_room))
+    soft_room = soft - used_bg
+    reserved_room = BUDGET - used_total - BG_LIVE_RESERVE
+    return max(0, min(soft_room, reserved_room))
 
 
 def _is_retryable_failure(status: int) -> bool:
@@ -379,6 +427,157 @@ async def is_circuit_tripped() -> bool:
     """현재 서킷 트립 여부."""
     state = await get_ramp_state()
     return state["circuit_tripped"]
+
+
+# =============================================================================
+# 배치 상호배제 잠금 (2-v F3 — 코덱스 적대검증 실결함)
+#
+# 페이서(kream_pacer)는 "프로세스 내" 전역 싱글턴이다. bootstrap_cold_volumes_
+# light.py 와 drain_collect_queue.py 를 별도 프로세스로 동시에 실행하면 각자
+# 페이서를 가져 간격 보장이 프로세스 경계를 넘어서지 못하고, `background_
+# allowance()` 판정도 두 프로세스가 동시에 조회하면 같은 잔여량을 두 번 볼 수
+# 있어(비원자) 예약분 경계를 넘길 수 있다. 크로스 프로세스로 페이서 자체를
+# 공유하는 대신(2-0 스코프 밖으로 명시 확정) — "배치 동시 실행 자체를 DB 잠금
+# 으로 막는다" 로 문제를 소거한다. `volume_job_lease`(2-1) 와 동일한
+# INSERT/UPDATE-WHERE 원자 idiom.
+# =============================================================================
+
+_BATCH_LOCK_SCHEMA: str = """
+CREATE TABLE IF NOT EXISTS kream_bg_batch_lock (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    lock_owner TEXT,
+    lock_until REAL
+)
+"""
+
+DEFAULT_BATCH_LOCK_TTL_SEC: float = float(
+    os.getenv("KREAM_BG_BATCH_LOCK_TTL_SEC", str(2 * 3600))
+)  # 2h — 크래시 대비 자동 만료
+# TTL 은 "크래시 후 얼마나 빨리 되찾느냐" 만 정한다. 실행 중인 배치는 아래
+# 하트비트가 TTL/N 주기로 갱신하므로 아무리 오래 돌아도 만료되지 않는다
+# (램프 3000단계 × 페이서 3s ≈ 2.9h > TTL 2h 였다 — 갱신 없이는 실행 도중
+# 잠금이 풀려 F3 가 무력화된다).
+_BATCH_LOCK_RENEW_DIVISOR: int = 4
+
+
+class KreamBatchLockHeld(RuntimeError):
+    """다른 owner 가 이미 백그라운드 배치 실행 잠금을 보유 중 — 동시 실행 거부."""
+
+
+async def _ensure_batch_lock_schema(db) -> None:
+    await db.execute(_BATCH_LOCK_SCHEMA)
+    await db.execute(
+        "INSERT OR IGNORE INTO kream_bg_batch_lock (id, lock_owner, lock_until) "
+        "VALUES (1, NULL, NULL)"
+    )
+
+
+async def try_acquire_batch_lock(
+    owner: str, *, ttl_seconds: float = DEFAULT_BATCH_LOCK_TTL_SEC
+) -> bool:
+    """배치 실행 잠금 원자 획득 시도.
+
+    이미 다른 owner 가 보유 중이고 안 만료됐으면 실패(False). 비어있거나
+    (`lock_until IS NULL`) 만료됐으면(`lock_until < now`) 이 owner 가 획득
+    (True). 같은 owner 의 재호출(재진입)도 True — idempotent.
+    단일 UPDATE 문 안에서 조건과 갱신이 함께 일어나 SQLite 의 writer 직렬화
+    (WAL busy_timeout)에 기대어 프로세스 간에도 원자적이다.
+    """
+    now = time.time()
+    lock_until = now + ttl_seconds
+    async with async_connect(settings.db_path) as db:
+        await _ensure_batch_lock_schema(db)
+        await db.commit()
+        await db.execute(
+            """
+            UPDATE kream_bg_batch_lock
+            SET lock_owner = ?, lock_until = ?
+            WHERE id = 1 AND (lock_until IS NULL OR lock_until < ? OR lock_owner = ?)
+            """,
+            (owner, lock_until, now, owner),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT lock_owner FROM kream_bg_batch_lock WHERE id = 1")
+        row = await cur.fetchone()
+    return bool(row) and row["lock_owner"] == owner
+
+
+async def release_batch_lock(owner: str) -> None:
+    """보유 중인 배치 잠금 해제. 다른 owner 가 이미 보유 중이면 손대지 않는다
+    (만료 후 다른 owner 가 선점한 경우 그 lease 를 실수로 풀지 않기 위함)."""
+    async with async_connect(settings.db_path) as db:
+        await _ensure_batch_lock_schema(db)
+        await db.execute(
+            "UPDATE kream_bg_batch_lock SET lock_owner = NULL, lock_until = NULL "
+            "WHERE id = 1 AND lock_owner = ?",
+            (owner,),
+        )
+        await db.commit()
+
+
+async def _renew_batch_lock_loop(owner: str, ttl_seconds: float, interval: float) -> None:
+    """실행 중인 배치의 잠금을 주기적으로 연장 (하트비트).
+
+    같은 owner 의 재획득은 idempotent 하게 `lock_until` 을 밀어주므로
+    `try_acquire_batch_lock` 을 그대로 재사용한다. 갱신 실패(=만료 후 다른
+    owner 가 선점)는 이미 동시 실행이 벌어진 상황이라 경고만 남긴다 — 여기서
+    배치를 강제 중단시키지는 않는다(진행 중인 lease/DB 반영을 중간에
+    끊는 편이 더 위험하다). DB 일시 오류는 무시하고 다음 주기에 재시도한다.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            still_mine = await try_acquire_batch_lock(owner, ttl_seconds=ttl_seconds)
+        except Exception as exc:  # DB 일시 오류 — 다음 주기에 재시도
+            logger.warning("배치 잠금 갱신 실패(계속 진행): %s", exc)
+            continue
+        if not still_mine:
+            logger.warning(
+                "배치 잠금을 다른 owner 에게 빼앗김 — 동시 실행 가능성 (owner=%s)", owner
+            )
+
+
+@asynccontextmanager
+async def batch_run_lock(
+    owner: str,
+    *,
+    ttl_seconds: float = DEFAULT_BATCH_LOCK_TTL_SEC,
+    renew_interval: float | None = None,
+) -> AsyncIterator[None]:
+    """배치 스크립트 본문 전체를 감싸는 상호배제 컨텍스트매니저.
+
+    사용 (스크립트 main()):
+        owner = f"bootstrap-{os.getpid()}"
+        async with batch_run_lock(owner):
+            ... 배치 본문(acquire_background 호출 포함) ...
+
+    이미 다른 owner 가 보유 중이면 `KreamBatchLockHeld` 를 던지고 즉시
+    종료한다(예산/페이서 소비 없음 — 잠금 판정 자체는 크림 호출이 아니다).
+    정상 종료든 예외든 `finally` 에서 반드시 해제. 크래시로 해제가 누락돼도
+    `ttl_seconds`(기본 2h) 경과 후 자동 만료돼 다음 실행이 되찾을 수 있다.
+
+    본문이 도는 동안에는 하트비트 태스크가 `ttl_seconds/4`(기본 30분) 주기로
+    잠금을 연장한다 — 배치가 TTL 보다 오래 걸려도(램프 상위 단계에서는 정상)
+    실행 도중 만료돼 다른 배치가 끼어드는 일이 없다.
+    """
+    acquired = await try_acquire_batch_lock(owner, ttl_seconds=ttl_seconds)
+    if not acquired:
+        raise KreamBatchLockHeld(
+            f"백그라운드 배치 잠금 보유 중(owner={owner} 아님) — 동시 실행 거부"
+        )
+    interval = (
+        renew_interval
+        if renew_interval is not None
+        else max(1.0, ttl_seconds / _BATCH_LOCK_RENEW_DIVISOR)
+    )
+    renewer = asyncio.create_task(_renew_batch_lock_loop(owner, ttl_seconds, interval))
+    try:
+        yield
+    finally:
+        renewer.cancel()
+        with suppress(asyncio.CancelledError):
+            await renewer
+        await release_batch_lock(owner)
 
 
 @asynccontextmanager

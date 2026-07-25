@@ -228,6 +228,11 @@ class KreamCrawler:
         self._api_version: str = "56"
         self._build_version: str = ""
         self._device_id: str = ""
+        # 2-v(F2): 세션 초기화 GET 의 HTTP 상태 보존 — raw 배치 경로
+        # (fetch_screens_status/fetch_search_status)가 "이번 호출에서 세션
+        # 초기화가 일어났고 그 응답이 차단(403/429)이었는지" 판별하는 데 사용.
+        # None = 아직 시도 안 함 또는 연결 실패/타임아웃(예외).
+        self._last_init_status: int | None = None
 
     @property
     def is_active(self) -> bool:
@@ -254,15 +259,31 @@ class KreamCrawler:
         return self._session
 
     async def _init_cookies(self) -> None:
-        """크림 메인 페이지 방문으로 세션 쿠키 + API 설정값 확보."""
+        """크림 메인 페이지 방문으로 세션 쿠키 + API 설정값 확보.
+
+        2-v(F2): 이 GET 이 기존에는 `record_call` 계측 없이 나갔고 응답이
+        403/429 여도 감춘 채 이후 본 요청이 그대로 전송됐다(적대검증 실결함).
+        이제 이 GET 도 `record_call` 로 계측하고(하드캡·서킷 판정에 반영),
+        상태코드를 `self._last_init_status` 에 보존한다 — raw 배치 경로
+        (`fetch_screens_status`/`fetch_search_status`)가 "이번 호출에서 세션
+        초기화 자체가 차단됐는지"를 보고 본 요청을 건너뛸 수 있게 한다.
+        """
+        purpose = f"{current_purpose()}:session_init"
+        endpoint = "/"  # KREAM_BASE 루트 방문
+        t0 = time.perf_counter()
         try:
             resp = await self._session.get(
                 KREAM_BASE, headers=_PAGE_HEADERS, allow_redirects=True
             )
+            status = resp.status_code
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            await record_call(endpoint, "GET", status, latency_ms, purpose)
+            self._last_init_status = status
+
             # 쿠키에서 device ID 추출
             self._device_id = str(self._session.cookies.get("webDid", ""))
             # HTML에서 API 설정값 추출
-            if resp.status_code == 200:
+            if status == 200:
                 html = resp.text
                 m = re.search(r'apiVersion["\']?\s*[:=]\s*["\']([^"\']+)', html)
                 if m:
@@ -272,10 +293,13 @@ class KreamCrawler:
                     self._build_version = m.group(1)
             logger.info(
                 "초기 쿠키 확보: status=%d, api_ver=%s, build=%s",
-                resp.status_code, self._api_version, self._build_version,
+                status, self._api_version, self._build_version,
             )
             self._initialized = True
         except Exception as e:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            await record_call(endpoint, "GET", None, latency_ms, purpose)
+            self._last_init_status = None
             logger.warning("초기 쿠키 확보 실패 (계속 진행): %s", e)
             self._initialized = True
 
@@ -500,7 +524,12 @@ class KreamCrawler:
         if purpose == "manual":
             purpose = current_purpose()
 
+        # 2-v(F2): 세션이 아직 초기화 안 된 상태(=이번 호출에서 초기화 GET이
+        # 나감)라면, 그 결과가 차단(403/429)일 때 본 요청 없이 즉시 반환한다.
+        was_initialized = self._initialized
         session = await self._get_session()
+        if not was_initialized and self._last_init_status in (403, 429):
+            return self._last_init_status, None
         endpoint = f"/api/screens/products/{product_id}"
         url = f"{KREAM_API_BASE}{endpoint}"
         headers = dict(_API_HEADERS)
@@ -575,7 +604,12 @@ class KreamCrawler:
         if purpose == "manual":
             purpose = current_purpose()
 
+        # 2-v(F2): 세션이 아직 초기화 안 된 상태(=이번 호출에서 초기화 GET이
+        # 나감)라면, 그 결과가 차단(403/429)일 때 본 요청 없이 즉시 반환한다.
+        was_initialized = self._initialized
         session = await self._get_session()
+        if not was_initialized and self._last_init_status in (403, 429):
+            return self._last_init_status, None
         url = f"{KREAM_BASE}/search?keyword={keyword}&tab=products&sort=date&page=1"
         endpoint = "/search"
         headers = dict(_PAGE_HEADERS)

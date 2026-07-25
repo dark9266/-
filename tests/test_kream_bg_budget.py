@@ -7,6 +7,7 @@ settings.db_path 를 몽키패치한다. 페이서는 실제 sleep 이 걸리지
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 import pytest
@@ -33,8 +34,14 @@ def _create_kream_api_calls(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _insert_calls_last_24h(db_path: str, n: int) -> None:
-    """최근 24h 이내 타임스탬프로 n 건 빠르게 삽입 (recursive CTE)."""
+def _insert_calls_last_24h(
+    db_path: str, n: int, purpose: str = "test", *, age_hours: float = 0.0
+) -> None:
+    """`age_hours` 만큼 과거 타임스탬프로 n 건 빠르게 삽입 (recursive CTE).
+
+    기본값(purpose="test", age_hours=0)은 "24h 이내 · 백그라운드 아님" 이라
+    하드캡 계산에만 잡히고 소프트캡 소비에는 안 잡힌다(2-v F1).
+    """
     if n <= 0:
         return
     conn = sqlite3.connect(db_path)
@@ -46,8 +53,9 @@ def _insert_calls_last_24h(db_path: str, n: int) -> None:
             SELECT x + 1 FROM seq WHERE x < {n}
         )
         INSERT INTO kream_api_calls (ts, endpoint, method, status, latency_ms, purpose)
-        SELECT datetime('now'), '/test', 'GET', 200, 10, 'test' FROM seq
-        """
+        SELECT datetime('now', ?), '/test', 'GET', 200, 10, ? FROM seq
+        """,
+        (f"-{age_hours} hours", purpose),
     )
     conn.commit()
     conn.close()
@@ -280,3 +288,168 @@ async def test_acquire_background_retry_consumes_pacer_each_time(bg_db, spy_pace
     async with kb.acquire_background("bootstrap_light"):
         pass
     assert spy_pacer.wait_turn_calls == 2
+
+
+# ---------------------------------------------------------------------------
+# 2-v F1 — 소프트캡이 "이미 쓴 백그라운드 사용량" 을 차감한다
+#
+# 이전에는 소프트캡이 소비량과 무관한 상수라 canary(100) 단계에서도 24h 동안
+# 수천 건이 허용됐다(코덱스 적대검증 Critical). 아래 테스트들은 램프 단계가
+# 실제 상한으로 기능하는지를 고정한다.
+# ---------------------------------------------------------------------------
+
+
+async def test_background_allowance_deducts_background_usage(bg_db):
+    # canary soft=100, 백그라운드가 이미 40 소비 → 잔여 60
+    _insert_calls_last_24h(bg_db, 40, "bootstrap_light")
+    assert await kb.background_allowance() == 60
+
+
+async def test_background_allowance_counts_session_init_prefix(bg_db):
+    """`{purpose}:session_init`(2-v F2 계측) 도 같은 배치가 유발한 실 크림 히트다."""
+    _insert_calls_last_24h(bg_db, 30, "bootstrap_light")
+    _insert_calls_last_24h(bg_db, 10, "bootstrap_light:session_init")
+    assert await kb.background_allowance() == 60
+
+
+async def test_background_allowance_counts_all_registered_bg_purposes(bg_db):
+    _insert_calls_last_24h(bg_db, 25, "bootstrap_light")
+    _insert_calls_last_24h(bg_db, 25, "collect_queue_drain")
+    assert await kb.background_allowance() == 50
+
+
+async def test_background_allowance_ignores_live_purposes_for_soft_cap(bg_db):
+    """라이브 purpose 는 소프트캡을 갉아먹지 않는다 (하드캡 쪽에만 영향)."""
+    _insert_calls_last_24h(bg_db, 50, "v3_delta")
+    _insert_calls_last_24h(bg_db, 50, "manual")
+    assert await kb.background_allowance() == 100
+
+
+async def test_background_allowance_ignores_unregistered_prefix_lookalike(bg_db):
+    """레지스트리 규약 = 정확일치 또는 `"{원소}:"` 접두. 유사 문자열은 미포함."""
+    _insert_calls_last_24h(bg_db, 40, "bootstrap_light_extra")
+    assert await kb.background_allowance() == 100
+
+
+async def test_background_allowance_zero_when_soft_cap_fully_consumed(bg_db):
+    _insert_calls_last_24h(bg_db, 100, "collect_queue_drain")
+    assert await kb.background_allowance() == 0
+
+
+async def test_background_allowance_clamps_to_zero_when_bg_overshoots(bg_db):
+    """소프트캡을 넘겨 쓴 상태(재시작·경합)에서도 음수가 아니라 0."""
+    _insert_calls_last_24h(bg_db, 130, "bootstrap_light")
+    assert await kb.background_allowance() == 0
+
+
+async def test_background_allowance_ignores_background_calls_older_than_24h(bg_db):
+    _insert_calls_last_24h(bg_db, 100, "bootstrap_light", age_hours=25)
+    assert await kb.background_allowance() == 100
+
+
+async def test_background_allowance_soft_cap_grows_with_ramp_stage(bg_db):
+    """램프 상향 시 잔여도 함께 늘어난다 — 차감이 단계별로 올바르게 적용."""
+    _insert_calls_last_24h(bg_db, 80, "bootstrap_light")
+    assert await kb.background_allowance() == 20
+    await kb.advance_ramp_stage()  # day1 = 500
+    assert await kb.background_allowance() == 420
+
+
+async def test_acquire_background_refused_when_soft_cap_consumed(bg_db, spy_pacer):
+    """하드캡·예약분은 여유로워도 소프트캡 소진이면 백그라운드 호출 거부."""
+    _insert_calls_last_24h(bg_db, 100, "bootstrap_light")
+    with pytest.raises(kb.KreamBackgroundBudgetExceeded):
+        async with kb.acquire_background("bootstrap_light"):
+            pass
+    assert spy_pacer.wait_turn_calls == 0
+
+
+async def test_acquire_background_allowed_just_below_soft_cap(bg_db, spy_pacer):
+    """경계값 — 99건 소비 시점에는 아직 1건 허용된다(오프바이원 방어)."""
+    _insert_calls_last_24h(bg_db, 99, "bootstrap_light")
+    async with kb.acquire_background("bootstrap_light"):
+        pass
+    assert spy_pacer.wait_turn_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# 2-v F3 — 배치 상호배제 잠금 (프로세스 간 동시 실행 거부)
+# ---------------------------------------------------------------------------
+
+
+async def test_batch_lock_refuses_second_owner_while_held(bg_db):
+    assert await kb.try_acquire_batch_lock("owner-A") is True
+    assert await kb.try_acquire_batch_lock("owner-B") is False
+
+
+async def test_batch_lock_reacquire_by_same_owner_is_idempotent(bg_db):
+    assert await kb.try_acquire_batch_lock("owner-A") is True
+    assert await kb.try_acquire_batch_lock("owner-A") is True
+
+
+async def test_batch_lock_acquirable_after_ttl_expiry(bg_db):
+    """크래시로 해제가 누락돼도 TTL 경과 후 다음 실행이 되찾는다."""
+    assert await kb.try_acquire_batch_lock("owner-A", ttl_seconds=-1) is True
+    assert await kb.try_acquire_batch_lock("owner-B") is True
+
+
+async def test_batch_lock_released_allows_other_owner(bg_db):
+    assert await kb.try_acquire_batch_lock("owner-A") is True
+    await kb.release_batch_lock("owner-A")
+    assert await kb.try_acquire_batch_lock("owner-B") is True
+
+
+async def test_batch_lock_release_by_non_owner_is_noop(bg_db):
+    """만료 후 다른 owner 가 선점한 잠금을 늦게 끝난 이전 owner 가 풀지 못한다."""
+    assert await kb.try_acquire_batch_lock("owner-A") is True
+    await kb.release_batch_lock("owner-B")
+    assert await kb.try_acquire_batch_lock("owner-C") is False
+
+
+async def test_batch_run_lock_context_raises_when_held_by_other(bg_db):
+    await kb.try_acquire_batch_lock("owner-A")
+    with pytest.raises(kb.KreamBatchLockHeld):
+        async with kb.batch_run_lock("owner-B"):
+            pytest.fail("잠금 보유 중인데 본문이 실행되면 안 된다")
+
+
+async def test_batch_run_lock_context_releases_on_success(bg_db):
+    async with kb.batch_run_lock("owner-A"):
+        assert await kb.try_acquire_batch_lock("owner-B") is False
+    assert await kb.try_acquire_batch_lock("owner-B") is True
+
+
+async def test_batch_run_lock_context_releases_on_exception(bg_db):
+    with pytest.raises(RuntimeError):
+        async with kb.batch_run_lock("owner-A"):
+            raise RuntimeError("배치 실패")
+    assert await kb.try_acquire_batch_lock("owner-B") is True
+
+
+async def test_batch_run_lock_heartbeat_survives_ttl_expiry(bg_db):
+    """TTL 보다 오래 도는 배치도 실행 중에는 잠금을 잃지 않는다.
+
+    램프 상위 단계(3000건 × 페이서 ~3s)는 기본 TTL(2h)을 넘길 수 있다 —
+    하트비트가 없으면 실행 도중 만료돼 다른 배치가 끼어든다.
+    """
+    async with kb.batch_run_lock("owner-A", ttl_seconds=0.2, renew_interval=0.05):
+        await asyncio.sleep(0.5)  # TTL 의 2.5배 경과
+        assert await kb.try_acquire_batch_lock("owner-B") is False
+
+
+async def test_batch_run_lock_heartbeat_stops_after_exit(bg_db):
+    """본문 종료 후 하트비트 태스크가 남아 잠금을 되살리지 않는다."""
+    async with kb.batch_run_lock("owner-A", ttl_seconds=0.2, renew_interval=0.05):
+        pass
+    assert await kb.try_acquire_batch_lock("owner-B", ttl_seconds=5) is True
+    await asyncio.sleep(0.15)  # 유령 하트비트가 있었다면 이 사이에 뺏어갔을 것
+    assert await kb.try_acquire_batch_lock("owner-B", ttl_seconds=5) is True
+
+
+async def test_batch_lock_does_not_consume_budget_or_pacer(bg_db, spy_pacer):
+    """잠금 판정 자체는 크림 호출이 아니다 — 예산 소비/페이서 대기 0."""
+    before = await kb.background_allowance()
+    async with kb.batch_run_lock("owner-A"):
+        pass
+    assert await kb.background_allowance() == before
+    assert spy_pacer.wait_turn_calls == 0

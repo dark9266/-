@@ -9,6 +9,7 @@ volumes_light.py 관례와 동일).
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -541,3 +542,52 @@ async def test_run_summary_yield_found_rows_over_search_calls(db, spy_pacer, mon
     assert summary.search_calls_made == 2
     assert summary.counts[drain.FOUND] == 2  # M1 그룹 2행 모두 found
     assert summary.counts[drain.NO_MATCH] == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. 2-v F3 — 배치 동시 실행 거부 배선
+#
+# bootstrap 배치와 동시에 돌면 페이서/예약분 보장이 프로세스 경계를 넘지 못한다.
+# main() 이 `batch_run_lock` 을 통과해야만 `run_batch` 에 들어가는지 고정.
+# ---------------------------------------------------------------------------
+
+
+def _one_target() -> "drain.SearchTarget":
+    return drain.SearchTarget(
+        canonical_key="M1", representative_model_number="M1", group_model_numbers=("M1",)
+    )
+
+
+async def test_main_refuses_to_run_while_other_batch_holds_lock(db, monkeypatch):
+    await kb.try_acquire_batch_lock("bootstrap-999")
+
+    fake_run = AsyncMock()
+    monkeypatch.setattr(sys, "argv", ["drain_collect_queue.py"])
+    monkeypatch.setattr(
+        drain, "local_rematch", AsyncMock(return_value={"checked": 0, "found": 0})
+    )
+    monkeypatch.setattr(drain, "fetch_search_targets", AsyncMock(return_value=[]))
+    monkeypatch.setattr(drain, "group_search_targets", lambda rows: [_one_target()])
+    monkeypatch.setattr(drain, "compute_run_budget", AsyncMock(return_value=10))
+    monkeypatch.setattr(drain, "run_batch", fake_run)
+
+    rc = await drain.main()
+
+    assert rc == 1
+    fake_run.assert_not_awaited()
+
+
+async def test_main_releases_lock_after_run(db, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["drain_collect_queue.py"])
+    monkeypatch.setattr(
+        drain, "local_rematch", AsyncMock(return_value={"checked": 0, "found": 0})
+    )
+    monkeypatch.setattr(drain, "fetch_search_targets", AsyncMock(return_value=[]))
+    monkeypatch.setattr(drain, "group_search_targets", lambda rows: [_one_target()])
+    monkeypatch.setattr(drain, "compute_run_budget", AsyncMock(return_value=10))
+    monkeypatch.setattr(drain, "run_batch", AsyncMock(return_value=drain.RunSummary()))
+
+    rc = await drain.main()
+
+    assert rc == 0
+    assert await kb.try_acquire_batch_lock("bootstrap-999") is True

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -883,3 +884,37 @@ def test_script_has_zero_kream_crawler_private_attribute_references():
 
     matches = re.findall(r"kream_crawler\._[a-zA-Z]\w*|kream_module\.\w*", text)
     assert matches == [], f"private 속성 참조 잔존: {matches}"
+
+
+# ---------------------------------------------------------------------------
+# 2-v F3 — 배치 동시 실행 거부 배선
+#
+# 페이서/예산 판정은 프로세스 내 싱글턴이라 두 배치를 동시에 띄우면 간격·예약분
+# 보장이 깨진다. 스크립트 main() 이 실제로 `batch_run_lock` 을 통과해야만
+# `run_batch` 에 들어가는지를 고정한다 (문서만이 아니라 배선).
+# ---------------------------------------------------------------------------
+
+
+async def test_main_refuses_to_run_while_other_batch_holds_lock(db, monkeypatch):
+    await kb.try_acquire_batch_lock("drain-999")
+
+    fake_run = AsyncMock()
+    monkeypatch.setattr(sys, "argv", ["bootstrap_cold_volumes_light.py"])
+    monkeypatch.setattr(boot, "fetch_targets", AsyncMock(return_value=[{"product_id": "P1"}]))
+    monkeypatch.setattr(boot, "run_batch", fake_run)
+
+    rc = await boot.main()
+
+    assert rc == 1
+    fake_run.assert_not_awaited()  # 크림 호출 경로 진입 자체가 없어야 한다
+
+
+async def test_main_releases_lock_after_run(db, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["bootstrap_cold_volumes_light.py"])
+    monkeypatch.setattr(boot, "fetch_targets", AsyncMock(return_value=[{"product_id": "P1"}]))
+    monkeypatch.setattr(boot, "run_batch", AsyncMock(return_value=boot.RunSummary()))
+
+    rc = await boot.main()
+
+    assert rc == 0
+    assert await kb.try_acquire_batch_lock("drain-999") is True

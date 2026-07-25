@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import math
+import os
 import sys
 from dataclasses import dataclass, field
 
@@ -53,10 +54,12 @@ import aiosqlite  # noqa: E402
 from src.config import settings  # noqa: E402
 from src.core.kream_budget import (  # noqa: E402
     KreamBackgroundBudgetExceeded,
+    KreamBatchLockHeld,
     KreamBudgetExceeded,
     KreamCircuitTripped,
     acquire_background,
     background_allowance,
+    batch_run_lock,
     current_purpose,
     current_soft_cap,
     get_usage,
@@ -539,7 +542,16 @@ async def main() -> int:
             f"이번 런 예산 상한 {run_cap:,}회"
         )
 
-        summary = await run_batch(db, targets, run_cap=run_cap)
+        # 2-v(F3): 다른 백그라운드 배치(bootstrap_cold_volumes_light.py 등)가
+        # 동시에 실행 중이면 페이서/예약분이 프로세스 경계를 넘어 공유되지
+        # 않아 간격·예산 보장이 깨진다 — DB 잠금으로 동시 실행 자체를 거부한다.
+        owner = f"drain-{os.getpid()}"
+        try:
+            async with batch_run_lock(owner):
+                summary = await run_batch(db, targets, run_cap=run_cap)
+        except KreamBatchLockHeld as exc:
+            print(f"[drain-queue] 배치 잠금 보유 중 — 동시 실행 거부: {exc}")
+            return 1
 
         print()
         print(
