@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-import aiosqlite
 import pytest
 
 from src.core.call_throttle import CallThrottle
@@ -37,6 +36,29 @@ async def store(tmp_path):
     await s.init()
     yield s
     await s.close()
+
+
+@pytest.fixture(autouse=True)
+async def _isolate_settings_db(tmp_path, monkeypatch):
+    """`settings.db_path` 를 tmp 로 격리 + 정본 스키마 생성.
+
+    prefilter 경로가 `profit_calculator.apply_catch_to_buy_price` →
+    `coupon_store.lookup_catch` 로 내려가면서 `settings.db_path`(운영 DB)를 직접
+    연다 — 이 테스트들은 그동안 **운영 쿠폰 데이터를 읽고** 있었다(전역 안전망이
+    2026-07-25 에 발견). 결과가 운영 데이터에 따라 흔들리는 상태였다.
+
+    스키마는 `Database`(src/models/database.py 정본)로 만든다 — 여기서 CREATE 를
+    다시 쓰면 정본과 어긋난다.
+    """
+    from src.config import settings
+    from src.models.database import Database
+
+    db_file = tmp_path / "prefilter.db"
+    manager = Database(str(db_file))
+    await manager.connect()
+    await manager.close()
+
+    monkeypatch.setattr(settings, "db_path", str(db_file), raising=True)
 
 
 @pytest.fixture

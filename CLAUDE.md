@@ -71,6 +71,8 @@
 | `task_intake_guard.py` | UserPromptSubmit | 프롬프트 토큰으로 **DONE 원장·메모리·git log·기존 모듈** 자동 검색 주입 + **금지 리스트 저촉 경고** + 관련 **스킬 자동 소환** — "중복 작업 안 하기" |
 | `direction_guard.py` | PreToolUse | **폐기 흐름 스캐너 수정 차단**(reverse/scanner/tier1/continuous — `tier2_monitor` 은 예외로 허용) + **신규 소싱처 파일 생성 차단**. 해제 = `KREAM_LEGACY_EDIT_GO=1` / `KREAM_NEW_SOURCE_GO=1` |
 | `claim_evidence_guard.py` | Stop | 증거 없는 **"완료"·"안 된다"·"뚫었다"·"N건이다"** 를 끝내지 못하게 차단 |
+| `kream_live_call_guard.py` | PreToolUse | **실계정 크림 호출 실행 차단** — 배치 라이브 실행(`--dry-run` 없이)·레거시 우회로·`probe_kream*`·안전망 해제 env. 해제 = `KREAM_LIVE_BATCH_GO=1`. 소싱처 probe·dry-run·일반 pytest 는 안 막는다 |
+| `tests/conftest.py` | pytest 전역 | **테스트에서 실 네트워크 송신·운영 DB 연결 차단 + `settings.db_path` 기본 tmp 격리**. 2026-07-25 실계정 311콜 사고 대응 — 격리를 잊어도 안전하다 |
 | `orchestration_gate.py` | PreToolUse | Fable 모드 ON 일 때만 — 메인 직접수정 턴당 5파일 제한 |
 
 - 전부 **fail-open**(훅 버그가 세션을 막지 않는다). 판정 로직은 `tests/test_hooks_guards.py` 로 고정.
@@ -364,6 +366,13 @@ python scripts/codex_collab.py status    # 큐 현황   |  drain        # 밀린
 - 3회 실패 시 방법 지정 금지 — 문제+제약+실패이력만 제공, Claude Code가 탐색
 - 단위 테스트만으로 검증 금지 — 해당 버그 재현 테스트가 통과해야 검증
 - 검증 실패 시 사람 개입 없이 재수정→재검증
+
+### 테스트 격리 (2026-07-25 실계정 311콜 사고 이후 — 기계가 강제)
+- `main()`·배치 진입점을 부르는 테스트는 **tmp DB + 네트워크 mock** 필수.
+  `tests/conftest.py` 가 기본값을 tmp 로 돌리고 실 송신을 막지만, 그건 마지막 방어선이다.
+- **가드에 안전을 의존하지 말 것** — 가드 판별력을 변이(mutation) 검증으로 확인할 때
+  그 가드를 끄는 순간이 곧 사고다. 변이 전에 "이 변이가 실호출 경로를 여는가" 를 먼저 묻는다.
+- 안전망 해제(`KREAM_TEST_ALLOW_NETWORK` / `KREAM_TEST_ALLOW_REAL_DB`)는 사장 GO 사안.
 
 ### 자동 검증 루프
 1. `PYTHONPATH=. python scripts/verify.py` — 파이프라인 검증

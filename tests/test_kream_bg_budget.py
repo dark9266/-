@@ -61,6 +61,21 @@ def _insert_calls_last_24h(
     conn.close()
 
 
+async def _wait_until(predicate, *, timeout: float = 5.0, interval: float = 0.01) -> None:
+    """`predicate()` 가 참이 될 때까지 폴링. 시간 초과 시 즉시 실패.
+
+    하트비트처럼 별도 태스크가 상태를 바꾸는 것을 고정 sleep 으로 기다리면
+    부하 상황에서 간헐 실패한다(2026-07-25 실측 — 전역 안전망 도입 후 흔들림).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(interval)
+    raise AssertionError(f"{timeout}s 안에 조건이 충족되지 않았다: {predicate}")
+
+
 @pytest.fixture(autouse=True)
 def _reset_bg_circuit_counters():
     """모듈 전역 연속실패 카운터 + 잠금상실 플래그 — 테스트 간 누적 방지."""
@@ -454,10 +469,12 @@ async def test_batch_lock_lost_blocks_further_background_calls(bg_db, spy_pacer)
     갱신 주기가 TTL 보다 길게 밀린 상황(이벤트루프 장기 블로킹 등)을 재현:
     만료 직후 owner-B 가 선점 → 하트비트가 상실을 감지 → 이후 호출 차단.
     """
+    # 갱신 주기(0.15) > TTL(0.05) — 하트비트가 밀려 만료가 먼저 오는 상황을 만든다
     async with kb.batch_run_lock("owner-A", ttl_seconds=0.05, renew_interval=0.15):
         await asyncio.sleep(0.08)  # TTL 경과
         assert await kb.try_acquire_batch_lock("owner-B", ttl_seconds=5) is True
-        await asyncio.sleep(0.15)  # 하트비트가 깨어나 상실 감지
+        # 고정 sleep 은 부하 상황에서 흔들린다 — 조건 충족까지 폴링(상한 5s)
+        await _wait_until(kb.batch_lock_lost, timeout=5.0)
 
         assert kb.batch_lock_lost() is True
         with pytest.raises(kb.KreamBatchLockLost):

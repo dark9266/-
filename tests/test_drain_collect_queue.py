@@ -483,7 +483,9 @@ async def test_run_batch_zero_run_cap_stops_immediately(db, spy_pacer, monkeypat
     fetch_mock.assert_not_called()
 
 
-async def test_compute_run_budget_applies_share():
+async def test_compute_run_budget_applies_share(db):
+    # `db` 픽스처로 settings.db_path 를 tmp 로 격리 — 예산 조회가 운영 DB 를
+    # 읽지 않게 한다(전역 안전망이 2026-07-25 에 발견한 격리 누락).
     with patch.object(kb, "background_allowance", AsyncMock(return_value=100)):
         cap = await drain.compute_run_budget(budget_share=0.2)
     assert cap == 20

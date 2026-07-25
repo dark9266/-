@@ -31,6 +31,16 @@
   "역방향이니 끄자" 제안 금지. (나머지 역방향/Tier 스캐너는 폐기 흐름 — `direction_guard` 가 차단.)
 - [2026-05-01] **`price_refresher` 비활성화** — 토글 OFF + 봇 재가동 완료
   (`project_price_refresher_kill_pending`).
+- [2026-07-25] **테스트 실호출 사고 봉합 (실계정 311콜)** — 원인 = `conftest.py` 부재로
+  격리를 파일마다 재구현 + 프로덕션 가드에 안전 의존(그 가드를 끄는 변이 검증이 곧 사고).
+  봉합 = `tests/conftest.py` 전역 안전망 3종(실 송신 차단 · 운영 DB 차단 · `settings.db_path`
+  기본 tmp) + `kream_live_call_guard.py` 훅(라이브 배치·레거시·안전망 해제 실행 차단,
+  해제는 `KREAM_LIVE_BATCH_GO=1`). **재현 테스트로 고정** — 가드를 꺼도 안전망이 막는다
+  (`tests/test_test_safety_net.py::test_incident_replay_legacy_batch_cannot_reach_kream`).
+  안전망 약화·삭제 제안 금지.
+- [2026-07-25] **레거시 `scripts/bootstrap_cold_volumes.py` 실행 차단** — 브로커·페이서·
+  소프트캡·배치잠금을 전부 우회하는 구멍이었다. 대체 = `bootstrap_cold_volumes_light.py`.
+  되살리기 금지(해제는 `KREAM_LEGACY_BOOTSTRAP_GO=1` + 사장 GO).
 - [2026-05-01] **22 소싱처 cover 저하 root cause 확정** — 매칭 정확도 문제가 **아니었다**.
   원인 = 신규 cold 상품 `volume_7d` 미초기화. "매칭 정확도 조사" 재실행 금지
   (`project_cover_diagnosis_20260501`).

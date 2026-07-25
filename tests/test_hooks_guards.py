@@ -14,6 +14,7 @@ if str(_HOOKS) not in sys.path:
 
 import claim_evidence_guard as ceg  # noqa: E402
 import direction_guard as dg  # noqa: E402
+import kream_live_call_guard as klcg  # noqa: E402
 import orchestration_gate as og  # noqa: E402
 import task_intake_guard as tig  # noqa: E402
 
@@ -361,3 +362,95 @@ def test_non_code_files_are_outside_the_limit():
     payload = {"tool_name": "Write", "tool_input": {"file_path": "docs/x.md"}, "prompt_id": "p"}
     gate = {"prompt_id": "p", "files": [f"f{i}.py" for i in range(5)]}
     assert og.decide(payload, "on", gate).allow is True
+
+
+# ---------------------------------------------------------------------------
+# 실호출 가드 (kream_live_call_guard) — 2026-07-25 실계정 311콜 사고 대응
+#
+# 차단만큼 **오탐 방어**를 촘촘히 둔다: 오탐이 나면 사람이 훅을 꺼버리고,
+# 꺼진 훅은 없는 훅이다.
+# ---------------------------------------------------------------------------
+
+
+def _blocks(cmd: str) -> bool:
+    return not klcg.evaluate(cmd, go_enabled=False).allow
+
+
+# --- 막아야 하는 것 ---------------------------------------------------------
+
+
+def test_live_guard_blocks_batch_without_dry_run():
+    assert _blocks("python scripts/bootstrap_cold_volumes_light.py")
+    assert _blocks("python3 scripts/drain_collect_queue.py --limit 10")
+
+
+def test_live_guard_blocks_legacy_bypass_script_and_env():
+    assert _blocks("python scripts/bootstrap_cold_volumes.py")
+    assert _blocks("KREAM_LEGACY_BOOTSTRAP_GO=1 python scripts/bootstrap_cold_volumes.py")
+
+
+def test_live_guard_blocks_kream_probe_scripts():
+    assert _blocks("python scripts/probe_kream_500_v3.py")
+    assert _blocks("./scripts/probe_kream_api_ratelimit.py")
+
+
+def test_live_guard_blocks_direct_kream_hitting_scripts():
+    assert _blocks("PYTHONPATH=. python scripts/push_dump_full.py")
+    assert _blocks("python scripts/manual_auto_scan_live.py")
+    assert _blocks("python scripts/pilot_musinsa_push.py")
+
+
+def test_live_guard_blocks_test_safety_net_bypass():
+    """전역 안전망을 끄는 실행 자체를 막는다 — 사고 경로가 정확히 이것이었다."""
+    assert _blocks("KREAM_TEST_ALLOW_NETWORK=1 python -m pytest tests/ -q")
+    assert _blocks("KREAM_TEST_ALLOW_REAL_DB=1 pytest tests/ -q")
+
+
+def test_live_guard_blocks_when_hidden_in_later_segment():
+    assert _blocks("echo start && python scripts/bootstrap_cold_volumes.py")
+
+
+# --- 막으면 안 되는 것 (오탐 방어) -------------------------------------------
+
+
+def test_live_guard_allows_dry_run_batches():
+    assert not _blocks("python scripts/bootstrap_cold_volumes_light.py --dry-run")
+    assert not _blocks("python scripts/drain_collect_queue.py --dry-run")
+
+
+def test_live_guard_allows_source_only_probes():
+    """소싱처 probe 는 크림 캡과 무관한 읽기전용 — 막지 않는다."""
+    for cmd in (
+        "python scripts/probe_nike_2.py",
+        "python scripts/probe_adidas.py",
+        "python scripts/probe_abcmart_full.py",
+        "python scripts/probe_kasina.py",
+        "python scripts/test_sources_live.py",
+    ):
+        assert not _blocks(cmd), cmd
+
+
+def test_live_guard_allows_plain_pytest_and_reads():
+    assert not _blocks("python -m pytest tests/ -q")
+    assert not _blocks("grep -n scripts/bootstrap_cold_volumes.py CLAUDE.md")
+    assert not _blocks("cat scripts/manual_auto_scan_live.py | head -20")
+    assert not _blocks("git log --oneline -5")
+
+
+def test_live_guard_allows_everything_when_owner_go_is_set():
+    """사장 GO 는 전부 통과 — 자물쇠가 아니라 속도방지턱."""
+    assert klcg.evaluate("python scripts/bootstrap_cold_volumes.py", go_enabled=True).allow
+    assert klcg.evaluate(
+        "python scripts/drain_collect_queue.py", go_enabled=True
+    ).allow
+
+
+def test_live_guard_ignores_non_bash_payloads():
+    """PreToolUse 는 Edit/Write 에도 걸린다 — Bash 가 아니면 판정 자체를 안 한다."""
+    assert klcg.evaluate("", go_enabled=False).allow
+
+
+def test_live_guard_message_tells_how_to_proceed():
+    decision = klcg.evaluate("python scripts/bootstrap_cold_volumes_light.py", False)
+    assert not decision.allow
+    assert "dry-run" in decision.message
