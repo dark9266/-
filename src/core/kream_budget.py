@@ -375,6 +375,118 @@ def record_local_drop(purpose: str, endpoint: str, *, now: float | None = None) 
         )
 
 
+# =============================================================================
+# 송신 토큰 예약 — 원장 기록 실패/크래시로 실호출이 캡 집계에서 사라지는 창을 닫는다
+#
+# 현재 모델은 **응답 후** `record_call` 로 기록한다. 그래서:
+#   · 송신 직후 ~ 기록 커밋 전 사이에 프로세스가 죽으면 그 호출은 원장에 없다
+#     (실제로는 크림에 나갔는데 캡은 모른다).
+#   · 여러 프로세스가 동시에 캡을 조회하면 같은 잔여량을 두 번 볼 수 있다
+#     (check-then-send 레이스). 배치 잠금은 background 끼리만 직렬화하고
+#     라이브 경로와의 경쟁은 막지 못한다.
+#
+# 그래서 **송신 직전에 durable 토큰을 예약**하고, 캡 판정은
+# "확정 송신 + 아직 결론 안 난 예약" 을 함께 센다.
+#
+# ⚠️ 환불 정책(코덱스 S 자문): "송신하지 않았음이 **확실한** 경우" 만 취소한다.
+# 크래시로 결론을 모르는 예약은 **소비된 것으로 둔다** — 약간 과대계수하는 쪽이
+# 하드캡 초과보다 안전하다. 미결 예약은 24h 창에서 자연히 빠진다.
+#
+# 이 조각은 **API 계층만**이다(코덱스: 하루 이하 조각으로 분할). raw 경로 배선과
+# 크래시 reconciliation 은 다음 조각 — 지금은 아무도 호출하지 않으므로 기존
+# 동작이 바뀌지 않는다.
+# =============================================================================
+
+_SEND_TOKEN_SCHEMA: str = """
+CREATE TABLE IF NOT EXISTS kream_send_token (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reserved_at REAL NOT NULL,
+    purpose TEXT,
+    endpoint TEXT,
+    status TEXT NOT NULL DEFAULT 'reserved',
+    settled_at REAL
+)
+"""
+_SEND_TOKEN_INDEX: str = (
+    "CREATE INDEX IF NOT EXISTS idx_send_token_open "
+    "ON kream_send_token(status, reserved_at)"
+)
+
+TOKEN_RESERVED: str = "reserved"  # 예약됨 — 결론 미정. 캡에서 **소비로 센다**
+TOKEN_SENT: str = "sent"  # 송신 확인 + 원장 기록됨 (kream_api_calls 가 대신 센다)
+TOKEN_NOT_SENT: str = "not_sent"  # 송신 안 한 게 **확실** — 캡에서 뺀다
+
+
+async def _ensure_send_token_schema(db) -> None:
+    await db.execute(_SEND_TOKEN_SCHEMA)
+    await db.execute(_SEND_TOKEN_INDEX)
+
+
+async def reserve_send_token(purpose: str, endpoint: str) -> int:
+    """송신 **직전** 토큰 1개 예약 → token_id.
+
+    session init·재시도도 각각 1 토큰이다(각각 실제 송신이므로).
+    로컬 드롭(599) 판정은 **예약 전에** 끝나야 한다 — 안 보낼 걸 예약하면
+    캡만 갉아먹는다.
+    """
+    async with async_connect(settings.db_path) as db:
+        await _ensure_send_token_schema(db)
+        cur = await db.execute(
+            "INSERT INTO kream_send_token (reserved_at, purpose, endpoint, status) "
+            "VALUES (?, ?, ?, ?)",
+            (time.time(), purpose, endpoint, TOKEN_RESERVED),
+        )
+        await db.commit()
+        return int(cur.lastrowid or 0)
+
+
+async def settle_send_token(token_id: int, *, sent: bool) -> None:
+    """예약 결론. `sent=True` = 송신 확인(원장에 기록됨),
+    `sent=False` = **송신하지 않은 게 확실**(요청 자체를 안 보냄).
+
+    확신이 없으면 이 함수를 부르지 마라 — 미결로 두는 게 안전하다.
+    """
+    if token_id <= 0:
+        return
+    async with async_connect(settings.db_path) as db:
+        await _ensure_send_token_schema(db)
+        await db.execute(
+            "UPDATE kream_send_token SET status = ?, settled_at = ? "
+            "WHERE id = ? AND status = ?",
+            (TOKEN_SENT if sent else TOKEN_NOT_SENT, time.time(), token_id, TOKEN_RESERVED),
+        )
+        await db.commit()
+
+
+async def count_open_tokens_24h() -> int:
+    """최근 24h 중 **결론이 안 난** 예약 수 — 캡에서 소비로 센다.
+
+    확정 송신은 `kream_api_calls` 가 이미 세므로 여기서 제외한다(이중 계산 방지).
+    """
+    cutoff = time.time() - 86400.0
+    async with async_connect(settings.db_path) as db:
+        await _ensure_send_token_schema(db)
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM kream_send_token WHERE status = ? AND reserved_at >= ?",
+            (TOKEN_RESERVED, cutoff),
+        )
+        row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+
+async def purge_settled_tokens(older_than_seconds: float = 7 * 86400.0) -> int:
+    """결론 난 오래된 토큰 정리 — 테이블 무한 성장 방지. 미결은 **안 지운다**."""
+    cutoff = time.time() - older_than_seconds
+    async with async_connect(settings.db_path) as db:
+        await _ensure_send_token_schema(db)
+        cur = await db.execute(
+            "DELETE FROM kream_send_token WHERE status != ? AND reserved_at < ?",
+            (TOKEN_RESERVED, cutoff),
+        )
+        await db.commit()
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+
 async def check_budget() -> None:
     """호출 전 체크. 100% 초과 시 예외.
 
