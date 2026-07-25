@@ -57,6 +57,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from dotenv import load_dotenv
 
@@ -84,7 +85,9 @@ from src.core.kream_budget import (  # noqa: E402
 )
 from src.core.kream_pacer import JITTER_MAX_SEC, MIN_INTERVAL_SEC  # noqa: E402
 from src.core.volume_tier import (  # noqa: E402
+    QUARANTINE_BASE_DAYS,
     compute_next_volume_check_at,
+    compute_quarantine_until,
     retry_backoff,
     tier_for_volume,
 )
@@ -107,7 +110,8 @@ _BLOCK_STATUSES = frozenset({403, 429})
 MODE_BOOTSTRAP = "bootstrap"
 MODE_RECHECK = "recheck"
 
-QUARANTINE_DAYS = 90
+# 격리 기본 TTL 은 volume_tier 가 정본(지터 포함). 여기서 재정의하지 않는다.
+QUARANTINE_DAYS = QUARANTINE_BASE_DAYS
 DEFAULT_LEASE_TTL_SECONDS = 300.0
 DEFAULT_CHUNK_SIZE = 50
 
@@ -365,16 +369,26 @@ async def _apply_state(db: aiosqlite.Connection, product_id: str, result: Classi
             (f"+{backoff_seconds} seconds", result.error, product_id),
         )
     elif result.state == QUARANTINED:
+        # 기준시각을 Python 에서 **한 번** 만들어 두 컬럼에 함께 쓴다.
+        # DB 의 CURRENT_TIMESTAMP 와 Python now 를 따로 읽으면 미세하게 어긋나,
+        # 나중에 같은 기준으로 재계산했을 때 값이 달라진다(멱등성 파괴).
+        attempted_at = datetime.now(UTC).replace(microsecond=0)
+        until = compute_quarantine_until(product_id, result.error or "", attempted_at)
         await db.execute(
             """
             UPDATE kream_products SET
-                last_volume_attempt_at = CURRENT_TIMESTAMP,
+                last_volume_attempt_at = ?,
                 volume_attempt_count = COALESCE(volume_attempt_count, 0) + 1,
-                next_volume_attempt_at = datetime('now', ?),
+                next_volume_attempt_at = ?,
                 last_volume_error = ?
             WHERE product_id = ?
             """,
-            (f"+{QUARANTINE_DAYS} days", result.error, product_id),
+            (
+                attempted_at.strftime("%Y-%m-%d %H:%M:%S"),
+                until.strftime("%Y-%m-%d %H:%M:%S"),
+                result.error,
+                product_id,
+            ),
         )
     await db.commit()
 

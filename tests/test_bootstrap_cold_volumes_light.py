@@ -229,7 +229,61 @@ async def test_apply_state_quarantined_sets_next_attempt_far_future(db):
         ("P1",),
     )
     days_out = (await cursor.fetchone())["days_out"]
-    assert days_out > 80  # ~90일 뒤
+    assert 81 <= days_out <= 99, "90일 ±10% 지터 밴드 밖"
+
+
+async def test_quarantine_is_jittered_not_all_on_one_day(db):
+    """같은 실행에서 격리된 여러 상품이 같은 날로 몰리면 안 된다 (2026-07-25).
+
+    지터가 없던 시절엔 `datetime('now','+90 days')` 라 전부 같은 초에 찍혔다.
+    """
+    ids = [f"Q{i}" for i in range(40)]
+    for pid in ids:
+        await _insert_kream_product(db, pid, model_number=f"M{pid}")
+        await boot._apply_state(db, pid, boot.ClassifyResult(boot.QUARANTINED, error="http_404"))
+
+    cursor = await db.execute(
+        "SELECT COUNT(DISTINCT date(next_volume_attempt_at)) AS d FROM kream_products "
+        "WHERE product_id IN ({})".format(",".join("?" * len(ids))),
+        ids,
+    )
+    distinct_days = (await cursor.fetchone())["d"]
+    assert distinct_days >= 8, f"{distinct_days}일에만 퍼졌다 — 재시도 절벽이 남아있다"
+
+
+async def test_quarantine_does_not_touch_regular_recheck_axis(db):
+    """격리는 `next_volume_attempt_at` 만 바꾼다 — 정기 재검사 축은 불변."""
+    await _insert_kream_product(db, "P9")
+    await db.execute(
+        "UPDATE kream_products SET next_volume_check_at = ?, volume_7d = 3 "
+        "WHERE product_id = 'P9'",
+        ("2026-09-01 00:00:00",),
+    )
+    await db.commit()
+
+    await boot._apply_state(db, "P9", boot.ClassifyResult(boot.QUARANTINED, error="http_410"))
+
+    row = await _get_row(db, "P9")
+    assert row["next_volume_check_at"] == "2026-09-01 00:00:00", "정기 재검사 축이 바뀌었다"
+    assert row["volume_7d"] == 3, "거래량이 바뀌었다"
+    assert row["next_volume_attempt_at"] is not None
+
+
+async def test_quarantine_write_is_idempotent_for_same_attempt_time(db):
+    """같은 기준시각으로 다시 계산하면 같은 값 — 중앙 함수와 DB 값이 일치한다."""
+    await _insert_kream_product(db, "P8")
+    await boot._apply_state(db, "P8", boot.ClassifyResult(boot.QUARANTINED, error="http_404"))
+    row = await _get_row(db, "P8")
+
+    from datetime import UTC, datetime
+
+    from src.core.volume_tier import compute_quarantine_until
+
+    attempted = datetime.strptime(row["last_volume_attempt_at"], "%Y-%m-%d %H:%M:%S").replace(
+        tzinfo=UTC
+    )
+    expected = compute_quarantine_until("P8", "http_404", attempted)
+    assert row["next_volume_attempt_at"] == expected.strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ---------------------------------------------------------------------------
