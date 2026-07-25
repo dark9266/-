@@ -79,24 +79,78 @@ def _is_dry_run(seg: str) -> bool:
 
 
 _PY_HEADS = re.compile(r"^(python[\d.]*|uv|uvx|poetry|pipenv)$")
+# 실행을 감싸기만 하는 래퍼 — 벗겨내고 다시 판정한다.
+# (오케스트레이터 자체 우회 실험 2026-07-25: `nohup python scripts/x.py &` 통과했다)
+_WRAPPER_HEADS = frozenset(
+    {"nohup", "env", "time", "nice", "ionice", "stdbuf", "setsid", "xargs", "timeout"}
+)
+# 문자열로 받은 명령을 다시 셸에 태우는 것 — 그 문자열을 재귀 판정한다.
+# (`bash -c "python scripts/bootstrap_cold_volumes.py"` 가 통과했다)
+_SHELL_HEADS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+_MAX_UNWRAP = 4
 
 
-def _executes(seg: str, script: str) -> bool:
+def _strip_wrappers(toks: list[str]) -> list[str]:
+    """`nohup`/`env FOO=1`/`timeout 30` 같은 래퍼를 벗겨 실제 실행 토큰만 남긴다."""
+    for _ in range(_MAX_UNWRAP):
+        if not toks:
+            return toks
+        head = os.path.basename(toks[0])
+        if head not in _WRAPPER_HEADS:
+            return toks
+        rest = toks[1:]
+        # 래퍼 옵션/인자(-n, 30, FOO=1, -I{})는 건너뛴다
+        while rest and (
+            rest[0].startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*|[\d.]+", rest[0])
+        ):
+            rest = rest[1:]
+        toks = rest
+    return toks
+
+
+def _shell_string_payloads(toks: list[str]) -> list[str]:
+    """`bash -c "<명령>"` 의 <명령> (재귀 판정 대상).
+
+    ⚠️ `shell_segments` 는 shlex(posix) 결과를 공백으로 다시 이어붙이므로 이 시점엔
+    따옴표가 이미 사라져 있다 — `-c` 뒤 **나머지 전체**를 payload 로 본다.
+    (그러지 않으면 `bash -c "python scripts/x.py"` 가 'python' 한 토큰만 보고 통과한다.)
+    """
+    if not toks or os.path.basename(toks[0]) not in _SHELL_HEADS:
+        return []
+    for i, tok in enumerate(toks):
+        if tok == "-c" and i + 1 < len(toks):
+            return [" ".join(toks[i + 1 :])]
+    return []
+
+
+def _executes(seg: str, script: str, _depth: int = 0) -> bool:
     """세그먼트가 그 스크립트를 **실행**하는가 (언급만 하는 건 아니고).
 
     `grep -n scripts/bootstrap_cold_volumes.py CLAUDE.md` 처럼 인자로 이름만
     등장하는 읽기 명령은 막지 않는다 — 오탐이 나면 사람이 훅을 꺼버린다.
+    래퍼(`nohup`·`env`·`timeout`)는 벗기고, `bash -c "..."` 는 안쪽을 재귀 판정한다.
     """
-    toks = seg.split()
+    toks = _strip_wrappers(seg.split())
     if not toks:
         return False
-    head = segment_head(seg)
+
+    if _depth < _MAX_UNWRAP:
+        for payload in _shell_string_payloads(toks):
+            try:
+                inner_segments = shell_segments(payload)
+            except ShellParseError:
+                inner_segments = [payload]
+            if any(_executes(inner, script, _depth + 1) for inner in inner_segments):
+                return True
+
+    head = segment_head(" ".join(toks))
     if not head:
         return False
-    if head.endswith(script) or head.endswith("/" + script.split("/")[-1]):
-        return True  # 직접 실행 (./scripts/x.py)
+    basename = script.split("/")[-1]
+    if head.endswith(script) or head.endswith("/" + basename) or head == basename:
+        return True  # 직접 실행 (./scripts/x.py, cd scripts && ./x.py)
     if _PY_HEADS.match(os.path.basename(head)):
-        return any(t.endswith(script) or t.endswith(script.split("/")[-1]) for t in toks[1:])
+        return any(t.endswith(script) or t.endswith(basename) for t in toks[1:])
     return False
 
 

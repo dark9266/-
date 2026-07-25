@@ -454,3 +454,26 @@ def test_live_guard_message_tells_how_to_proceed():
     decision = klcg.evaluate("python scripts/bootstrap_cold_volumes_light.py", False)
     assert not decision.allow
     assert "dry-run" in decision.message
+
+
+def test_live_guard_blocks_wrapper_and_shell_c_evasions():
+    """래퍼(`nohup`/`env`/`timeout`)와 `bash -c "..."` 우회를 막는다.
+
+    오케스트레이터 자체 우회 실험(2026-07-25)에서 실제로 통과했던 형태들이다 —
+    가드는 "정면"만 막으면 가드가 아니다.
+    """
+    assert _blocks('bash -c "python scripts/bootstrap_cold_volumes.py"')
+    assert _blocks('sh -c "python3 scripts/drain_collect_queue.py"')
+    assert _blocks("nohup python scripts/push_dump_full.py &")
+    assert _blocks("env FOO=1 python scripts/probe_kream_500.py")
+    assert _blocks("timeout 300 python scripts/manual_auto_scan_live.py")
+    assert _blocks("cd scripts && python bootstrap_cold_volumes.py")
+
+
+def test_live_guard_wrapper_handling_does_not_overblock():
+    """래퍼/셸 재귀가 정상 명령까지 삼키면 안 된다."""
+    assert not _blocks('bash -c "python scripts/drain_collect_queue.py --dry-run"')
+    assert not _blocks('bash -c "pytest tests/ -q"')
+    assert not _blocks('bash -c "grep -rn scripts/push_dump_full.py docs/"')
+    assert not _blocks("bash scripts/fable.sh status")
+    assert not _blocks("nohup python scripts/probe_nike_2.py &")

@@ -11,6 +11,7 @@ KREAM이 Next.js에서 Nuxt 3로 전환됨에 따라,
 
 import asyncio
 import json
+import os
 import random
 import re
 import time
@@ -209,6 +210,34 @@ def _unflatten_nuxt(parsed: list):
     return hydrate(0)
 
 
+class KreamLiveCallUnderTest(BaseException):
+    """pytest 프로세스 트리에서 실 크림 세션을 열려 했다 — 마지막 안전벨트가 막았다.
+
+    `Exception` 이 아니라 `BaseException` 을 상속한다 — 이 파일 곳곳의
+    `except Exception` 이 삼켜서 "타임아웃" 으로 둔갑하면 안 된다.
+    """
+
+
+def _assert_not_under_test() -> None:
+    """테스트 프로세스 트리에서는 실 크림 세션을 열지 않는다 (2026-07-25 사고 대응).
+
+    `tests/conftest.py` 전역 안전망은 **같은 프로세스** 안에서만 유효하다 —
+    테스트가 `subprocess` 로 스크립트를 띄우면(예: `test_canary_matches.py`)
+    자식 프로세스엔 conftest 가 없어 그대로 실계정으로 나간다. conftest 가
+    심어두는 `KREAM_IN_TEST=1` 은 자식 프로세스로 **상속**되므로, 크림 세션
+    생성이라는 단일 관문에서 한 번 더 막는다.
+
+    해제는 `KREAM_TEST_ALLOW_NETWORK=1`(사장 GO 사안, 훅이 다시 확인한다).
+    운영 실행에는 `KREAM_IN_TEST` 가 없으므로 아무 영향이 없다.
+    """
+    if os.getenv("KREAM_IN_TEST") == "1" and os.getenv("KREAM_TEST_ALLOW_NETWORK") != "1":
+        raise KreamLiveCallUnderTest(
+            "테스트 프로세스에서 실 크림 세션 생성 차단 — 네트워크 진입점을 mock 하라.\n"
+            "  (자식 프로세스까지 덮는 마지막 안전벨트. 의도적 실호출은 "
+            "KREAM_TEST_ALLOW_NETWORK=1 + 사장 GO.)"
+        )
+
+
 class KreamCrawler:
     """크림 __NUXT_DATA__ 기반 크롤러.
 
@@ -246,6 +275,9 @@ class KreamCrawler:
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
+            # 안전벨트는 **실 세션을 새로 만들 때만** — 테스트가 가짜 세션을 주입해
+            # 둔 경우(mock 완료 상태)까지 막으면 오탐이다(2026-07-25 실측).
+            _assert_not_under_test()
             self._session = AsyncSession(
                 impersonate="safari17_0",
                 timeout=30,

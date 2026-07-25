@@ -163,6 +163,26 @@ def _blocked_egress(label: str, *, httpx_client: bool = False):
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _mark_test_process():
+    """`KREAM_IN_TEST=1` 을 심는다 — **자식 프로세스까지 덮는 유일한 수단**.
+
+    아래 송신 차단은 같은 프로세스 안에서만 유효하다. 테스트가 `subprocess` 로
+    스크립트를 띄우면(예: `test_canary_matches.py`) 자식엔 conftest 가 없다.
+    환경변수는 상속되므로, `src/crawlers/kream.py::_assert_not_under_test()` 가
+    크림 세션 생성 관문에서 이 값을 보고 막는다.
+    """
+    previous = os.environ.get("KREAM_IN_TEST")
+    os.environ["KREAM_IN_TEST"] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("KREAM_IN_TEST", None)
+        else:
+            os.environ["KREAM_IN_TEST"] = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _block_real_network():
     """실 HTTP **송신**을 세션 내내 막는다 (생성은 허용 — 오탐 방지).
 

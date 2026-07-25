@@ -17,7 +17,12 @@ from pathlib import Path
 
 import pytest
 
+from src.crawlers.kream import KreamLiveCallUnderTest
 from tests.conftest import _PROD_DB_PATHS, KreamTestSafetyError
+
+# 실호출을 막는 두 층 — 어느 쪽이 먼저 걸리든 "막혔다" 는 동일한 결론.
+# (프로세스 안 = conftest 송신 차단 / 자식 프로세스까지 = 크림 세션 관문 안전벨트)
+BLOCKED = (KreamTestSafetyError, KreamLiveCallUnderTest)
 
 # ---------------------------------------------------------------------------
 # 1. 실 네트워크 송신 차단
@@ -46,7 +51,7 @@ async def test_kream_crawler_cannot_reach_network():
     from src.crawlers.kream import KreamCrawler
 
     crawler = KreamCrawler()
-    with pytest.raises(KreamTestSafetyError):
+    with pytest.raises(BLOCKED):
         await crawler.fetch_screens_status("P1")
 
 
@@ -153,6 +158,48 @@ def test_default_tmp_db_is_isolated_per_test(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_child_process_seatbelt_env_is_set():
+    """`KREAM_IN_TEST=1` 이 심겨 있어야 subprocess 로 띄운 자식도 막힌다.
+
+    conftest 의 클래스 패치는 같은 프로세스 안에서만 유효하다 — 자식 프로세스는
+    환경변수로만 덮을 수 있다(`test_canary_matches.py` 가 실제로 subprocess 를 쓴다).
+    """
+    import os
+
+    assert os.getenv("KREAM_IN_TEST") == "1"
+
+
+async def test_kream_session_refuses_in_test_process():
+    """크림 세션 생성 관문이 테스트 프로세스에서 거부한다 (마지막 안전벨트)."""
+    from src.crawlers.kream import KreamCrawler, KreamLiveCallUnderTest
+
+    crawler = KreamCrawler()
+    with pytest.raises(KreamLiveCallUnderTest):
+        await crawler._get_session()
+
+
+def test_child_process_running_kream_script_is_blocked(tmp_path):
+    """실제로 자식 프로세스를 띄워 크림 세션을 열어보고 막히는지 확인한다."""
+    import subprocess
+    import sys
+
+    code = (
+        "import asyncio, sys;"
+        "sys.path.insert(0, '.');"
+        "from src.crawlers.kream import kream_crawler;"
+        "asyncio.run(kream_crawler._get_session())"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert proc.returncode != 0, "자식 프로세스가 실 크림 세션을 열었다"
+    assert "KreamLiveCallUnderTest" in proc.stderr
+
+
 async def test_incident_replay_legacy_batch_cannot_reach_kream(monkeypatch):
     import scripts.bootstrap_cold_volumes as legacy
     from src.config import settings
@@ -178,5 +225,5 @@ async def test_incident_replay_legacy_batch_cannot_reach_kream(monkeypatch):
 
     # 실 크림으로 나가려는 순간 안전망이 막는다 — 프로덕션의 except Exception 도
     # 못 삼킨다(BaseException 상속).
-    with pytest.raises(KreamTestSafetyError):
+    with pytest.raises(BLOCKED):
         await legacy.main()
