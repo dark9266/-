@@ -36,6 +36,20 @@
 `KREAM_TEST_ALLOW_NETWORK=1` / `KREAM_TEST_ALLOW_REAL_DB=1`.
 이 두 변수를 세우는 Bash 실행은 `.claude/hooks/kream_live_call_guard.py` 가 다시
 한 번 막는다(사장 GO = `KREAM_LIVE_BATCH_GO=1` 필요) — 이중 방어가 의도다.
+
+## 알려진 한계 (알고 남긴다 — 나중에 "구멍이다" 로 다시 열지 말 것)
+
+- **자식 프로세스**: 여기 클래스 패치는 같은 프로세스에만 유효하다. 크림 호출은
+  `KREAM_IN_TEST=1`(환경변수 상속) + `KreamCrawler._get_session()` 안전벨트로 덮지만,
+  자식이 운영 DB 를 **읽는 것**까지는 막지 않는다.
+  → `tests/test_canary_matches.py` → `scripts/run_canary.py` 가 그렇게 읽는다.
+    이건 결함이 아니라 **의도**다: 실 DB 의 매칭 정답셋 20페어가 살아있는지 보는
+    카나리라서 tmp DB 로 바꾸면 검사가 무의미해진다(항상 통과). 손대지 말 것.
+- **ATTACH DATABASE**: `:memory:` 로 연 뒤 운영 DB 를 ATTACH 하면 connect 가드를
+  안 거친다. 지금 코드베이스에 그런 경로가 없고, authorizer 를 모든 연결에 다는
+  비용이 이득보다 커서 남겨둔다(코덱스 F4 — 판정: 인지·보류).
+- 훅(`kream_live_call_guard`)은 **속도방지턱이지 샌드박스가 아니다** — 변수 경유
+  실행·스크립트 복사 후 실행 같은 의도적 우회는 막지 못한다. 사고(실수)를 막는 게 목적.
 """
 
 from __future__ import annotations
@@ -46,6 +60,7 @@ import shutil
 import sqlite3
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
@@ -89,13 +104,38 @@ def _production_db_paths() -> frozenset[str]:
 _PROD_DB_PATHS: frozenset[str] = _production_db_paths()
 
 
+def _production_inodes() -> frozenset[tuple[int, int]]:
+    """운영 DB 파일의 (st_dev, st_ino) — **하드링크·다른 문자열 경로 우회 차단용**.
+
+    코덱스 적대검증 F4: `%HH` 인코딩·하드링크로 같은 파일을 다른 문자열로 열 수 있다.
+    경로 문자열 비교만으로는 못 잡는다 — 파일 자체(inode)로 판별한다.
+    """
+    out = set()
+    for p in _PROD_DB_PATHS:
+        try:
+            st = os.stat(p)
+            out.add((st.st_dev, st.st_ino))
+        except OSError:
+            continue
+    return frozenset(out)
+
+
+_PROD_DB_INODES: frozenset[tuple[int, int]] = _production_inodes()
+
+
 def _normalize_db_target(target) -> str | None:
     """`sqlite3.connect` 인자 → 비교 가능한 절대경로. 메모리 DB 는 None.
 
-    `file:/path/db?mode=ro` URI 형태(읽기전용 조회에서 쓴다)도 경로만 뽑는다.
+    `file:/path/db?mode=ro` URI(읽기전용 조회에서 쓴다)와 `%HH` 퍼센트 인코딩,
+    `bytes` 경로까지 정규화한다 (코덱스 F4 — 셋 다 우회 경로였다).
     """
-    if isinstance(target, (int, bytes)):  # fd 기반/바이트 경로 — 판별 대상 아님
+    if isinstance(target, int):  # fd 기반 — 판별 대상 아님
         return None
+    if isinstance(target, bytes):
+        try:
+            target = os.fsdecode(target)
+        except Exception:
+            return None
     try:
         s = os.fspath(target)
     except TypeError:
@@ -103,7 +143,7 @@ def _normalize_db_target(target) -> str | None:
     if not isinstance(s, str) or not s or s == ":memory:":
         return None
     if s.startswith("file:"):
-        s = s[len("file:") :].split("?", 1)[0]
+        s = unquote(s[len("file:") :].split("?", 1)[0])
         if s.startswith(":memory:") or not s:
             return None
     try:
@@ -114,7 +154,15 @@ def _normalize_db_target(target) -> str | None:
 
 def _is_production_db(target) -> bool:
     normalized = _normalize_db_target(target)
-    return normalized is not None and normalized in _PROD_DB_PATHS
+    if normalized is None:
+        return False
+    if normalized in _PROD_DB_PATHS:
+        return True
+    try:  # 하드링크/다른 표기 — 파일 자체로 판별
+        st = os.stat(normalized)
+    except OSError:
+        return False
+    return (st.st_dev, st.st_ino) in _PROD_DB_INODES
 
 
 # ---------------------------------------------------------------------------
@@ -133,23 +181,68 @@ _NETWORK_EGRESS: tuple[tuple[str, str, str], ...] = (
     ("httpx", "Client", "send"),
     ("aiohttp", "ClientSession", "_request"),
     ("requests", "Session", "request"),
+    # 코덱스 적대검증 F2 — 위 6종을 안 거치는 실 송신 경로들
+    ("curl_cffi", "Curl", "perform"),  # requests 레이어를 건너뛴 저수준 호출
+    ("requests.adapters", "HTTPAdapter", "send"),  # Session 을 우회한 어댑터 직행
+    ("urllib.request", "OpenerDirector", "open"),  # urlopen() 이 여기로 수렴
 )
 
 
 # httpx 는 in-process 전송에도 쓰인다 — 대시보드 라우트 테스트의 TestClient 는
 # ASGI/WSGI transport 로 **프로세스 안**에서 앱을 호출한다(네트워크 아님).
-# 실제 소켓으로 나가는 transport 는 이 둘뿐이라 그때만 막는다(오탐 방지).
-_HTTPX_NETWORK_TRANSPORTS = frozenset({"HTTPTransport", "AsyncHTTPTransport"})
+#
+# 코덱스 F3: 예전엔 "HTTPTransport/AsyncHTTPTransport 일 때만 차단"(blocklist)이라
+# `mounts={"https://": HTTPTransport()}` · HTTPTransport 서브클래스 · retry wrapper 가
+# 전부 통과했다. **allowlist 로 뒤집고**, 실제 그 URL 에 쓰일 transport 를 물어본다.
+def _httpx_transport_for(client, request):
+    """이 요청에 실제로 쓰일 transport (**mounts 반영**). 실패 시 기본 transport."""
+    resolver = getattr(client, "_transport_for_url", None)
+    url = getattr(request, "url", None)
+    if callable(resolver) and url is not None:
+        try:
+            return resolver(url)
+        except Exception:
+            pass
+    return getattr(client, "_transport", None)
 
 
-def _httpx_goes_to_network(client) -> bool:
-    transport = getattr(client, "_transport", None)
-    return type(transport).__name__ in _HTTPX_NETWORK_TRANSPORTS
+def _httpx_goes_to_network(client, args, kwargs) -> bool:
+    """이 send() 가 실제 소켓으로 나가는가.
+
+    판정 기준 2개 (코덱스 F3 반영):
+    1. `httpx.HTTPTransport`/`AsyncHTTPTransport` 의 **인스턴스** — `isinstance` 라
+       서브클래스도 잡는다(예전 클래스명 비교는 서브클래스를 통과시켰다).
+    2. httpcore 커넥션 풀(`_pool`)을 들고 있는 알 수 없는 transport — retry/proxy
+       wrapper 류.
+    starlette `TestClient` 의 in-process transport 는 둘 다 아니라 그대로 통과한다.
+    """
+    request = kwargs.get("request") if "request" in kwargs else (args[0] if args else None)
+    transport = _httpx_transport_for(client, request)
+    if transport is None:
+        return True  # 판별 불가 — 안전 쪽(차단)
+
+    try:
+        import httpx
+
+        network_types = tuple(
+            t
+            for t in (
+                getattr(httpx, "HTTPTransport", None),
+                getattr(httpx, "AsyncHTTPTransport", None),
+            )
+            if isinstance(t, type)
+        )
+        if network_types and isinstance(transport, network_types):
+            return True
+    except Exception:  # pragma: no cover
+        pass
+
+    return hasattr(transport, "_pool")
 
 
 def _blocked_egress(label: str, *, httpx_client: bool = False):
     def _send(self, *args, **kwargs):
-        if httpx_client and not _httpx_goes_to_network(self):
+        if httpx_client and not _httpx_goes_to_network(self, args, kwargs):
             return _send.__wrapped_original__(self, *args, **kwargs)
         raise KreamTestSafetyError(
             f"테스트에서 실 네트워크 송신 차단: {label}\n"

@@ -477,3 +477,29 @@ def test_live_guard_wrapper_handling_does_not_overblock():
     assert not _blocks('bash -c "grep -rn scripts/push_dump_full.py docs/"')
     assert not _blocks("bash scripts/fable.sh status")
     assert not _blocks("nohup python scripts/probe_nike_2.py &")
+
+
+def test_live_guard_blocks_codex_reported_evasions():
+    """코덱스 적대검증(F5)이 짚은 우회 — 전부 실측으로 통과하던 것들이다."""
+    # 주석으로 dry-run 을 위장해 라이브 실행 → 가장 위험한 방향의 오탐
+    assert _blocks("python scripts/drain_collect_queue.py # --dry-run")
+    # 전역 안전망 자체를 끄고 도는 pytest
+    assert _blocks("python -m pytest tests/ --noconftest")
+    # 파일 경로가 안 보이는 모듈 실행 형태
+    assert _blocks("python -m scripts.drain_collect_queue")
+    # 파이썬 레이어를 통째로 우회한 직접 호출
+    assert _blocks("curl -s https://kream.co.kr/api/p/e/products/123")
+    # export 로 안전망 해제
+    assert _blocks("export KREAM_TEST_ALLOW_REAL_DB=1")
+
+
+def test_live_guard_does_not_block_mere_mentions_of_bypass_env():
+    """코덱스가 짚은 반대 방향 오탐 — 설명·문서 작성까지 막으면 안 된다."""
+    assert not _blocks("echo KREAM_TEST_ALLOW_NETWORK=1")
+    assert not _blocks('echo "주석 예시: python x.py # --dry-run"')
+    assert not _blocks("grep -rn KREAM_TEST_ALLOW_NETWORK docs/")
+
+
+def test_live_guard_allows_non_kream_curl_and_normal_pytest():
+    assert not _blocks("curl -s https://www.nike.com/kr/")
+    assert not _blocks("python -m pytest tests/ -q")

@@ -74,6 +74,25 @@ class Decision:
         self.message = message
 
 
+def _strip_comment(cmd: str) -> str:
+    """`#` 주석 제거 — 따옴표 밖의 `#` 만.
+
+    코덱스 F5 실측: `python batch.py # --dry-run` 이 통과했다. 주석 속 문자열이
+    "dry-run 이다" 판정을 뒤집어 **라이브 실행을 허용**했다 — 가장 위험한 오탐 반대편.
+    """
+    out, in_single, in_double = [], False, False
+    for i, ch in enumerate(cmd or ""):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            if i == 0 or cmd[i - 1].isspace():
+                break
+        out.append(ch)
+    return "".join(out)
+
+
 def _is_dry_run(seg: str) -> bool:
     return "--dry-run" in seg.split()
 
@@ -155,12 +174,51 @@ def _executes(seg: str, script: str, _depth: int = 0) -> bool:
 
 
 def _bypass_env_set(seg: str) -> str | None:
-    """`ENV=1` 형태로 안전망 해제 변수를 세우는지 (값이 1 일 때만)."""
-    for token in seg.split():
-        for env in _BYPASS_ENVS:
-            if token == f"{env}=1":
-                return env
+    """안전망 해제 변수를 **실제로 세우는지** (선행 `ENV=1` 또는 `export ENV=1`).
+
+    코덱스 F5 실측 오탐: 예전엔 토큰이 아무 데나 있으면 잡아서
+    `echo KREAM_TEST_ALLOW_NETWORK=1`(설명·문서 작성) 까지 막았다.
+    실행 의미가 있는 위치에서만 판정한다.
+    """
+    toks = seg.split()
+    targets = {f"{env}=1": env for env in _BYPASS_ENVS}
+
+    i = 0
+    if toks and os.path.basename(toks[0]) in {"export", "env"}:
+        i = 1
+    while i < len(toks) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", toks[i]):
+        if toks[i] in targets:
+            return targets[toks[i]]
+        i += 1
     return None
+
+
+def _blocks_noconftest(seg: str) -> bool:
+    """`pytest --noconftest` — 전역 안전망(conftest) 자체를 끄고 도는 실행."""
+    toks = seg.split()
+    if "--noconftest" not in toks:
+        return False
+    return any("pytest" in os.path.basename(t) for t in toks)
+
+
+def _kream_direct_fetch(seg: str) -> bool:
+    """`curl`/`wget` 로 크림을 직접 때리는 실행 (파이썬 레이어를 통째로 우회)."""
+    toks = seg.split()
+    if not toks or os.path.basename(segment_head(seg) or "") not in {"curl", "wget", "httpie"}:
+        return False
+    return any("kream.co.kr" in t for t in toks[1:])
+
+
+def _module_form_executes(seg: str, script: str) -> bool:
+    """`python -m scripts.drain_collect_queue` 형태 (파일 경로가 안 보인다)."""
+    toks = _strip_wrappers(seg.split())
+    if not toks or not _PY_HEADS.match(os.path.basename(segment_head(" ".join(toks)) or "")):
+        return False
+    module = script.removesuffix(".py").replace("/", ".")
+    for prev, tok in zip(toks, toks[1:], strict=False):
+        if prev == "-m" and tok == module:
+            return True
+    return False
 
 
 def evaluate(cmd: str, go_enabled: bool) -> Decision:
@@ -168,14 +226,25 @@ def evaluate(cmd: str, go_enabled: bool) -> Decision:
     if go_enabled:
         return Decision(True)
 
+    cmd = _strip_comment(cmd or "")
     try:
-        segments = shell_segments(cmd or "")
+        segments = shell_segments(cmd)
     except ShellParseError:
         # 파싱 실패는 "무해"가 아니다 — 그러나 여기서 fail-closed 하면 일반 명령까지
         # 막혀 오탐이 된다. 원문 전체를 한 세그먼트로 보고 판정만 이어간다.
-        segments = [cmd or ""]
+        segments = [cmd]
 
     for seg in segments:
+        if _blocks_noconftest(seg):
+            return Decision(
+                False,
+                "`pytest --noconftest` — 전역 안전망(tests/conftest.py)을 끄고 도는 실행이다.\n"
+                "  안전망 없이 도는 테스트가 정확히 2026-07-25 사고 경로였다.",
+            )
+
+        if _kream_direct_fetch(seg):
+            return Decision(False, "curl/wget 으로 크림을 직접 때리는 실행이다.")
+
         env = _bypass_env_set(seg)
         if env:
             return Decision(
@@ -190,13 +259,14 @@ def evaluate(cmd: str, go_enabled: bool) -> Decision:
             return Decision(False, "크림 API 를 직접 때리는 probe 스크립트다.")
 
         for script in _ALWAYS_BLOCKED:
-            if _executes(seg, script):
+            if _executes(seg, script) or _module_form_executes(seg, script):
                 return Decision(
                     False, f"실계정 크림/소싱처 호출을 내는 스크립트다: {script}"
                 )
 
         for script in _BATCH_SCRIPTS:
-            if _executes(seg, script) and not _is_dry_run(seg):
+            runs = _executes(seg, script) or _module_form_executes(seg, script)
+            if runs and not _is_dry_run(seg):
                 return Decision(
                     False,
                     f"백그라운드 배치를 라이브로 돌리는 실행이다: {script}\n"
