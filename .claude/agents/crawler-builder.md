@@ -1,7 +1,7 @@
 ---
 name: crawler-builder
 description: 새 소싱처 크롤러 구현 전담 에이전트. 최적 기법(httpx/curl_cffi/Playwright) + 푸시/역방향 대응 크롤러 풀사이클.
-model: claude-opus-4-8
+model: claude-opus-5
 ---
 
 # Crawler Builder Agent

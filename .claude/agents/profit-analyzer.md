@@ -1,7 +1,7 @@
 ---
 name: profit-analyzer
 description: 수익 계산 검증 전담 에이전트. 수수료 공식, 실수익 계산, 알림 임계값 최적화.
-model: claude-opus-4-8
+model: claude-opus-5
 ---
 
 # Profit Analyzer Agent
