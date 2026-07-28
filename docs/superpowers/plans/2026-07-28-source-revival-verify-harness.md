@@ -718,3 +718,60 @@ Task 3 `evaluate` 반환 → Task 4 소비까지 동일. `load_canaries`/`baseli
 **미해결(의도적 스코프 밖)**: live 모드에서 `pages` 인자를 채우려면 어댑터가 페이지 단위 산출을
 노출해야 한다 — 현재 `dump_catalog()` 는 평탄한 리스트만 준다. 페이지네이션 판정은 함수·테스트로
 준비만 해두고, 어댑터 인터페이스 확장은 **후속 조각**으로 분리한다(이 계획서 범위 밖).
+
+---
+
+## ⚠️ Task 4 설계 변경 (2026-07-28, 코덱스 적대검증 반영)
+
+Task 1~3 구현 후 코덱스 B등급 적대검증(`reports/codex/codex_6924ec77c01e71b866e1.md`)에서
+**REAL 5건**이 나왔다(수용 5 / 거부 0). Task 1~3 은 봉합 완료했고, **아래 2건은 Task 4 설계
+자체를 바꾼다** — 원래 계획서대로 Task 4 를 만들면 전 소싱처가 거짓 실패한다.
+
+### 변경 1 — `evaluate(items=...)` 에 덤프 원본을 그대로 넣으면 안 된다
+
+원래 Task 4 는 `adapter.dump_catalog()` 결과를 `evaluate()` 에 바로 넣었다. **틀렸다.**
+`dump_catalog()` 는 **소싱처 원본 스키마**를 그대로 돌려준다 — 어댑터마다 키가 다르다
+(`model_number`·`productCode`·`productManagementCd`·`sku`·`STYLE_INFO`…). AST 로 확인한 사실:
+
+```
+twentynine_cm  dump_catalog  model_no 등장: False  |  match_to_kream  True
+salomon        dump_catalog  model_no 등장: False  |  match_to_kream  True
+musinsa        dump_catalog  model_no 등장: False  |  match_to_kream  True
+```
+
+즉 `model_no` 는 **매칭 단계에서 상품명 파싱으로 비로소 생성**된다. 덤프 원본에는 없다.
+그대로 넣으면 canary 미검출 + 필드 충실도 0% 로 **전 소싱처 거짓 실패**가 난다 —
+계획서 서두에 적은 "거짓 실패는 사장이 하네스를 꺼버리게 만든다" 그 실패 모드다.
+
+**Task 4 는 소싱처별 extractor 층을 먼저 둔다:**
+- `normalize_dump_items(source: str, raw: list[dict]) -> list[dict]` — 소싱처별 키 매핑으로
+  `{model_no, name, url}` 표준 스키마로 변환. 매핑표는 fixture 또는 모듈 상수.
+- 각 소싱처마다 **실제 어댑터 출력 fixture 1건**을 저장하고, 그 fixture 를
+  `normalize_dump_items` → `evaluate()` 에 통과시키는 **계약 테스트**를 둔다.
+  이게 없으면 같은 종류의 스키마 착오가 또 난다.
+
+### 변경 2 — 기준선은 `catalog_dump_items` 가 아니다
+
+`catalog_dump_items` 는 `first_seen_at`·`last_seen_at`·`seen_count` 를 가진
+**과거 발견 상품 누적 유니크 원장**이다(`src/core/dump_ledger.py`). 단종분이 쌓인 1,000건
+원장과 정상 현재 덤프 499건을 비교하면 **거짓 급감**이 난다.
+
+**Task 4 는 덤프 실행 스냅샷을 기준선으로 쓴다:**
+- 테이블 `catalog_dump_runs(source TEXT, product_count INTEGER, finished_at REAL)` 신설 +
+  덤프 성공 시 1행 기록. `CatalogDumped` 이벤트가 이미 `product_count` 를 갖고 있다.
+- 조회는 이미 구현된 `last_dump_count(db_path, source) -> int | None` 을 쓴다.
+  테이블이 없으면 `None` → `judge_volume` 이 급감 판정을 스킵한다(첫 실행 거짓 경보 방지).
+- Task 1~3 의 `ledger_unique_counts()` 는 **급감 기준선으로 쓰지 마라** — 참고 지표 전용.
+
+### Task 1~3 에서 이미 봉합한 것 (재작업 금지)
+- 반올림 전 임계 비교(89.96% 가 90% 를 통과하던 경계 버그)
+- DB 오류 전파(판정 불능이 통과로 둔갑하던 미탐 구멍) — 테이블 부재만 `{}`
+- `SUPPORTED_SOURCES` 경량 registry + 집합 동등성 테스트(항목 삭제도 잡힌다) +
+  `src.core.runtime` import 부작용 제거
+- 키 없는 페이지를 "동일 집합" 이 아니라 **판정 불가** 로 처리
+
+### 남은 THEORETICAL (Task 4 이후 판단)
+- canary 에 `last_verified`/`expires_at` 이 없어 단종 SKU 하나가 영구 거짓 실패를 만들 수 있다.
+  → 주기적 canary 갱신 절차 또는 만료 필드 도입 검토.
+- fixture 커버리지 7/21. 나머지 14곳은 판정 자체가 없다 — "미지원"을 명시적 verdict 로
+  드러낼지, canary 를 채울지 결정 필요.
