@@ -29,7 +29,14 @@ Phase 0 보안 레이어 — 실계정 보호를 위한 하드 캡.
   명시 호출로만 (2-4 라이브 배치가 "이상 없음" 확인 후 호출).
 - **서킷브레이커**: `report_block(403|429)` 1회 또는 동일 path 5xx/timeout
   연속 3회 → `kream_bg_budget_state.circuit_tripped=1` → 이후 모든
-  `acquire_background()` 거부. 해제는 `manual_resume()` 호출로만(자동 복귀 없음).
+  `acquire_background()` 거부. 해제는 트립 종류로 갈린다(2026-07-28 사장 승인):
+  - 403/429(`manual_resume_required=1`) — `manual_resume()` 로만. 자동 재개 없음.
+  - 5xx/timeout(`=0`) — `BG_5XX_COOLDOWN_SEC`(기본 30분, 하한 5분) 경과 후
+    `acquire_background()` 진입 시 **자동 1회 재개**. 크림 서버측 일시 장애가
+    배치 창 전체를 죽이고 사람 개입 전까지 복구를 막던 문제 대응.
+    재트립이 반복돼도 소모는 **4콜/냉각창**(세션 워밍 GET 1 + 트립 임계 3) =
+    하루 최대 192콜(일캡 10k 의 1.9%)로 자기제한적이다. `tripped_at` 이 없는
+    마이그레이션 전 트립은 manual 전용.
 - **통합 진입점**: `async with acquire_background(purpose): ...` — 서킷 확인 →
   예산 판정 → 페이서(`kream_pacer`) 대기 → `kream_purpose(purpose)` 태깅까지
   한 번에. 재시도도 이 컨텍스트매니저를 다시 통과해야 하므로 페이서/예산
@@ -42,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import math
 import os
 import time
 import uuid
@@ -79,9 +87,42 @@ def _parse_positive_int(env_name: str, default: int) -> int | None:
     return value if value > 0 else None
 
 
+def _parse_positive_float(env_name: str, default: float) -> float | None:
+    """환경변수 실수 파싱 — 부적합(파싱 불가/0 이하/inf/nan)하면 None(설정 오류)."""
+    raw = os.getenv(env_name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
 # 설정 원본(부적합하면 None) — 판정용. 실제 계산에는 아래 클램프된 값을 쓴다.
 _RAW_BUDGET: int | None = _parse_positive_int("KREAM_DAILY_CAP", 10000)
 _RAW_BG_LIVE_RESERVE: int | None = _parse_positive_int("KREAM_BG_LIVE_RESERVE", 1000)
+
+# 5xx 트립 냉각 (아래 서킷 섹션에서 사용) — 파싱은 여기서, 설명은 사용처에서.
+BG_5XX_COOLDOWN_DEFAULT_SEC: float = 30 * 60.0
+# 하한. 안전을 **느슨하게** 만드는 노브에는 바닥이 필수다 — 캡을 "낮추는 방향만"
+# 허용하는 것(`KREAM_HARD_CAP_CEILING`)과 대칭 원칙. env 로 0/60 을 넣어
+# 5xx 서킷을 사실상 무력화하는 경로를 막는다.
+BG_5XX_COOLDOWN_FLOOR_SEC: float = 300.0
+_RAW_BG_5XX_COOLDOWN: float | None = _parse_positive_float(
+    "KREAM_BG_5XX_COOLDOWN_SEC", BG_5XX_COOLDOWN_DEFAULT_SEC
+)
+
+
+def clamp_cooldown_config(raw_cooldown: float | None) -> float:
+    """설정 원본 → **항상 하한 이상으로 클램프된** 5xx 냉각 시간.
+
+    `clamp_budget_config` 와 같은 이중 방어: 설정이 잘못돼 있어도 산술은
+    보수적으로 돌고(여기), 동시에 워커는 시작을 거부한다
+    (`kream_budget_config_error` → `assert_kream_config_safe`).
+    """
+    return max(BG_5XX_COOLDOWN_FLOOR_SEC, raw_cooldown or BG_5XX_COOLDOWN_DEFAULT_SEC)
+
 
 def clamp_budget_config(
     raw_budget: int | None, raw_reserve: int | None
@@ -131,22 +172,27 @@ class KreamConfigUnsafe(RuntimeError):
 def kream_budget_config_error(
     raw_budget: int | None = _SENTINEL,
     raw_reserve: int | None = _SENTINEL,
+    raw_cooldown: float | None = _SENTINEL,
 ) -> str | None:
     """예산 설정의 문제를 한 줄로. 정상이면 None.
 
     인자를 주면 그 값으로, 안 주면 이 프로세스의 유효 설정으로 판정한다
     (테스트가 모듈을 reload 하지 않고 검증할 수 있게 — 2026-07-25 리뷰).
 
-    검사 4종:
+    검사 5종:
       1. `KREAM_DAILY_CAP` 파싱 불가/0 이하
       2. 캡이 절대 상한(10,000) 초과 — **설정으로 올릴 수 없다**
       3. `KREAM_BG_LIVE_RESERVE` 파싱 불가/0 이하
       4. 라이브 예약분이 캡 이상 — 백그라운드 허용치가 영구 0 이 된다
+      5. `KREAM_BG_5XX_COOLDOWN_SEC` 파싱 불가/0 이하 — 조용히 기본값으로
+         돌면 "설정한 줄 알았는데 아니었다" 가 된다(값 자체는 클램프로 안전)
     """
     if raw_budget is _SENTINEL:
         raw_budget = _RAW_BUDGET
     if raw_reserve is _SENTINEL:
         raw_reserve = _RAW_BG_LIVE_RESERVE
+    if raw_cooldown is _SENTINEL:
+        raw_cooldown = _RAW_BG_5XX_COOLDOWN
 
     if raw_budget is None:
         # 원문을 함께 실어야 오타를 로그만으로 진단할 수 있다(리뷰 Suggestion)
@@ -165,6 +211,12 @@ def kream_budget_config_error(
         return (
             f"KREAM_BG_LIVE_RESERVE={raw_reserve} 가 캡({raw_budget}) 이상이다 "
             "— 백그라운드 허용치가 영구 0 이 된다"
+        )
+    if raw_cooldown is None:
+        return (
+            "KREAM_BG_5XX_COOLDOWN_SEC 가 양의 유한 실수가 아니다 "
+            f"(입력: {os.getenv('KREAM_BG_5XX_COOLDOWN_SEC', '')!r}) "
+            f"— 기본 {BG_5XX_COOLDOWN_DEFAULT_SEC:.0f}s 로 폴백해 동작 중"
         )
     return None
 
@@ -223,13 +275,28 @@ CREATE TABLE IF NOT EXISTS kream_bg_budget_state (
     stage_entered_at TEXT NOT NULL DEFAULT (datetime('now')),
     circuit_tripped INTEGER NOT NULL DEFAULT 0,
     circuit_reason TEXT,
-    manual_resume_required INTEGER NOT NULL DEFAULT 0
+    manual_resume_required INTEGER NOT NULL DEFAULT 0,
+    tripped_at REAL
 )
 """
 
+# 5xx 트립 냉각 시간 — 이 시간이 지나면 `acquire_background()` 가 **1회 자동
+# 재개**한다 (2026-07-28 사장 승인). 403/429 트립에는 적용되지 않는다.
+# 파싱·하한(300s)은 `_parse_positive_float` / `clamp_cooldown_config` 참조.
+#
+# 왜 자동 재개인가: 크림 서버측 일시 장애(실측 — 성공률 99.7% 인 창에서 500 이
+# 3연속)만으로 배치 창 전체가 죽고 사람이 개입할 때까지 복구가 안 됐다.
+#
+# 최악 예산 소모(자기제한적): 서버 장애가 계속되면 냉각창마다 **4콜**이 나간다
+# — 세션 워밍 GET 1건(`warm_session` 이 acquire 통과 후 쓰는 init `/` 호출.
+# 500 은 `_BG_BLOCK_STATUSES`(403/429)가 아니라 트립 없이 통과한다) + 5xx 트립
+# 임계까지의 본 호출 3건. 4콜 / 30분 → 하루 최대 192콜 = 일캡 10,000 의 1.9%.
+# 냉각을 60s 로 낮추면 4콜 × 1,440창 = 5,760콜/일 — 하한이 필요한 이유다.
+BG_5XX_COOLDOWN_SEC: float = clamp_cooldown_config(_RAW_BG_5XX_COOLDOWN)
+
 # path별 연속 5xx/timeout 카운터 — 프로세스 전역(페이서와 동일 스코프).
-# 트립된 순간 DB(circuit_tripped)에 영속화되므로 프로세스 재기동 후에도
-# 재개는 manual_resume() 를 통해서만 가능.
+# 트립된 순간 DB(circuit_tripped)에 영속화되므로 프로세스가 재기동해도 트립은
+# 유지된다. 해제는 `manual_resume()` 또는 5xx 트립 한정 냉각 자동 재개.
 _bg_consecutive_failures: dict[str, int] = {}
 
 # 캡 초과 캐시 — DB 재조회/로그 스팸 동시 억제.
@@ -734,16 +801,42 @@ async def get_usage() -> dict:
 
 
 class KreamCircuitTripped(RuntimeError):
-    """백그라운드 크림 서킷 트립 상태 — manual_resume() 호출 전까지 전면 거부."""
+    """백그라운드 크림 서킷 트립 상태 — 재개 전까지 전면 거부.
+
+    재개 = `manual_resume()` 또는 5xx 트립 한정 냉각 자동 재개(모듈 docstring).
+    """
 
 
 class KreamBackgroundBudgetExceeded(RuntimeError):
     """백그라운드 소프트캡/라이브 예약분 소진 — 이번 호출 불허."""
 
 
+# 경로별 마이그레이션 캐시 — `_api_calls_token_id_ready` 와 동일한 이유
+# (전역 bool 이면 테스트가 `settings.db_path` 를 바꿀 때 새 DB 가 미마이그레이션
+# 상태로 남는다).
+_bg_state_tripped_at_ready: set[str] = set()
+
+
 async def _ensure_bg_state(db) -> None:
-    """`kream_bg_budget_state` 싱글턴 행 보장 (기존 CREATE IF NOT EXISTS 관례)."""
+    """`kream_bg_budget_state` 싱글턴 행 보장 (기존 CREATE IF NOT EXISTS 관례).
+
+    `tripped_at`(5xx 냉각 자동 재개용)이 없는 기존 DB 는 여기서 ALTER 로
+    보강한다 — sqlite 에 `ADD COLUMN IF NOT EXISTS` 가 없으므로 PRAGMA 로
+    존재 확인 후 추가하고, 동시 커넥션과의 경합만 흡수한다.
+    """
     await db.execute(_BG_STATE_SCHEMA)
+    path = settings.db_path
+    if path not in _bg_state_tripped_at_ready:
+        cur = await db.execute("PRAGMA table_info(kream_bg_budget_state)")
+        cols = await cur.fetchall()
+        if not any(row[1] == "tripped_at" for row in cols):
+            try:
+                await db.execute("ALTER TABLE kream_bg_budget_state ADD COLUMN tripped_at REAL")
+            except Exception as exc:
+                # 동시 커넥션이 먼저 추가했을 수 있다 — duplicate column 오류만 흡수
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        _bg_state_tripped_at_ready.add(path)
     await db.execute(
         "INSERT OR IGNORE INTO kream_bg_budget_state (id, stage, stage_entered_at) "
         "VALUES (1, 'canary', datetime('now'))"
@@ -751,21 +844,27 @@ async def _ensure_bg_state(db) -> None:
 
 
 async def get_ramp_state() -> dict:
-    """현재 램프/서킷 상태 스냅샷 (DB 조회, 없으면 canary 기본값으로 생성)."""
+    """현재 램프/서킷 상태 스냅샷 (DB 조회, 없으면 canary 기본값으로 생성).
+
+    `tripped_at` = 서킷이 트립된 시각(epoch float) 또는 None. 5xx 트립의 냉각
+    경과 판정 근거이며, None 이면(마이그레이션 전 트립) 자동 재개하지 않는다.
+    """
     async with async_connect(settings.db_path) as db:
         await _ensure_bg_state(db)
         await db.commit()
         cur = await db.execute(
             "SELECT stage, stage_entered_at, circuit_tripped, circuit_reason, "
-            "manual_resume_required FROM kream_bg_budget_state WHERE id = 1"
+            "manual_resume_required, tripped_at FROM kream_bg_budget_state WHERE id = 1"
         )
         row = await cur.fetchone()
+    tripped_at = row["tripped_at"]
     return {
         "stage": row["stage"],
         "stage_entered_at": row["stage_entered_at"],
         "circuit_tripped": bool(row["circuit_tripped"]),
         "circuit_reason": row["circuit_reason"],
         "manual_resume_required": bool(row["manual_resume_required"]),
+        "tripped_at": float(tripped_at) if tripped_at is not None else None,
     }
 
 
@@ -894,12 +993,14 @@ def _is_retryable_failure(status: int) -> bool:
 
 
 async def _trip_circuit(reason: str, *, manual_resume_required: bool) -> None:
+    """서킷 트립 영속화. `tripped_at` 은 5xx 냉각 자동 재개 판정의 근거이므로
+    트립 종류와 무관하게 항상 기록한다(403/429 는 진단용으로만 쓰인다)."""
     async with async_connect(settings.db_path) as db:
         await _ensure_bg_state(db)
         await db.execute(
             "UPDATE kream_bg_budget_state SET circuit_tripped = 1, circuit_reason = ?, "
-            "manual_resume_required = ? WHERE id = 1",
-            (reason, int(manual_resume_required)),
+            "manual_resume_required = ?, tripped_at = ? WHERE id = 1",
+            (reason, int(manual_resume_required), time.time()),
         )
         await db.commit()
     logger.critical(
@@ -907,13 +1008,55 @@ async def _trip_circuit(reason: str, *, manual_resume_required: bool) -> None:
     )
 
 
+_CLEAR_CIRCUIT_SET: str = (
+    "UPDATE kream_bg_budget_state SET circuit_tripped = 0, circuit_reason = NULL, "
+    "manual_resume_required = 0, tripped_at = NULL"
+)
+
+
+async def _clear_circuit() -> None:
+    """서킷 관련 컬럼 4종 **무조건** 초기화 — 사람이 부르는 `manual_resume()` 전용.
+
+    자동 재개는 이걸 쓰면 안 된다(`_try_clear_circuit_cas` 참조).
+    """
+    async with async_connect(settings.db_path) as db:
+        await _ensure_bg_state(db)
+        await db.execute(f"{_CLEAR_CIRCUIT_SET} WHERE id = 1")
+        await db.commit()
+
+
+async def _try_clear_circuit_cas(tripped_at: float) -> bool:
+    """자동 재개 전용 compare-and-swap 해제 — 성공하면 True.
+
+    무조건 UPDATE 였다면, 상태 스냅샷을 읽은 뒤 이 UPDATE 가 나가기까지의 await
+    경계에서 **다른 프로세스의 403 트립**(`manual_resume_required=1`)이 착지했을 때
+    그것까지 통째로 지운다 — "403 은 자동 재개 없음" 스펙이 자동 재개 경로로
+    뚫리는 창이다(코드리뷰 Important #3).
+
+    그래서 조건을 UPDATE 문 안에 넣는다: 여전히 5xx 트립이고(`manual_resume_
+    required = 0`) 트립 시각이 **내가 관측한 그 값 그대로**일 때만 해제한다.
+    조건과 갱신이 한 문장이므로 SQLite writer 직렬화에 기대어 프로세스 간에도
+    원자적이다(`try_acquire_batch_lock` 와 동일 idiom).
+    """
+    async with async_connect(settings.db_path) as db:
+        await _ensure_bg_state(db)
+        cur = await db.execute(
+            f"{_CLEAR_CIRCUIT_SET} "
+            "WHERE id = 1 AND manual_resume_required = 0 AND tripped_at = ?",
+            (tripped_at,),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+
 async def report_block(status: int, *, path: str = "default") -> None:
     """호출 실패 관측 보고 — 서킷브레이커 판정.
 
     - 403/429: **즉시** 전면 트립 + `manual_resume_required=1` (재시도로 예산
-      소모 금지가 스펙 — 자동 급속 재개 없음).
-    - 동일 `path` 5xx/timeout(status=0) 연속 3회: 트립(냉각) — 마찬가지로
-      `manual_resume()` 로만 해제.
+      소모 금지가 스펙 — 자동 재개 경로 없음, `manual_resume()` 로만 해제).
+    - 동일 `path` 5xx/timeout(status=0) 연속 3회: 트립 + `manual_resume_required=0`.
+      크림 서버측 일시 장애이므로 `BG_5XX_COOLDOWN_SEC` 경과 후
+      `acquire_background()` 가 자동 재개한다(사람 개입 없이 배치 창 복구).
     - 그 외 상태코드는 무시 (오용 방지, 트립하지 않음).
     """
     if status in _BG_BLOCK_STATUSES:
@@ -935,20 +1078,68 @@ def report_success(path: str = "default") -> None:
 
 
 async def manual_resume() -> None:
-    """서킷 수동 재개 — 403/429·5xx 트립 모두 이 함수로만 해제된다.
+    """서킷 수동 재개 — 모든 트립 종류를 즉시 해제한다.
 
-    circuit_tripped/circuit_reason/manual_resume_required 초기화 + 프로세스
-    전역 연속 실패 카운터 리셋. 자동 복귀 경로는 없다(스펙).
+    circuit_tripped/circuit_reason/manual_resume_required/tripped_at 초기화 +
+    프로세스 전역 연속 실패 카운터 리셋. 403/429 트립은 **이 함수만이** 해제
+    경로다(5xx 트립은 냉각 경과 시 `acquire_background()` 가 자동 재개).
     """
     _bg_consecutive_failures.clear()
-    async with async_connect(settings.db_path) as db:
-        await _ensure_bg_state(db)
-        await db.execute(
-            "UPDATE kream_bg_budget_state SET circuit_tripped = 0, circuit_reason = NULL, "
-            "manual_resume_required = 0 WHERE id = 1"
-        )
-        await db.commit()
+    await _clear_circuit()
     logger.info("KREAM 백그라운드 서킷 수동 재개")
+
+
+async def _auto_resume_if_cooled(state: dict) -> dict:
+    """5xx 트립 한정 — 냉각 경과 시 서킷 자동 해제 후 갱신된 상태를 돌려준다.
+
+    재개하지 않는 경우(입력 상태 그대로 반환):
+      - `manual_resume_required=1` (403/429) — 자동 재개 금지.
+      - `tripped_at IS NULL` — 마이그레이션 전 트립이라 냉각 판정 불가.
+        자동 재개하면 "언제 트립됐는지 모르는 상태에서 즉시 재개" 가 되므로
+        보수적으로 manual 전용 취급한다.
+      - 냉각 미경과.
+      - CAS 실패(관측 이후 다른 프로세스가 상태를 바꿈) — 최신 상태를 다시
+        읽어 돌려준다. 여전히 트립이면 호출자가 그대로 거부한다.
+    """
+    if state["manual_resume_required"]:
+        return state
+    tripped_at = state["tripped_at"]
+    if tripped_at is None:
+        return state
+    elapsed = time.time() - tripped_at
+    if elapsed < BG_5XX_COOLDOWN_SEC:
+        return state
+    if not await _try_clear_circuit_cas(tripped_at):
+        # 관측 이후 상태가 바뀌었다(다른 프로세스의 403 트립·재트립 등).
+        # 재개하지 않았으므로 카운터도 로그도 남기지 않고, 최신 상태로 재판정한다.
+        logger.info("KREAM 백그라운드 서킷 자동 재개 경합 — 최신 상태로 재판정")
+        return await get_ramp_state()
+    _bg_consecutive_failures.clear()
+    logger.warning(
+        "KREAM 백그라운드 서킷 자동 재개: %s (냉각 %.0fs 경과 / 기준 %.0fs) "
+        "— 5xx 트립 한정, 재트립 시 다시 냉각",
+        state["circuit_reason"],
+        elapsed,
+        BG_5XX_COOLDOWN_SEC,
+    )
+    return {
+        **state,
+        "circuit_tripped": False,
+        "circuit_reason": None,
+        "manual_resume_required": False,
+        "tripped_at": None,
+    }
+
+
+def _circuit_refusal_message(state: dict) -> str:
+    """트립 거부 사유 — 자동 재개 가능 여부/남은 냉각을 알려 조치를 명확히."""
+    base = f"서킷 트립 상태({state['circuit_reason']})"
+    if state["manual_resume_required"]:
+        return f"{base} — 403/429 는 자동 재개 없음, manual_resume() 필요"
+    if state["tripped_at"] is None:
+        return f"{base} — 트립 시각 미기록(레거시), manual_resume() 필요"
+    remaining = BG_5XX_COOLDOWN_SEC - (time.time() - state["tripped_at"])
+    return f"{base} — 5xx 냉각 중, {remaining:.0f}s 후 자동 재개(즉시 재개는 manual_resume())"
 
 
 async def is_circuit_tripped() -> bool:
@@ -1166,9 +1357,11 @@ async def acquire_background(purpose: str) -> AsyncIterator[None]:
         )
     state = await get_ramp_state()
     if state["circuit_tripped"]:
-        raise KreamCircuitTripped(
-            f"서킷 트립 상태({state['circuit_reason']}) — manual_resume() 필요"
-        )
+        # 5xx 트립(manual_resume_required=0)은 냉각 경과 시 여기서 자동 재개된다.
+        # 403/429·레거시 트립은 그대로 거부 — 판정은 `_auto_resume_if_cooled`.
+        state = await _auto_resume_if_cooled(state)
+    if state["circuit_tripped"]:
+        raise KreamCircuitTripped(_circuit_refusal_message(state))
     allowance = await background_allowance()
     if allowance <= 0:
         raise KreamBackgroundBudgetExceeded(

@@ -76,14 +76,24 @@ async def _wait_until(predicate, *, timeout: float = 5.0, interval: float = 0.01
     raise AssertionError(f"{timeout}s 안에 조건이 충족되지 않았다: {predicate}")
 
 
+def _set_tripped_at(db_path: str, value: float | None) -> None:
+    """서킷 트립 시각을 임의로 조작 — 냉각 경과/레거시(NULL) 상황 재현용."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE kream_bg_budget_state SET tripped_at = ? WHERE id = 1", (value,))
+    conn.commit()
+    conn.close()
+
+
 @pytest.fixture(autouse=True)
 def _reset_bg_circuit_counters():
     """모듈 전역 연속실패 카운터 + 잠금상실 플래그 — 테스트 간 누적 방지."""
     kb._bg_consecutive_failures.clear()
     kb._batch_lock_lost = False
+    kb._bg_state_tripped_at_ready.clear()
     yield
     kb._bg_consecutive_failures.clear()
     kb._batch_lock_lost = False
+    kb._bg_state_tripped_at_ready.clear()
 
 
 @pytest.fixture
@@ -582,3 +592,321 @@ async def test_batch_lock_does_not_consume_budget_or_pacer(bg_db, spy_pacer):
         pass
     assert await kb.background_allowance() == before
     assert spy_pacer.wait_turn_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# 5xx 트립 냉각 후 자동 재개 (2026-07-28 사장 승인)
+#
+# 크림 서버측 일시 장애(실측: 성공률 99.7% 창에서 500 3연속)가 배치 창 전체를
+# 죽이고 사람이 개입할 때까지 복구가 안 되던 문제. 5xx 트립
+# (`manual_resume_required=0`) 에 한해 냉각 경과 후 acquire 게이트에서 1회
+# 자동 재개한다. 403/429(=1) 는 기존대로 manual 전용.
+# ---------------------------------------------------------------------------
+
+
+async def _trip_5xx(path: str = "p1") -> None:
+    for status in (500, 502, 503):
+        await kb.report_block(status, path=path)
+
+
+async def test_trip_circuit_records_tripped_at(bg_db):
+    """5xx 트립이 트립 시각을 남긴다 — 냉각 판정의 근거."""
+    import time as _time
+
+    before = _time.time()
+    await _trip_5xx()
+    state = await kb.get_ramp_state()
+    assert state["circuit_tripped"] is True
+    assert isinstance(state["tripped_at"], float)
+    assert before <= state["tripped_at"] <= _time.time()
+
+
+async def test_block_trip_also_records_tripped_at(bg_db):
+    """403 트립도 시각은 남긴다(진단용) — 자동 재개 여부는 별개 플래그가 결정."""
+    await kb.report_block(403)
+    state = await kb.get_ramp_state()
+    assert isinstance(state["tripped_at"], float)
+    assert state["manual_resume_required"] is True
+
+
+async def test_5xx_trip_within_cooldown_still_refuses(bg_db, spy_pacer):
+    """냉각 미경과 — 여전히 거부하고 남은 냉각 시간을 알린다."""
+    await _trip_5xx()
+    with pytest.raises(kb.KreamCircuitTripped) as exc:
+        async with kb.acquire_background("bootstrap_light"):
+            pytest.fail("냉각 중에는 백그라운드 호출이 나가면 안 된다")
+    assert "냉각" in str(exc.value)
+    assert spy_pacer.wait_turn_calls == 0
+    assert (await kb.get_ramp_state())["circuit_tripped"] is True
+
+
+async def test_5xx_trip_auto_resumes_after_cooldown(bg_db, spy_pacer):
+    """냉각 경과 → acquire 진입 성공 + DB 서킷 상태·연속실패 카운터 전부 초기화."""
+    import time as _time
+
+    await _trip_5xx()
+    assert kb._bg_consecutive_failures.get("p1") == 3
+    _set_tripped_at(bg_db, _time.time() - kb.BG_5XX_COOLDOWN_SEC - 1)
+
+    async with kb.acquire_background("bootstrap_light"):
+        pass
+
+    assert spy_pacer.wait_turn_calls == 1
+    state = await kb.get_ramp_state()
+    assert state["circuit_tripped"] is False
+    assert state["circuit_reason"] is None
+    assert state["manual_resume_required"] is False
+    assert state["tripped_at"] is None
+    assert kb._bg_consecutive_failures == {}
+
+
+async def test_auto_resume_honors_cooldown_constant(bg_db, spy_pacer):
+    """냉각 길이는 모듈 상수를 **호출 시점에** 읽는다.
+
+    0 으로 낮춰 "즉시 재개" 를 기대 동작으로 고정하면 안 된다(그건 서킷 무력화
+    다 — 하한 300s 는 `clamp_cooldown_config` 가 강제한다). 짧은 양수 냉각으로
+    "기준을 실제로 참조한다" 만 고정한다.
+    """
+    import time as _time
+
+    await _trip_5xx()
+    _set_tripped_at(bg_db, _time.time() - 6.0)
+    # 기본 냉각(1800s)이라면 아직 거부돼야 하는 시점
+    with pytest.raises(kb.KreamCircuitTripped):
+        async with kb.acquire_background("bootstrap_light"):
+            pass
+
+    kb.BG_5XX_COOLDOWN_SEC = 5.0
+    try:
+        async with kb.acquire_background("bootstrap_light"):
+            pass
+    finally:
+        kb.BG_5XX_COOLDOWN_SEC = kb.clamp_cooldown_config(kb._RAW_BG_5XX_COOLDOWN)
+    assert spy_pacer.wait_turn_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# 냉각 상수 설정 방어 (코드리뷰 Important #1)
+#
+# 안전을 느슨하게 만드는 노브는 바닥이 필수다 — env 로 냉각을 0/60 으로 낮추면
+# 5xx 서킷이 사실상 무력화된다(=60 이면 창당 4콜 × 1,440창 = 5,760콜/일).
+# ---------------------------------------------------------------------------
+
+
+async def test_parse_positive_float_accepts_valid_value(monkeypatch):
+    monkeypatch.setenv("KREAM_TEST_FLOAT", "900.5")
+    assert kb._parse_positive_float("KREAM_TEST_FLOAT", 1800.0) == 900.5
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-5", "1e", "nan"])
+async def test_parse_positive_float_rejects_invalid(monkeypatch, raw):
+    """파싱 불가·0 이하·NaN 은 None — 설정 오류로 보고된다(조용한 폴백 금지)."""
+    monkeypatch.setenv("KREAM_TEST_FLOAT", raw)
+    assert kb._parse_positive_float("KREAM_TEST_FLOAT", 1800.0) is None
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+async def test_parse_positive_float_missing_uses_default(monkeypatch, raw):
+    if raw is None:
+        monkeypatch.delenv("KREAM_TEST_FLOAT", raising=False)
+    else:
+        monkeypatch.setenv("KREAM_TEST_FLOAT", raw)
+    assert kb._parse_positive_float("KREAM_TEST_FLOAT", 1800.0) == 1800.0
+
+
+async def test_cooldown_clamped_to_floor():
+    """하한 미만 설정은 바닥(300s)으로 끌어올린다 — 캡이 낮추는 방향만 허용되는 것과 대칭."""
+    assert kb.BG_5XX_COOLDOWN_FLOOR_SEC == 300.0
+    assert kb.clamp_cooldown_config(60.0) == 300.0
+    assert kb.clamp_cooldown_config(0.5) == 300.0
+    assert kb.clamp_cooldown_config(300.0) == 300.0
+
+
+async def test_cooldown_clamp_keeps_valid_and_falls_back_on_none():
+    assert kb.clamp_cooldown_config(3600.0) == 3600.0
+    # 파싱 실패(None) → 기본값 폴백 (그리고 아래 config_error 가 별도로 보고한다)
+    assert kb.clamp_cooldown_config(None) == kb.BG_5XX_COOLDOWN_DEFAULT_SEC == 1800.0
+
+
+async def test_effective_cooldown_never_below_floor():
+    """이 프로세스에 적용된 유효값도 하한 아래일 수 없다."""
+    assert kb.BG_5XX_COOLDOWN_SEC >= kb.BG_5XX_COOLDOWN_FLOOR_SEC
+
+
+async def test_config_error_reports_unparsable_cooldown(monkeypatch):
+    """파싱 실패는 기존 설정오류 경로로 원문과 함께 보고된다(워커 시작 거부)."""
+    monkeypatch.setenv("KREAM_BG_5XX_COOLDOWN_SEC", "삼십분")
+    error = kb.kream_budget_config_error(10000, 1000, None)
+    assert error is not None
+    assert "KREAM_BG_5XX_COOLDOWN_SEC" in error
+    assert "삼십분" in error
+
+
+async def test_config_error_none_when_cooldown_valid():
+    assert kb.kream_budget_config_error(10000, 1000, 1800.0) is None
+
+
+# ---------------------------------------------------------------------------
+# 자동 재개 CAS (코드리뷰 Important #3)
+#
+# 스냅샷 관측과 clear UPDATE 사이 await 경계에서 다른 프로세스의 403 트립이
+# 착지하면, 무조건 wipe 는 "403 은 자동 재개 없음" 스펙을 뚫어버린다.
+# ---------------------------------------------------------------------------
+
+
+async def test_cas_clear_succeeds_on_matching_snapshot(bg_db):
+    await _trip_5xx()
+    observed = (await kb.get_ramp_state())["tripped_at"]
+    assert await kb._try_clear_circuit_cas(observed) is True
+    assert (await kb.get_ramp_state())["circuit_tripped"] is False
+
+
+async def test_cas_clear_refuses_when_tripped_at_moved(bg_db):
+    """관측 이후 재트립(시각 변경)이 있었으면 지우지 않는다."""
+    await _trip_5xx()
+    observed = (await kb.get_ramp_state())["tripped_at"]
+    await kb._trip_circuit("5xx_streak:p2:3", manual_resume_required=False)
+    assert await kb._try_clear_circuit_cas(observed) is False
+    assert (await kb.get_ramp_state())["circuit_tripped"] is True
+
+
+async def test_cas_clear_refuses_manual_resume_required(bg_db):
+    """403 트립은 CAS 로도 지워지지 않는다 — 시각이 일치해도."""
+    await kb.report_block(403)
+    observed = (await kb.get_ramp_state())["tripped_at"]
+    assert await kb._try_clear_circuit_cas(observed) is False
+    state = await kb.get_ramp_state()
+    assert state["circuit_tripped"] is True
+    assert state["manual_resume_required"] is True
+
+
+async def test_auto_resume_loses_race_to_concurrent_403_trip(bg_db, spy_pacer, monkeypatch):
+    """스냅샷 후 clear 직전에 403 트립이 착지 — 자동 재개가 그걸 지우면 안 된다."""
+    import time as _time
+
+    await _trip_5xx()
+    _set_tripped_at(bg_db, _time.time() - kb.BG_5XX_COOLDOWN_SEC - 1)
+    real_cas = kb._try_clear_circuit_cas
+
+    async def _cas_with_race(tripped_at: float) -> bool:
+        # 다른 프로세스가 403 을 받아 트립시킨 순간 (await 경계 재현)
+        await kb.report_block(403)
+        return await real_cas(tripped_at)
+
+    monkeypatch.setattr(kb, "_try_clear_circuit_cas", _cas_with_race)
+
+    with pytest.raises(kb.KreamCircuitTripped) as exc:
+        async with kb.acquire_background("bootstrap_light"):
+            pytest.fail("403 트립이 자동 재개로 지워지면 안 된다")
+
+    assert "manual_resume()" in str(exc.value)
+    state = await kb.get_ramp_state()
+    assert state["circuit_tripped"] is True
+    assert state["manual_resume_required"] is True  # 403 트립 생존
+    assert spy_pacer.wait_turn_calls == 0
+
+
+async def test_auto_resume_cas_failure_leaves_failure_counters(bg_db, spy_pacer, monkeypatch):
+    """CAS 실패 시엔 재개하지 않았으므로 연속실패 카운터도 건드리지 않는다."""
+    import time as _time
+
+    await _trip_5xx()
+    _set_tripped_at(bg_db, _time.time() - kb.BG_5XX_COOLDOWN_SEC - 1)
+
+    async def _cas_always_lost(tripped_at: float) -> bool:
+        return False
+
+    monkeypatch.setattr(kb, "_try_clear_circuit_cas", _cas_always_lost)
+
+    with pytest.raises(kb.KreamCircuitTripped):
+        async with kb.acquire_background("bootstrap_light"):
+            pass
+    assert kb._bg_consecutive_failures.get("p1") == 3
+    assert spy_pacer.wait_turn_calls == 0
+
+
+async def test_auto_resume_does_not_bypass_budget(bg_db, spy_pacer):
+    """자동 재개는 서킷만 푼다 — 예산 판정은 그대로 통과해야 한다."""
+    import time as _time
+
+    _insert_calls_last_24h(bg_db, 100, "bootstrap_light")  # 소프트캡 소진
+    await _trip_5xx()
+    _set_tripped_at(bg_db, _time.time() - kb.BG_5XX_COOLDOWN_SEC - 1)
+
+    with pytest.raises(kb.KreamBackgroundBudgetExceeded):
+        async with kb.acquire_background("bootstrap_light"):
+            pytest.fail("예산 소진 상태에서 호출이 나가면 안 된다")
+    assert spy_pacer.wait_turn_calls == 0
+
+
+async def test_403_trip_never_auto_resumes_even_after_cooldown(bg_db, spy_pacer):
+    """403/429 는 냉각이 아무리 지나도 자동 재개 금지 — 기존 스펙 유지."""
+    import time as _time
+
+    await kb.report_block(403)
+    _set_tripped_at(bg_db, _time.time() - kb.BG_5XX_COOLDOWN_SEC * 100)
+
+    with pytest.raises(kb.KreamCircuitTripped) as exc:
+        async with kb.acquire_background("bootstrap_light"):
+            pytest.fail("403 트립은 자동 재개되면 안 된다")
+    assert "manual_resume()" in str(exc.value)
+    assert spy_pacer.wait_turn_calls == 0
+    assert (await kb.get_ramp_state())["circuit_tripped"] is True
+
+
+async def test_legacy_trip_without_tripped_at_requires_manual_resume(bg_db, spy_pacer):
+    """마이그레이션 전 트립(tripped_at NULL)은 냉각 판정 불가 → manual 전용(안전 기본값)."""
+    await _trip_5xx()
+    _set_tripped_at(bg_db, None)
+
+    with pytest.raises(kb.KreamCircuitTripped) as exc:
+        async with kb.acquire_background("bootstrap_light"):
+            pytest.fail("트립 시각 미상이면 자동 재개하면 안 된다")
+    assert "manual_resume()" in str(exc.value)
+    assert spy_pacer.wait_turn_calls == 0
+    assert (await kb.get_ramp_state())["circuit_tripped"] is True
+
+
+async def test_manual_resume_clears_tripped_at(bg_db):
+    """수동 재개는 트립 시각도 지운다 — 잔여값이 다음 트립 판정을 오염시키지 않게."""
+    await _trip_5xx()
+    assert (await kb.get_ramp_state())["tripped_at"] is not None
+
+    await kb.manual_resume()
+    state = await kb.get_ramp_state()
+    assert state["circuit_tripped"] is False
+    assert state["tripped_at"] is None
+
+
+async def test_legacy_bg_state_table_gets_tripped_at_column(tmp_path, monkeypatch):
+    """`tripped_at` 없는 기존 DB 도 마이그레이션으로 그대로 동작한다."""
+    db_path = tmp_path / "legacy_bg.db"
+    conn = sqlite3.connect(str(db_path))
+    _create_kream_api_calls(conn)
+    conn.executescript(
+        """
+        CREATE TABLE kream_bg_budget_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            stage TEXT NOT NULL DEFAULT 'canary',
+            stage_entered_at TEXT NOT NULL DEFAULT (datetime('now')),
+            circuit_tripped INTEGER NOT NULL DEFAULT 0,
+            circuit_reason TEXT,
+            manual_resume_required INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO kream_bg_budget_state
+            (id, stage, stage_entered_at, circuit_tripped, circuit_reason,
+             manual_resume_required)
+        VALUES (1, 'day2', datetime('now'), 1, '5xx_streak:p1:3', 0);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "db_path", str(db_path), raising=True)
+
+    state = await kb.get_ramp_state()
+    assert state["stage"] == "day2"  # 기존 행이 재생성으로 덮이지 않는다
+    assert state["circuit_tripped"] is True
+    assert state["tripped_at"] is None  # 레거시 트립 → 자동 재개 불가
