@@ -234,6 +234,10 @@ def test_hot_paths_reserve_before_sending():
     """세 송신 지점이 전부 예약을 거치는지 소스로 확인.
 
     한 곳이라도 빠지면 그 경로의 크래시 호출이 캡에서 사라진다.
+
+    조각 c(원자화) 이후 정산은 별도 `settle_send_token(` 호출이 아니라
+    `record_call(..., token_id=...)` 로 같은 커밋 안에서 끝난다 — 그래서
+    이 테스트는 이제 `record_call(...token_id=` 조합의 개수를 센다.
     """
     import pathlib
 
@@ -242,8 +246,12 @@ def test_hot_paths_reserve_before_sending():
     ).read_text(encoding="utf-8")
 
     assert src.count("reserve_send_token(") >= 3, "송신 지점 3곳(_request + raw 2)"
-    # 예약한 만큼 정산 호출이 있어야 한다(성공 1 + 예외 2 + raw 각 2)
-    assert src.count("settle_send_token(") >= 5
+    # 예약한 만큼 원자 정산 호출이 있어야 한다(성공 1 + 예외 2 + raw 각 성공/예외 2×2)
+    assert src.count("token_id=_token") + src.count("token_id=token") >= 5
+    # 원자화 이후에는 hot path 에서 별도 settle_send_token 왕복이 사라져야 한다
+    # (환불 결론 API 자체는 kream_budget.py 에 남아 있지만, 정산은 record_call
+    # 이 대신한다).
+    assert "await settle_send_token(" not in src
 
 
 def test_local_drop_does_not_reserve_a_token():
@@ -261,3 +269,213 @@ def test_local_drop_does_not_reserve_a_token():
     reserve_idx = src.index("reserve_send_token(purpose, endpoint)")
     between = src[drop_idx:reserve_idx]
     assert "return None" in between, "드롭이 예약보다 뒤에 있으면 캡이 샌다"
+
+
+# ---------------------------------------------------------------------------
+# 6. 조각 c — 기록↔정산 원자화 (record_call(token_id=...))
+# ---------------------------------------------------------------------------
+
+
+def _create_legacy_ledger_table(path: str) -> None:
+    """`token_id` 컬럼이 **없는** (마이그레이션 이전) 원장 테이블을 만든다.
+
+    실제 운영 DB 는 `src/models/database.py` 가 이 스키마로 만들어 두었을
+    것이므로, `_ensure_api_calls_token_id_column` 이 ALTER 로 컬럼을 보태는
+    경로를 검증하려면 일부러 컬럼 없이 만들어야 한다.
+    """
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS kream_api_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            endpoint TEXT NOT NULL, method TEXT NOT NULL,
+            status INTEGER, latency_ms INTEGER, purpose TEXT
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _insert_ledger_row_with_token(path: str, token_id: int, endpoint: str = "/x") -> None:
+    """`record_call` 을 거치지 않고 원장에 직접 행을 심는다 — 크래시 시뮬레이션.
+
+    실제로는 `record_call(token_id=...)` 의 INSERT 가 커밋됐지만 뒤이은
+    settle UPDATE 가 커밋되기 전에 프로세스가 죽은 상황을 재현한다.
+
+    호출 시점 테이블에 `token_id` 컬럼이 아직 없을 수 있어(레거시 스키마로
+    일부러 만든 테스트 fixture) 없으면 먼저 보태고 삽입한다 — 프로덕션에서는
+    `_ensure_api_calls_token_id_column` 이 이 역할을 한다.
+    """
+    conn = sqlite3.connect(path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(kream_api_calls)")}
+    if "token_id" not in cols:
+        conn.execute("ALTER TABLE kream_api_calls ADD COLUMN token_id INTEGER")
+    conn.execute(
+        "INSERT INTO kream_api_calls (ts, endpoint, method, status, latency_ms, purpose, token_id) "
+        "VALUES (datetime('now'), ?, 'GET', 200, 10, 'p', ?)",
+        (endpoint, token_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _token_status(path: str, token_id: int) -> str:
+    conn = sqlite3.connect(path)
+    row = conn.execute(
+        "SELECT status FROM kream_send_token WHERE id = ?", (token_id,)
+    ).fetchone()
+    conn.close()
+    return row[0]
+
+
+async def test_atomic_record_call_inserts_ledger_and_settles_token(token_db):
+    """`record_call(token_id=t)` 한 번으로 원장 1행 + 토큰 sent 가 함께 끝난다.
+
+    (단일 커넥션/단일 커밋 여부는 코드 리뷰 몫 — 여기서는 관측 가능한 결과만
+    고정한다: 원장에 token_id 가 박히고, 토큰이 reserved → sent 로 바뀐다.)
+    """
+    _create_legacy_ledger_table(token_db)
+
+    token = await kb.reserve_send_token("p", "/atomic")
+    await kb.record_call("/atomic", "GET", 200, 10, "p", token_id=token)
+
+    conn = sqlite3.connect(token_db)
+    row = conn.execute(
+        "SELECT token_id FROM kream_api_calls WHERE endpoint = '/atomic'"
+    ).fetchone()
+    conn.close()
+
+    assert row is not None and row[0] == token, "원장에 token_id 가 기록돼야 한다"
+    assert _token_status(token_db, token) == kb.TOKEN_SENT
+    assert await kb.count_open_tokens_24h() == 0, "정산됐으므로 미결에서 빠져야 한다"
+    assert await kb._count_last_24h() == 1, "원장 1건만 세어야 한다(이중계산 없음)"
+
+
+async def test_record_call_without_token_id_is_unchanged(token_db):
+    """`token_id` 생략 시 기존 동작(테이블에 token_id 컬럼 없어도 정상 삽입).
+
+    레거시(컬럼 없는) 스키마에서 **token_id 를 아예 건드리지 않는** 경로를
+    검증한다 — 하위 호환 보존.
+    """
+    _create_legacy_ledger_table(token_db)
+
+    await kb.record_call("/legacy", "GET", 200, 5, "p")
+
+    conn = sqlite3.connect(token_db)
+    row = conn.execute(
+        "SELECT endpoint, status FROM kream_api_calls WHERE endpoint = '/legacy'"
+    ).fetchone()
+    conn.close()
+    assert row == ("/legacy", 200)
+
+
+async def test_reconcile_settles_crash_orphaned_ledger_match(token_db):
+    """크래시 시뮬: 원장엔 있는데(=INSERT 커밋됨) 토큰은 reserved 로 남은 경우.
+
+    `reconcile_send_tokens()` 가 매칭된 것만 sent 로 정산해 이중계산을 없앤다.
+    """
+    _create_legacy_ledger_table(token_db)
+    # 레거시 테이블에는 token_id 컬럼이 없다 — ensure 함수가 ALTER 로 보태는
+    # 경로까지 함께 검증한다.
+
+    token = await kb.reserve_send_token("p", "/crash")
+    _insert_ledger_row_with_token(token_db, token, "/crash")  # settle 없이 원장만 존재
+
+    # 원자화 전이라면 원장 1 + 미결 예약 1 = 이중계산
+    assert await kb._count_last_24h() == 2
+
+    result = await kb.reconcile_send_tokens()
+
+    assert result["settled"] == 1
+    assert _token_status(token_db, token) == kb.TOKEN_SENT
+    assert await kb._count_last_24h() == 1, "reconcile 후 이중계산이 사라져야 한다"
+
+
+async def test_reconcile_never_refunds_unmatched_reserved(token_db):
+    """원장 매칭이 없는 reserved 는 reconcile 후에도 그대로 소비로 남는다.
+
+    "결론 모르면 소비" 환불 정책은 이 조각에서도 불변이다.
+    """
+    token = await kb.reserve_send_token("p", "/orphan")  # 원장 행 자체가 없음
+
+    result = await kb.reconcile_send_tokens()
+
+    assert result["still_open"] == 1
+    assert _token_status(token_db, token) == kb.TOKEN_RESERVED
+    assert await kb.count_open_tokens_24h() == 1, "매칭 없는 예약을 환불하면 캡이 샌다"
+
+
+async def test_reconcile_does_not_disturb_already_sent_token(token_db):
+    """이미 sent 로 결론 난 토큰은 reconcile 이 다시 건드리지 않는다.
+
+    조건부 UPDATE(`WHERE status='reserved'`) 가 지켜지는지 확인.
+    """
+    _create_legacy_ledger_table(token_db)
+    token = await kb.reserve_send_token("p", "/already-sent")
+    await kb.settle_send_token(token, sent=True)
+
+    conn = sqlite3.connect(token_db)
+    settled_at_before = conn.execute(
+        "SELECT settled_at FROM kream_send_token WHERE id = ?", (token,)
+    ).fetchone()[0]
+    conn.close()
+
+    result = await kb.reconcile_send_tokens()
+
+    conn = sqlite3.connect(token_db)
+    settled_at_after = conn.execute(
+        "SELECT settled_at FROM kream_send_token WHERE id = ?", (token,)
+    ).fetchone()[0]
+    conn.close()
+
+    assert result["settled"] == 0, "이미 sent 인 토큰을 다시 세면 안 된다"
+    assert settled_at_before == settled_at_after, "settled_at 이 갱신되면 안 된다"
+    assert _token_status(token_db, token) == kb.TOKEN_SENT
+
+
+async def test_reconcile_is_idempotent(token_db):
+    """reconcile 2회 연속 실행 — 두 번째는 아무 것도 더 정산하지 않는다."""
+    _create_legacy_ledger_table(token_db)
+    token = await kb.reserve_send_token("p", "/idempotent")
+    _insert_ledger_row_with_token(token_db, token, "/idempotent")
+
+    first = await kb.reconcile_send_tokens()
+    assert first["settled"] == 1
+    status_after_first = _token_status(token_db, token)
+
+    second = await kb.reconcile_send_tokens()
+    status_after_second = _token_status(token_db, token)
+
+    assert second["settled"] == 0, "이미 정산된 토큰을 두 번째 실행이 또 세면 안 된다"
+    assert status_after_first == status_after_second == kb.TOKEN_SENT
+
+
+async def test_reconcile_handles_missing_ledger_table_gracefully(token_db):
+    """원장 테이블 자체가 아직 없는 갓 초기화된 DB — reconcile 이 죽지 않아야 한다."""
+    token = await kb.reserve_send_token("p", "/no-ledger-yet")  # kream_api_calls 없음
+
+    result = await kb.reconcile_send_tokens()
+
+    assert result["settled"] == 0
+    assert result["still_open"] == 1
+    assert _token_status(token_db, token) == kb.TOKEN_RESERVED
+
+
+def test_reconcile_wired_at_session_start_once_per_process():
+    """`reconcile_send_tokens()` 가 세션 시작 지점(assert_kream_config_safe 직후)
+    에서 프로세스당 1회 배선됐는지 소스로 확인."""
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "src" / "crawlers" / "kream.py"
+    ).read_text(encoding="utf-8")
+
+    assert "reconcile_send_tokens" in src
+    config_idx = src.index("assert_kream_config_safe()")
+    reconcile_call_idx = src.index("await _reconcile_send_tokens_once()")
+    session_ctor_idx = src.index("self._session = AsyncSession(")
+    assert config_idx < reconcile_call_idx < session_ctor_idx, (
+        "reconcile 은 config 안전성 확인 직후 · 실 세션 생성 이전에 있어야 한다"
+    )

@@ -29,8 +29,8 @@ from src.core.kream_budget import (
     record_actual_send,
     record_call,
     record_local_drop,
+    reconcile_send_tokens,
     reserve_send_token,
-    settle_send_token,
 )
 from src.models.product import KreamProduct, KreamSizePrice
 from src.utils.logging import setup_logger
@@ -244,6 +244,34 @@ def _assert_not_under_test() -> None:
         )
 
 
+# 송신 토큰 reconcile — **프로세스당(= DB 경로당) 1회** 이 함수로만 실행한다.
+# 조각 c: 원자 경로(record_call(token_id=...))가 새 크래시 창은 닫았지만,
+# 조각 a/b 시절(원장 커밋 ↔ settle 커밋 별도 왕복)에 죽은 과거 잔재는 여전히
+# 남아 있을 수 있다 — 부팅 시 한 번 정리한다.
+#
+# 경로별 캐시 — `_send_token_schema_ready` 와 동일한 이유(2026-07-25 실측):
+# 전역 bool 이면 테스트가 `settings.db_path` 를 바꿔가며 여러 DB 를 검증할 때
+# 두 번째 DB 에는 reconcile 이 아예 안 돈다.
+_reconciled_db_paths: set[str] = set()
+
+
+async def _reconcile_send_tokens_once() -> None:
+    """세션 시작 시 송신 토큰 크래시 잔재 정리(멱등, 경로당 1회).
+
+    크림 네트워크 호출이 아니라 로컬 DB 조회/갱신뿐이다. 실패해도 세션 생성을
+    막지 않는다(계측/정리 실패로 서비스 중단 금지 원칙과 동일 — `record_call`
+    의 "실패 무시" 계약과 같은 방향).
+    """
+    path = settings.db_path
+    if path in _reconciled_db_paths:
+        return
+    _reconciled_db_paths.add(path)
+    try:
+        await reconcile_send_tokens()
+    except Exception as exc:
+        logger.warning("송신 토큰 reconcile 실패(계속 진행): %s", exc)
+
+
 class KreamCrawler:
     """크림 __NUXT_DATA__ 기반 크롤러.
 
@@ -288,6 +316,7 @@ class KreamCrawler:
             # 워커를 시작조차 하지 않는다. `.env` 를 고쳐도 실행 중 프로세스는
             # 새 값을 안 읽으므로, **이 프로세스의 유효값**을 여기서 확인한다.
             assert_kream_config_safe()
+            await _reconcile_send_tokens_once()
             self._session = AsyncSession(
                 impersonate="safari17_0",
                 timeout=30,
@@ -492,8 +521,9 @@ class KreamCrawler:
                 _t_http = time.perf_counter() - t0
                 latency_ms = int(_t_http * 1000)
                 _t_db_start = time.perf_counter()
-                await record_call(endpoint, method, status, latency_ms, purpose)
-                await settle_send_token(_token, sent=True)  # 원장이 대신 센다
+                # 원장 INSERT + 토큰 sent 정산을 한 커밋으로(조각 c — 기록↔정산
+                # 크래시 창 제거). 별도 settle_send_token 왕복이 없어졌다.
+                await record_call(endpoint, method, status, latency_ms, purpose, token_id=_token)
                 # 실송신 1건 — 이 경로의 연속 드롭 카운터를 끊는다
                 record_actual_send(purpose, endpoint)
                 _db_ms = int((time.perf_counter() - _t_db_start) * 1000)
@@ -545,15 +575,13 @@ class KreamCrawler:
 
             except asyncio.TimeoutError:
                 latency_ms = int((time.perf_counter() - t0) * 1000)
-                await record_call(endpoint, method, None, latency_ms, purpose)
-                await settle_send_token(_token, sent=True)
+                await record_call(endpoint, method, None, latency_ms, purpose, token_id=_token)
                 wait = (2 ** attempt) * 2
                 logger.warning("타임아웃 (%s) — %d초 후 재시도", url, wait)
                 await asyncio.sleep(wait)
             except Exception as e:
                 latency_ms = int((time.perf_counter() - t0) * 1000)
-                await record_call(endpoint, method, None, latency_ms, purpose)
-                await settle_send_token(_token, sent=True)
+                await record_call(endpoint, method, None, latency_ms, purpose, token_id=_token)
                 wait = (2 ** attempt) * 2
                 logger.warning("연결 에러 (%s): %s — %d초 후 재시도", url, e, wait)
                 await asyncio.sleep(wait)
@@ -612,14 +640,13 @@ class KreamCrawler:
             resp = await session.request("GET", url, headers=headers, allow_redirects=True)
         except Exception:
             latency_ms = int((time.perf_counter() - t0) * 1000)
-            await record_call(endpoint, "GET", None, latency_ms, purpose)
-            await settle_send_token(token, sent=True)  # 타임아웃도 실송신 취급
+            # 타임아웃도 실송신 취급 — 원자 경로로 기록+정산 커밋 1회(조각 c)
+            await record_call(endpoint, "GET", None, latency_ms, purpose, token_id=token)
             return 0, None
 
         status = resp.status_code
         latency_ms = int((time.perf_counter() - t0) * 1000)
-        await record_call(endpoint, "GET", status, latency_ms, purpose)
-        await settle_send_token(token, sent=True)
+        await record_call(endpoint, "GET", status, latency_ms, purpose, token_id=token)
 
         if not (200 <= status < 300):
             return status, None
@@ -694,14 +721,13 @@ class KreamCrawler:
             resp = await session.request("GET", url, headers=headers, allow_redirects=True)
         except Exception:
             latency_ms = int((time.perf_counter() - t0) * 1000)
-            await record_call(endpoint, "GET", None, latency_ms, purpose)
-            await settle_send_token(token, sent=True)  # 타임아웃도 실송신 취급
+            # 타임아웃도 실송신 취급 — 원자 경로로 기록+정산 커밋 1회(조각 c)
+            await record_call(endpoint, "GET", None, latency_ms, purpose, token_id=token)
             return 0, None
 
         status = resp.status_code
         latency_ms = int((time.perf_counter() - t0) * 1000)
-        await record_call(endpoint, "GET", status, latency_ms, purpose)
-        await settle_send_token(token, sent=True)
+        await record_call(endpoint, "GET", status, latency_ms, purpose, token_id=token)
 
         if not (200 <= status < 300):
             return status, None

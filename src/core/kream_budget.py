@@ -455,6 +455,45 @@ async def _ensure_send_token_schema(db) -> None:
     _send_token_schema_ready.add(path)
 
 
+# `kream_api_calls.token_id` 컬럼 보장 — 원자 경로(조각 c)와 reconciliation 이
+# 원장↔토큰을 잇는 데 쓴다. 테이블 자체는 `src/models/database.py` 가 소유하므로
+# 여기서는 **컬럼 추가만** 한다(전체 DDL 을 여기 복제하면 스키마가 두 곳에서
+# 갈릴 수 있다).
+#
+# sqlite 는 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 를 지원하지 않으므로
+# PRAGMA table_info 로 먼저 존재를 확인하고, 그래도 경합(동시 커넥션이 먼저
+# 추가)으로 중복 시도가 나면 그 예외만 흡수한다.
+#
+# 경로별 캐시 — `_send_token_schema_ready` 와 동일한 이유(2026-07-25 실측):
+# 전역 bool 이면 테스트가 `settings.db_path` 를 바꿀 때마다 새 DB 엔 컬럼이
+# 없는 채로 남는다.
+_api_calls_token_id_ready: set[str] = set()
+
+
+async def _ensure_api_calls_token_id_column(db) -> None:
+    """`kream_api_calls` 에 `token_id` 컬럼이 없으면 추가.
+
+    `kream_api_calls` 테이블 자체가 없으면(초기화 전 DB) PRAGMA 는 빈 결과를
+    주고, 뒤이은 ALTER 는 "no such table" 로 실패한다 — 호출자가 이미 테이블
+    존재를 확인했거나(reconcile_send_tokens), record_call 처럼 실패를 삼키는
+    맥락에서만 불러야 한다.
+    """
+    path = settings.db_path
+    if path in _api_calls_token_id_ready:
+        return
+    cur = await db.execute("PRAGMA table_info(kream_api_calls)")
+    cols = await cur.fetchall()
+    has_token_id = any(row[1] == "token_id" for row in cols)
+    if not has_token_id:
+        try:
+            await db.execute("ALTER TABLE kream_api_calls ADD COLUMN token_id INTEGER")
+        except Exception as exc:
+            # 동시 커넥션이 먼저 추가했을 수 있다 — duplicate column 오류만 흡수
+            if "duplicate column" not in str(exc).lower():
+                raise
+    _api_calls_token_id_ready.add(path)
+
+
 async def reserve_send_token(purpose: str, endpoint: str) -> int:
     """송신 **직전** 토큰 1개 예약 → token_id.
 
@@ -520,6 +559,62 @@ async def purge_settled_tokens(older_than_seconds: float = 7 * 86400.0) -> int:
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
 
+async def reconcile_send_tokens() -> dict[str, int]:
+    """부팅 시 크래시 잔재 정리 — 원장에 이미 기록된 reserved 토큰만 sent 정산.
+
+    조각 c 가 원자 경로(`record_call(token_id=...)`)로 새 크래시 창을 닫았지만,
+    조각 a/b 시절(원장 커밋 ↔ settle 커밋이 별도 왕복 2회)에 그 사이에서 죽은
+    과거 잔재가 남아 있을 수 있다 — 원장 행(token_id 포함)은 있는데 토큰은
+    아직 reserved 인 상태. 이걸 sent 로 정산해 캡 이중계산(원장 1 + 미결
+    예약 1)을 없앤다. (원자 경로는 INSERT+UPDATE 가 한 트랜잭션이라 부분
+    커밋이 없다 — 리뷰 확인. 원자 경로가 통째로 실패하면 원장 행도 없으므로
+    토큰은 매칭 없는 reserved = 소비로 남는다.)
+
+    ⚠️ 환불 정책 불변: 원장에 매칭 행이 **없는** reserved 는 절대 건드리지
+    않는다 — "결론 모르면 소비"가 이 조각에서도 그대로다. 이 함수는 매칭
+    **있는** 것만 sent 로 확정할 뿐, 매칭 없는 것을 not_sent 로 되돌리지 않는다.
+
+    프로세스 시작 시 1회 호출을 의도(`src/crawlers/kream.py` 세션 시작
+    지점)하지만, 여러 번 불러도 안전(멱등)하다 — 이미 sent 인 토큰은 조건부
+    UPDATE(`WHERE status='reserved'`)가 다시 건드리지 않고, 매칭 없는 reserved
+    는 매번 그대로 남는다.
+
+    반환: `{"settled": 이번에 sent 로 정산된 수, "still_open": 실행 후에도
+    남은 미결(reserved) 수, "purged": purge_settled_tokens() 가 지운 수}`.
+    """
+    settled = 0
+    async with async_connect(settings.db_path) as db:
+        await _ensure_send_token_schema(db)
+        cur = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'kream_api_calls'"
+        )
+        has_ledger = (await cur.fetchone()) is not None
+        if has_ledger:
+            await _ensure_api_calls_token_id_column(db)
+            cur = await db.execute(
+                "UPDATE kream_send_token SET status = ?, settled_at = ? "
+                "WHERE status = ? AND EXISTS ("
+                "  SELECT 1 FROM kream_api_calls "
+                "  WHERE kream_api_calls.token_id = kream_send_token.id"
+                ")",
+                (TOKEN_SENT, time.time(), TOKEN_RESERVED),
+            )
+            settled = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            await db.commit()
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM kream_send_token WHERE status = ?", (TOKEN_RESERVED,)
+        )
+        row = await cur.fetchone()
+        still_open = int(row[0]) if row else 0
+    purged = await purge_settled_tokens()
+    if settled or still_open:
+        logger.info(
+            "송신 토큰 reconcile: settled=%d still_open=%d purged=%d",
+            settled, still_open, purged,
+        )
+    return {"settled": settled, "still_open": still_open, "purged": purged}
+
+
 async def check_budget() -> None:
     """호출 전 체크. 100% 초과 시 예외.
 
@@ -566,23 +661,57 @@ async def record_call(
     status: int | None,
     latency_ms: int,
     purpose: str = "manual",
+    *,
+    token_id: int | None = None,
 ) -> None:
     """호출 기록 (비동기, 실패 무시 — 계측 실패로 서비스 막지 않음).
 
     purpose 가 기본값 "manual" 이면 contextvar 의 현재 태그로 대체한다.
     명시적으로 다른 값을 넘긴 호출부는 그대로 존중 (예: blacklist_500 접미사).
+
+    `token_id` 를 주면 (조각 c — 기록↔정산 원자화) **같은 커넥션·같은
+    트랜잭션**에서 원장 INSERT(token_id 포함) + 해당 예약 토큰의
+    `status='reserved'` 조건부 UPDATE → sent 정산까지 커밋 1회로 끝낸다.
+    이전에는 `record_call` 커밋과 `settle_send_token` 커밋이 별도 왕복 2회라
+    그 사이에 죽으면 원장 1행 + 미결 예약 1개가 남아 캡을 이중계산했다
+    (`reconcile_send_tokens` 가 그 잔재를 정리한다).
+
+    `token_id` 를 생략하면(기본값 None) 기존 동작과 완전히 동일하다 — SQL 문도
+    그대로다(하위 호환).
+
+    이 함수의 "실패 무시" 계약은 원자 경로에도 동일하게 적용된다: INSERT/UPDATE
+    가 실패하면 로그만 남기고 넘어간다 — 이 경우 토큰은 **미결로 남는다**
+    (= 소비 유지). "결론 모르면 소비" 환불 정책과 같은 방향이라 안전하다.
     """
     if purpose == "manual":
         purpose = _purpose_var.get()
     try:
         async with async_connect(settings.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO kream_api_calls(endpoint, method, status, latency_ms, purpose)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (endpoint, method, status, latency_ms, purpose),
-            )
+            if token_id is not None:
+                await _ensure_send_token_schema(db)
+                await _ensure_api_calls_token_id_column(db)
+                await db.execute(
+                    """
+                    INSERT INTO kream_api_calls(
+                        endpoint, method, status, latency_ms, purpose, token_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (endpoint, method, status, latency_ms, purpose, token_id),
+                )
+                await db.execute(
+                    "UPDATE kream_send_token SET status = ?, settled_at = ? "
+                    "WHERE id = ? AND status = ?",
+                    (TOKEN_SENT, time.time(), token_id, TOKEN_RESERVED),
+                )
+            else:
+                await db.execute(
+                    """
+                    INSERT INTO kream_api_calls(endpoint, method, status, latency_ms, purpose)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (endpoint, method, status, latency_ms, purpose),
+                )
             await db.commit()
     except Exception as exc:
         logger.debug("kream_api_calls 기록 실패: %s", exc)
