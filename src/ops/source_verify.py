@@ -121,7 +121,19 @@ _FIXTURE = (
 #: 집합 동등성으로 검증할 수 있게 경량 목록으로 고정한다. 항목 추가/삭제 시
 #: fixture 와 함께 갱신할 것(테스트가 불일치를 잡는다).
 SUPPORTED_SOURCES: frozenset[str] = frozenset(
-    {"29cm", "abcmart", "kasina", "musinsa", "nike", "tune", "wconcept"}
+    {
+        "29cm",
+        "abcmart",
+        "arcteryx",
+        "converse",
+        "kasina",
+        "musinsa",
+        "nike",
+        "salomon",
+        "stussy",
+        "tune",
+        "wconcept",
+    }
 )
 
 

@@ -417,3 +417,18 @@ async def test_verify_source_live_fails_when_match_to_kream_raises(tmp_path):
     verdict = await verify_source_live(adapter, "29cm", _MINIMAL_SPEC, db_path)
     assert not verdict.ok
     assert any("매칭" in r for r in verdict.reasons)
+
+
+async def test_run_live_unknown_source_fails_loudly(tmp_path, capsys):
+    """`--source <미지명>` 은 공허 통과가 아니라 실패로 끝나야 한다.
+
+    2026-07-28 라이브 실행에서 spec 없는 소싱처 4곳(stussy 등)이 루프 전체
+    skip → "실패 0곳" 으로 통과 위장됐다. 미지명은 즉시 실패 + 가용 목록 안내.
+    """
+    from scripts.verify_sources import run_live
+
+    failures = await run_live(str(tmp_path / "unknown.db"), only="no_such_source")
+    assert failures >= 1
+    out = capsys.readouterr().out
+    assert "no_such_source" in out
+    assert "spec" in out or "미지" in out

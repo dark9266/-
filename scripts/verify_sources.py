@@ -113,6 +113,12 @@ async def run_live(db_path: str, only: str | None) -> int:
     from src.core.runtime import _ADAPTER_REGISTRY
 
     specs = load_canaries()
+    if only is not None and only not in specs:
+        # 2026-07-28 실행에서 spec 없는 소싱처가 루프 전체 skip → "실패 0곳"
+        # 공허 통과로 위장됐다. 미지명은 판정 불가이므로 즉시 실패.
+        available = ", ".join(sorted(specs))
+        print(f"  ✗ {only}: canary spec 없음(미지 소싱처) — 판정 불가. 가용: {available}")
+        return 1
     bus = EventBus()
     failures = 0
     for name, cls in _ADAPTER_REGISTRY:

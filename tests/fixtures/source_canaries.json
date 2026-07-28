@@ -6,7 +6,7 @@
     "note": "min_fill_rate/max_drop 은 초기 보수값. 1회차 실측 후 보정한다."
   },
   "musinsa": {
-    "canary_model_numbers": ["DC0774-101", "553558-040"],
+    "canary_model_numbers": ["CW2288-111", "553558-040"],
     "required_fields": ["model_no", "name", "url"],
     "min_fill_rate": 0.9,
     "max_drop": 0.5
@@ -43,6 +43,31 @@
   },
   "wconcept": {
     "canary_model_numbers": ["FZ2068-100", "HQ7540-002"],
+    "required_fields": ["model_no", "name", "url"],
+    "min_fill_rate": 0.9,
+    "max_drop": 0.5
+  },
+  "stussy": {
+    "canary_model_numbers": ["1321263-BLAC-EA"],
+    "required_fields": ["model_no", "name", "url"],
+    "min_fill_rate": 0.9,
+    "max_drop": 0.5
+  },
+  "salomon": {
+    "canary_model_numbers": ["L45472800"],
+    "required_fields": ["model_no", "name", "url"],
+    "min_fill_rate": 0.9,
+    "max_drop": 0.5
+  },
+  "arcteryx": {
+    "canary_model_numbers": ["AJQSM09816", "ABPFU08973"],
+    "required_fields": ["model_no", "name", "url"],
+    "min_fill_rate": 0.9,
+    "max_drop": 0.5
+  },
+  "converse": {
+    "canary_model_numbers": [],
+    "note": "상품명이 전부 'Converse'(브랜드만)라 스테디셀러 식별 불가 — 어댑터 name 의미 보강 후 canary 지정",
     "required_fields": ["model_no", "name", "url"],
     "min_fill_rate": 0.9,
     "max_drop": 0.5
