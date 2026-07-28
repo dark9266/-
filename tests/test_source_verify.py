@@ -1,8 +1,11 @@
+import time
+
 import aiosqlite
 import pytest
 
 from src.ops.source_verify import (
     SUPPORTED_SOURCES,
+    ensure_dump_runs_schema,
     evaluate,
     judge_canary_present,
     judge_field_fill,
@@ -10,8 +13,10 @@ from src.ops.source_verify import (
     judge_pagination,
     judge_volume,
     last_dump_count,
+    ledger_delta,
     ledger_unique_counts,
     load_canaries,
+    record_dump_run,
 )
 
 
@@ -226,3 +231,189 @@ def test_evaluate_collects_every_failure_reason():
     v = evaluate("29cm", items, spec, baseline=1000)
     assert not v.ok
     assert len(v.reasons) >= 3  # canary 미검출 + 필드 충실도 + 급감
+
+
+# ---------------------------------------------------------------------------
+# Task 4a — catalog_dump_runs 스냅샷 테이블 (기준선 소스)
+# ---------------------------------------------------------------------------
+
+
+async def test_ensure_dump_runs_schema_is_idempotent(tmp_path):
+    """2회 호출해도 에러 없이 통과한다."""
+    path = str(tmp_path / "runs_idempotent.db")
+    await ensure_dump_runs_schema(path)
+    await ensure_dump_runs_schema(path)  # 재호출도 안전해야 한다
+
+
+async def test_record_dump_run_then_last_dump_count_returns_it(tmp_path):
+    path = str(tmp_path / "runs_record.db")
+    await record_dump_run(path, "29cm", 499)
+    assert await last_dump_count(path, "29cm") == 499
+
+
+async def test_record_dump_run_multiple_rows_returns_latest(tmp_path):
+    """같은 source 로 여러 번 기록하면 가장 최근 값을 돌려줘야 한다."""
+    path = str(tmp_path / "runs_multi.db")
+    await record_dump_run(path, "29cm", 900)
+    await record_dump_run(path, "29cm", 499)
+    assert await last_dump_count(path, "29cm") == 499
+
+
+# ---------------------------------------------------------------------------
+# Task 4b — 원장 델타 조회
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def ledger_db(tmp_path):
+    path = str(tmp_path / "ledger.db")
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "CREATE TABLE catalog_dump_items (source TEXT, model_no TEXT, name TEXT,"
+            " url TEXT, last_seen_at REAL)"
+        )
+        await db.executemany(
+            "INSERT INTO catalog_dump_items VALUES (?, ?, ?, ?, ?)",
+            [
+                ("29cm", "OLD-1", "old", "u-old", 100.0),
+                ("29cm", "NEW-1", "new", "u-new", 200.0),
+                ("nike", "OTHER-1", "other-source", "u-other", 200.0),
+            ],
+        )
+        await db.commit()
+    return path
+
+
+async def test_ledger_delta_excludes_rows_before_since(ledger_db):
+    items = await ledger_delta(ledger_db, "29cm", since=150.0)
+    model_nos = {i["model_no"] for i in items}
+    assert model_nos == {"NEW-1"}
+
+
+async def test_ledger_delta_excludes_other_source_rows(ledger_db):
+    items = await ledger_delta(ledger_db, "29cm", since=0.0)
+    assert all(i["model_no"] != "OTHER-1" for i in items)
+
+
+async def test_ledger_delta_returns_empty_when_table_missing(tmp_path):
+    path = str(tmp_path / "no_ledger.db")
+    assert await ledger_delta(path, "29cm", since=0.0) == []
+
+
+# ---------------------------------------------------------------------------
+# Task 4c — CLI (offline report + 원장 델타 live 검증)
+#
+# 가짜 어댑터는 `src/adapters/*` 를 흉내내되 크림 호출은 전혀 하지 않는다.
+# `match_to_kream()` 은 실제 어댑터처럼 `dump_ledger.record_dump_item()` 을
+# 거치지 않고, 원장(`catalog_dump_items`)에 **테스트가 직접 INSERT** 해
+# "자기 정규화를 마친 뒤 원장에 쓴다"는 계약만 흉내낸다 — dump_ledger.py 는
+# 손대지 않는다.
+# ---------------------------------------------------------------------------
+
+
+class _FakeAdapterOk:
+    """덤프 raw 2건 → match_to_kream 이 원장에 2건(둘 다) 기록."""
+
+    def __init__(self, db_path: str, source: str = "29cm") -> None:
+        self._db_path = db_path
+        self.source_name = source
+
+    async def dump_catalog(self):
+        return None, [{"raw_key": "R1"}, {"raw_key": "R2"}]
+
+    async def match_to_kream(self, raw: list[dict]):
+        now = time.time()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS catalog_dump_items"
+                " (source TEXT, model_no TEXT, name TEXT, url TEXT, last_seen_at REAL)"
+            )
+            await db.executemany(
+                "INSERT INTO catalog_dump_items VALUES (?, ?, ?, ?, ?)",
+                [
+                    (self.source_name, "A", "name-a", "u-a", now),
+                    (self.source_name, "B", "name-b", "u-b", now),
+                ],
+            )
+            await db.commit()
+        return [], None
+
+
+class _FakeAdapterFilteredOut:
+    """덤프 raw 5건이지만 어댑터 필터에 전량 걸려 원장 0건."""
+
+    def __init__(self, db_path: str, source: str = "29cm") -> None:
+        self._db_path = db_path
+        self.source_name = source
+
+    async def dump_catalog(self):
+        return None, [{"raw_key": f"R{i}"} for i in range(5)]
+
+    async def match_to_kream(self, raw: list[dict]):
+        return [], None  # 필터에 전부 걸려 원장에 아무것도 안 씀
+
+
+class _FakeAdapterMatchRaises:
+    """덤프는 되나 매칭 단계가 예외로 깨진다."""
+
+    def __init__(self, db_path: str, source: str = "29cm") -> None:
+        self._db_path = db_path
+        self.source_name = source
+
+    async def dump_catalog(self):
+        return None, [{"raw_key": "R1"}, {"raw_key": "R2"}, {"raw_key": "R3"}]
+
+    async def match_to_kream(self, raw: list[dict]):
+        raise RuntimeError("매칭 파서가 깨졌다")
+
+
+_MINIMAL_SPEC = {
+    "canary_model_numbers": [],
+    "required_fields": [],
+    "min_fill_rate": 0.9,
+    "max_drop": 0.5,
+}
+
+
+async def test_build_offline_report_lists_fixture_sources(tmp_path):
+    """offline 모드는 fixture 소싱처 전부를 나열한다(네트워크 0)."""
+    from scripts.verify_sources import build_offline_report
+
+    report = await build_offline_report(str(tmp_path / "none.db"))
+    names = {row["source"] for row in report["sources"]}
+    assert names == SUPPORTED_SOURCES
+
+
+async def test_verify_source_live_ok_with_raw_and_ledger_counts(tmp_path):
+    from scripts.verify_sources import verify_source_live
+
+    db_path = str(tmp_path / "live_ok.db")
+    adapter = _FakeAdapterOk(db_path)
+    verdict = await verify_source_live(adapter, "29cm", _MINIMAL_SPEC, db_path)
+    assert verdict.ok
+    assert verdict.metrics["raw_count"] == 2
+    assert verdict.metrics["ledger_count"] == 2
+
+
+async def test_verify_source_live_fails_when_raw_present_but_ledger_empty(tmp_path):
+    """덤프는 됐으나(raw 5건) 원장이 0건 — 필터 전량 걸림을 별도 사유로 알린다."""
+    from scripts.verify_sources import verify_source_live
+
+    db_path = str(tmp_path / "live_filtered.db")
+    adapter = _FakeAdapterFilteredOut(db_path)
+    verdict = await verify_source_live(adapter, "29cm", _MINIMAL_SPEC, db_path)
+    assert not verdict.ok
+    assert verdict.metrics["raw_count"] == 5
+    assert verdict.metrics["ledger_count"] == 0
+    assert any("전량 걸림" in r for r in verdict.reasons)
+
+
+async def test_verify_source_live_fails_when_match_to_kream_raises(tmp_path):
+    """매칭 단계 예외도 실패 사유로 잡는다(덤프는 됐는데 매칭이 깨진 경우)."""
+    from scripts.verify_sources import verify_source_live
+
+    db_path = str(tmp_path / "live_raise.db")
+    adapter = _FakeAdapterMatchRaises(db_path)
+    verdict = await verify_source_live(adapter, "29cm", _MINIMAL_SPEC, db_path)
+    assert not verdict.ok
+    assert any("매칭" in r for r in verdict.reasons)

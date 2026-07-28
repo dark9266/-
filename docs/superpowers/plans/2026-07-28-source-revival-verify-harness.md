@@ -743,12 +743,36 @@ musinsa        dump_catalog  model_no 등장: False  |  match_to_kream  True
 그대로 넣으면 canary 미검출 + 필드 충실도 0% 로 **전 소싱처 거짓 실패**가 난다 —
 계획서 서두에 적은 "거짓 실패는 사장이 하네스를 꺼버리게 만든다" 그 실패 모드다.
 
-**Task 4 는 소싱처별 extractor 층을 먼저 둔다:**
-- `normalize_dump_items(source: str, raw: list[dict]) -> list[dict]` — 소싱처별 키 매핑으로
-  `{model_no, name, url}` 표준 스키마로 변환. 매핑표는 fixture 또는 모듈 상수.
-- 각 소싱처마다 **실제 어댑터 출력 fixture 1건**을 저장하고, 그 fixture 를
-  `normalize_dump_items` → `evaluate()` 에 통과시키는 **계약 테스트**를 둔다.
-  이게 없으면 같은 종류의 스키마 착오가 또 난다.
+**~~Task 4 는 소싱처별 extractor 층을 먼저 둔다~~ — 이 안은 폐기했다.**
+
+코덱스의 최소 수정안(소싱처별 extractor 로 표준 스키마 변환)을 검토하다 **더 나은 길**을
+찾았다. 추출 방식이 소싱처마다 3갈래로 갈린다(실측):
+
+| 소싱처 | model_no 유래 |
+|---|---|
+| kasina · tune · wconcept · 29cm | 키 직접(`productManagementCd` · `sku` · `model_number`) |
+| musinsa · nike · 29cm(fallback) | `extract_model_from_name()` — **상품명 파싱** |
+| abcmart | `_build_model(style, color)` — **조립 함수** |
+
+별도 extractor 를 만들면 **어댑터 정규화 로직을 복제**하게 되고, 두 벌이 갈라지는 순간
+하네스가 거짓 판정을 낸다(원래 잡으려던 병을 하네스가 새로 만드는 꼴).
+
+**채택: 원장 델타(ledger delta) 방식.** 어댑터가 **자기 정규화로 이미 원장에 쓴다**:
+`match_to_kream()` 안에서 `record_dump_item(source, model_no, name, url)` 호출 —
+`model_no` 는 그 어댑터의 정규화를 그대로 거친 값이다.
+
+Task 4 러너 절차:
+1. `adapter.dump_catalog()` — 소싱처 네트워크 GET (**크림 호출 아님**)
+2. `adapter.match_to_kream(items)` — **로컬 전용**. `kream_index` 는 sqlite 캐시라 HTTP 없음
+   (실측 확인). 구독자 없는 `EventBus` 를 주입하면 `CandidateMatched` 는 fanout 대상이 없다.
+3. `catalog_dump_items` 에서 `source=? AND last_seen_at >= run_start` 로 **이번 실행분만** 조회
+   → 이 행들이 `{model_no, name, url}` 표준 스키마다. 그대로 `evaluate()` 에 넣는다.
+
+**주의 — 두 수를 다 보고한다**: 원장 행은 어댑터 필터(품절·PB·모델번호 없음) 통과분이라
+`dump_catalog()` 원본보다 적다. `raw_count`(덤프 원본)와 `ledger_count`(원장 델타)를 **둘 다**
+metrics 에 넣어라. 급감 판정은 `ledger_count` 기준(파이프라인에 실제 도달한 수)이되,
+`raw_count > 0` 인데 `ledger_count == 0` 이면 "덤프는 됐으나 전량 필터됨"을 **별도 사유**로
+보고한다(덤프 실패와 구분되어야 한다).
 
 ### 변경 2 — 기준선은 `catalog_dump_items` 가 아니다
 

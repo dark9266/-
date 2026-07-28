@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -181,6 +182,70 @@ async def last_dump_count(db_path: str, source: str) -> int | None:
         )
         row = await cur.fetchone()
         return int(row[0]) if row is not None else None
+
+
+async def ensure_dump_runs_schema(db_path: str) -> None:
+    """`catalog_dump_runs` 스냅샷 테이블 생성(멱등). 급감 판정 기준선 원장이다.
+
+    `catalog_dump_items` 와 달리 이건 **실행 1회 단위 스냅샷**이라 단종 상품이
+    누적되지 않는다 — `last_dump_count()` 가 여기서 "직전 1회 덤프 건수"를 읽는다.
+    """
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS catalog_dump_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                product_count INTEGER NOT NULL,
+                finished_at REAL NOT NULL
+            )"""
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dump_runs_source"
+            " ON catalog_dump_runs(source, finished_at)"
+        )
+        await db.commit()
+
+
+async def record_dump_run(db_path: str, source: str, product_count: int) -> None:
+    """덤프 실행 1회 스냅샷을 `catalog_dump_runs` 에 기록.
+
+    스키마가 없으면 여기서 함께 만든다(`ensure_dump_runs_schema` 멱등 재사용) —
+    호출 순서를 강제하지 않아도 안전하다.
+    """
+    await ensure_dump_runs_schema(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO catalog_dump_runs (source, product_count, finished_at)"
+            " VALUES (?, ?, ?)",
+            (source, product_count, time.time()),
+        )
+        await db.commit()
+
+
+async def ledger_delta(db_path: str, source: str, since: float) -> list[dict]:
+    """`catalog_dump_items` 에서 `since` 이후 갱신된 행 — **이번 실행분만**.
+
+    어댑터가 `match_to_kream()` 안에서 `record_dump_item()` 으로 이미 자기
+    정규화(`model_no`)를 거쳐 원장에 쓴 값이다 — 별도 extractor 를 두지 않고
+    이 원장을 그대로 표준 스키마(`model_no`/`name`/`url`)로 쓴다.
+
+    테이블이 없으면 `[]`(첫 실행 방어). 그 외 DB 오류는 전파한다 —
+    `ledger_unique_counts()` 와 동일 정책, 판정 불능을 통과로 둔갑시키지 않는다.
+    """
+    async with aiosqlite.connect(db_path) as db:
+        cur = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_dump_items'"
+        )
+        if await cur.fetchone() is None:
+            return []
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT model_no, name, url FROM catalog_dump_items"
+            " WHERE source = ? AND last_seen_at >= ?",
+            (source, since),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
 
 def evaluate(
