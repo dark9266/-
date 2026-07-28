@@ -71,6 +71,7 @@
 | `task_intake_guard.py` | UserPromptSubmit | 프롬프트 토큰으로 **DONE 원장·메모리·git log·기존 모듈** 자동 검색 주입 + **금지 리스트 저촉 경고** + 관련 **스킬 자동 소환** — "중복 작업 안 하기" |
 | `direction_guard.py` | PreToolUse | **폐기 흐름 스캐너 수정 차단**(reverse/scanner/tier1/continuous — `tier2_monitor` 은 예외로 허용) + **신규 소싱처 파일 생성 차단**. 해제 = `KREAM_LEGACY_EDIT_GO=1` / `KREAM_NEW_SOURCE_GO=1` |
 | `claim_evidence_guard.py` | Stop | 증거 없는 **"완료"·"안 된다"·"뚫었다"·"N건이다"** 를 끝내지 못하게 차단 |
+| `intent_gate.py` | UserPromptSubmit + PreToolUse | **의도 인터뷰 게이트** (2026-07-28, 사장: "비개발자라 인터뷰 필요"). 애매한 신규 지시 판정 → 요약 3줄+객관식 ≤3개 인터뷰 지시 주입 + 답변 전 코드 수정 물리 차단(탐색·문서는 허용, 다음 프롬프트로 자동 해제). 버그 신호 감지 시 systematic-debugging 스킬 의무 지시도 주입 — "스킬 있는데 안 부르는 병" 대응 |
 | `kream_live_call_guard.py` | PreToolUse | **실계정 크림 호출 실행 차단** — 배치 라이브 실행(`--dry-run` 없이)·레거시 우회로·`probe_kream*`·안전망 해제 env. 해제 = `KREAM_LIVE_BATCH_GO=1`. 소싱처 probe·dry-run·일반 pytest 는 안 막는다 |
 | `tests/conftest.py` | pytest 전역 | **테스트에서 실 네트워크 송신·운영 DB 연결 차단 + `settings.db_path` 기본 tmp 격리**. 2026-07-25 실계정 311콜 사고 대응 — 격리를 잊어도 안전하다 |
 | `orchestration_gate.py` | PreToolUse | Fable 모드 ON 일 때만 — 메인 직접수정 턴당 5파일 제한 |

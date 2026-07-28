@@ -545,3 +545,73 @@ def test_live_guard_distinguishes_execution_from_argument():
     assert not _blocks(f"python -m pytest tests/test_{_BOOT.split('/')[-1]}")
     # 그래도 진짜 실행은 그대로 막혀야 한다 — 판정이 느슨해진 게 아니라 정확해진 것.
     assert _blocks(f"python {_BOOT} --limit 5")
+
+
+# ══ 의도 인터뷰 게이트 (intent_gate) ══════════════════════════════════════════
+import intent_gate as ig  # noqa: E402
+
+
+def test_intent_flags_open_new_task():
+    """열린 신규 지시 — 인터뷰 대상. 사장 2026-07-28: '나는 비개발자라 인터뷰가 필요해'."""
+    assert ig.should_flag("보관판매 자동으로 올라가게 만들어줘")
+    assert ig.should_flag("알림 더 똑똑하게 개선해")
+    assert ig.should_flag("새 대시보드 기능 추가하자")
+    assert ig.should_flag("이거 자동화 해줘")
+
+
+def test_intent_skips_continuation_and_queries():
+    """오탐 = 배달 중 왕복 1회 낭비. 연속 작업·조회·의논은 절대 안 걸려야 한다."""
+    assert not ig.should_flag("이어서")
+    assert not ig.should_flag("시작")
+    assert not ig.should_flag("어제 하던 budget 조각 이어서 진행해")
+    assert not ig.should_flag("커밋하고 푸시해줘")
+    assert not ig.should_flag("헬스체크 상태 확인해봐")
+    assert not ig.should_flag("이 영상 분석 요약해줘")
+    assert not ig.should_flag("너랑 의논하려는거야 어떻게 생각해")
+    assert not ig.should_flag("/commit")
+    assert not ig.should_flag("")
+
+
+def test_intent_skips_specific_scoped_orders():
+    """구체 파일 경로를 짚은 지시는 스코프가 잡힌 것 — 인터뷰 없이 바로 착수."""
+    assert not ig.should_flag("src/tier2_monitor.py 딜레이 5초로 바꿔줘")
+    assert not ig.should_flag("scripts/verify.py 에 케이스 하나 추가해")
+
+
+def test_intent_skips_long_detailed_spec():
+    """장문 스펙은 이미 상세하다 — 인터뷰 불필요."""
+    assert not ig.should_flag("만들어줘 " + "상세 스펙 " * 200)
+
+
+def test_intent_pretool_blocks_code_edit_while_pending():
+    """의도 미확정 상태에서 메인의 코드 수정은 물리 차단된다."""
+    d = ig.decide_pretool(_edit("src/foo.py"), pending=True)
+    assert not d.allow and "의도" in d.message
+    d = ig.decide_pretool(_write("scripts/new_thing.py"), pending=True)
+    assert not d.allow
+    d = ig.decide_pretool(_bash("echo 'x' > src/foo.py"), pending=True)
+    assert not d.allow
+
+
+def test_intent_pretool_allows_research_and_docs_while_pending():
+    """탐색·조사·문서는 허용 — 좋은 질문을 만들려면 조사가 필요하다."""
+    assert ig.decide_pretool(_bash("grep -rn pattern src/"), pending=True).allow
+    assert ig.decide_pretool(_edit("docs/NOTE.md"), pending=True).allow
+    assert ig.decide_pretool({"tool_name": "Read", "tool_input": {}}, pending=True).allow
+
+
+def test_intent_pretool_passes_when_not_pending_or_subagent():
+    """평상시·서브에이전트는 게이트 대상이 아니다."""
+    assert ig.decide_pretool(_edit("src/foo.py"), pending=False).allow
+    p = _edit("src/foo.py")
+    p["agent_type"] = "kream-executor"
+    assert ig.decide_pretool(p, pending=True).allow
+
+
+def test_intent_debug_note_triggers_on_malfunction_signals():
+    """버그 신호 → systematic-debugging 의무 지시. 스킬 미호출 사고(타 프로젝트 실측) 대응."""
+    assert ig.needs_debug_skill("알림이 왜 안 와?")
+    assert ig.needs_debug_skill("배치 돌리다 에러 났어")
+    assert ig.needs_debug_skill("매칭이 안 잡히는데")
+    assert not ig.needs_debug_skill("이어서 진행해")
+    assert not ig.needs_debug_skill("오늘 뭐 했는지 요약해줘")
