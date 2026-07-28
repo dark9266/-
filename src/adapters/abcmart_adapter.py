@@ -324,27 +324,28 @@ class AbcmartAdapter:
                 continue
 
             # 덤프 ledger — 매칭 전 전수 기록 (오프라인 분석용)
+            channel = item.get("_channel") or ""
+            prdt_no = item.get("PRDT_NO")
+            source_name_text = item.get("PRDT_NAME") or ""
             try:
                 from src.core.dump_ledger import record_dump_item
                 await record_dump_item(
                     self._db_path,
                     source=self.source_name,
                     model_no=model,
-                    name=item.get("name") or "",
-                    url=item.get("url") or "",
+                    name=source_name_text,
+                    url=_build_url(channel, prdt_no),
                 )
             except Exception:
                 logger.debug("[abcmart] dump_ledger 실패 (비치명)")
 
             kream_row = kream_index.get(key)
-            channel = item.get("_channel") or ""
             if kream_row is None:
                 if await self._enqueue_collect(item, model, channel):
                     stats.collected_to_queue += 1
                 continue
 
             # 매칭 가드
-            source_name_text = item.get("PRDT_NAME") or ""
             kream_name = kream_row.get("name") or ""
             if collab_match_fails(kream_name, source_name_text):
                 logger.info(

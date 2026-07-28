@@ -251,12 +251,13 @@ class KasinaAdapter:
             # 덤프 ledger — 매칭 전 전수 기록 (오프라인 분석용)
             try:
                 from src.core.dump_ledger import record_dump_item
+                pno = item.get("productNo")
                 await record_dump_item(
                     self._db_path,
                     source=self.source_name,
                     model_no=mgmt,
                     name=item.get("productName") or item.get("name") or "",
-                    url=item.get("url") or "",
+                    url=_build_url(pno) if pno is not None else "",
                 )
             except Exception:
                 logger.debug("[kasina] dump_ledger 실패 (비치명)")

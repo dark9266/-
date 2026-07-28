@@ -597,22 +597,22 @@ class ArcteryxAdapter:
                 continue
 
             # 덤프 ledger — 매칭 전 전수 기록 (오프라인 분석용)
+            pid = item.get("product_id")
+            source_name_text = item.get("product_name") or ""
+            url = _build_url(pid) if pid is not None else ""
             try:
                 from src.core.dump_ledger import record_dump_item
                 await record_dump_item(
                     self._db_path,
                     source=self.source_name,
                     model_no=model_no,
-                    name=item.get("name") or "",
-                    url=item.get("url") or "",
+                    name=source_name_text,
+                    url=url,
                 )
             except Exception:
                 logger.debug("[arcteryx] dump_ledger 실패 (비치명)")
 
-            pid = item.get("product_id")
-            source_name_text = item.get("product_name") or ""
             price = int(item.get("sell_price") or item.get("retail_price") or 0)
-            url = _build_url(pid) if pid is not None else ""
 
             # 후보 결정 — (kream_row, color_id_or_None) 쌍 리스트
             emit_pairs: list[tuple[dict, int | None]] = []

@@ -303,8 +303,8 @@ class TuneAdapter:
                     self._db_path,
                     source=self.source_name,
                     model_no=sku,
-                    name=item.get("name") or "",
-                    url=item.get("url") or "",
+                    name=item.get("title") or "",
+                    url=_build_url(item.get("handle") or ""),
                 )
             except Exception:
                 logger.debug("[tune] dump_ledger 실패 (비치명)")

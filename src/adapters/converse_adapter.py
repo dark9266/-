@@ -377,7 +377,7 @@ class ConverseAdapter:
                     self._db_path,
                     source=self.source_name,
                     model_no=norm,
-                    name=item.get("name") or "",
+                    name=item.get("title") or "",
                     url=item.get("url") or "",
                 )
             except Exception:

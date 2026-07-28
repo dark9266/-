@@ -316,14 +316,16 @@ class MusinsaAdapter:
                 continue
 
             # 덤프 ledger — 매칭 전 전수 기록 (오프라인 분석용)
+            goods_no = str(item.get("goodsNo") or "")
+            url = f"https://www.musinsa.com/products/{goods_no}"
             try:
                 from src.core.dump_ledger import record_dump_item
                 await record_dump_item(
                     self._db_path,
                     source=self.source_name,
                     model_no=model_from_name,
-                    name=item.get("name") or "",
-                    url=item.get("url") or "",
+                    name=name,
+                    url=url,
                 )
             except Exception:
                 logger.debug("[musinsa] dump_ledger 실패 (비치명)")
@@ -361,8 +363,6 @@ class MusinsaAdapter:
 
             # CandidateMatched 이벤트 생성
             price = int(item.get("price") or 0)
-            goods_no = str(item.get("goodsNo") or "")
-            url = f"https://www.musinsa.com/products/{goods_no}"
             try:
                 kream_product_id = int(kream_row["product_id"])
             except (TypeError, ValueError):
