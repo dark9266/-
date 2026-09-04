@@ -2,6 +2,10 @@
 
 크림봇 (Kream Monitor Bot) — 크림 차익거래 자동화 Discord 봇. Python 3.12+, async-first. 개인용 초고성능 (배포 A).
 
+<!-- 이 파일은 매 세션 전부 컨텍스트에 로드된다. 공식 권장 상한 200줄.
+     새 지식은 아래 "지식 라우팅" 표를 따라 보낸다 — 여기 무작정 추가하지 말 것.
+     session_start_inject 훅이 매 세션 줄 수를 재서 보고한다. -->
+
 ## 🔴 INVARIANT — 매 세션 맨 먼저 읽을 것 (변경 금지)
 
 **단일 source of truth**: `~/.claude/projects/-mnt-c-Users-USER-Desktop----/memory/project_current_track.md`
@@ -59,346 +63,119 @@
 
 **1개라도 FAIL → 매칭/신규 작업 착수 금지, 복구 먼저.**
 
-### 🛡 기계 가드 (2026-07-24 — 마크다운이 못 막는 것을 훅이 막는다)
+---
 
-> 앤트로픽 공식: *"'절대 하지 마라' 는 지시가 아니라 **훅+권한**으로 하라 — 긴 세션에서,
-> 압박받을 때, 모호한 상황에서 모델은 프롬프트된 규칙을 못 지킨다."*
-> 위 🚫 금지 리스트와 "라이브 관측 없이 수치 주장" 은 이제 **기계가 강제**한다.
+## 📇 지식 라우팅 — 새로 알게 된 것을 어디에 쓸 것인가
+
+> 갈 곳이 두 개(CLAUDE.md · 메모리)뿐이라 이 파일이 404줄까지 불었다. 2026-09-04 5분면으로 분리.
+> **판단 순서**: ① 어기면 사고인가 → 훅 ② 매 세션 필요한가 → 아니면 CLAUDE.md 금지.
+
+| 이런 지식이면 | 여기로 | 로드 시점 | 상시 컨텍스트 비용 |
+|---|---|---|:-:|
+| 어기면 사고 (돈·BAN·데이터 손실) | `.claude/hooks/` **훅** | 이벤트마다 | **0** |
+| 매 세션 판단에 필요 (방향·목표·금지) | **이 파일** (≤200줄) | 매 세션 전부 | 높음 |
+| 특정 파일 만질 때만 필요 | `.claude/rules/*.md` + `paths:` | 그 파일 열 때 | **0** |
+| 여러 단계 절차 (매번 같은 순서) | `.claude/skills/` **스킬** | 호출될 때 | **0** |
+| 사실·이력·끝난 판정 | auto memory · `docs/DONE_REGISTRY.md` | 필요 시 읽음 | 인덱스 한 줄 |
+
+- ⚠️ `@import` 는 절감 수단이 **아니다** — 임포트 파일도 launch 때 같이 로드된다.
+- 코드에서 읽을 수 있는 것(파일 목록·디렉터리 구조·의존성)은 **어디에도 안 쓴다**.
+- 현재 규칙 파일: `adapters.md` · `kream-api.md` · `readonly.md` · `testing.md` · `core-modules.md`
+
+## 🛡 기계 가드 (마크다운이 못 막는 것을 훅이 막는다)
+
+> 앤트로픽 공식: *"'절대 하지 마라' 는 지시가 아니라 **훅+권한**으로 하라."*
+> 위 🚫 금지 리스트와 "라이브 관측 없이 수치 주장" 은 **기계가 강제**한다.
 
 | 훅 | 시점 | 무엇을 |
 |---|---|---|
-| `session_start_inject.py` | SessionStart | INVARIANT + 봇 생존 + 최근 커밋 + **DONE 원장** + 헬스체크 4종 주입 — "했던 일 잊지 않기" |
-| `task_intake_guard.py` | UserPromptSubmit | 프롬프트 토큰으로 **DONE 원장·메모리·git log·기존 모듈** 자동 검색 주입 + **금지 리스트 저촉 경고** + 관련 **스킬 자동 소환** — "중복 작업 안 하기" |
-| `direction_guard.py` | PreToolUse | **폐기 흐름 스캐너 수정 차단**(reverse/scanner/tier1/continuous — `tier2_monitor` 은 예외로 허용) + **신규 소싱처 파일 생성 차단**. 해제 = `KREAM_LEGACY_EDIT_GO=1` / `KREAM_NEW_SOURCE_GO=1` |
-| `claim_evidence_guard.py` | Stop | 증거 없는 **"완료"·"안 된다"·"뚫었다"·"N건이다"** 를 끝내지 못하게 차단 |
-| `intent_gate.py` | UserPromptSubmit + PreToolUse | **의도 인터뷰 게이트** (2026-07-28, 사장: "비개발자라 인터뷰 필요"). 애매한 신규 지시 판정 → 요약 3줄+객관식 ≤3개 인터뷰 지시 주입 + 답변 전 코드 수정 물리 차단(탐색·문서는 허용, 다음 프롬프트로 자동 해제). 버그 신호 감지 시 systematic-debugging 스킬 의무 지시도 주입 — "스킬 있는데 안 부르는 병" 대응 |
-| `kream_live_call_guard.py` | PreToolUse | **실계정 크림 호출 실행 차단** — 배치 라이브 실행(`--dry-run` 없이)·레거시 우회로·`probe_kream*`·안전망 해제 env. 해제 = `KREAM_LIVE_BATCH_GO=1`. 소싱처 probe·dry-run·일반 pytest 는 안 막는다 |
-| `tests/conftest.py` | pytest 전역 | **테스트에서 실 네트워크 송신·운영 DB 연결 차단 + `settings.db_path` 기본 tmp 격리**. 2026-07-25 실계정 311콜 사고 대응 — 격리를 잊어도 안전하다 |
-| `orchestration_gate.py` | PreToolUse | Fable 모드 ON 일 때만 — 메인 직접수정 턴당 5파일 제한 |
+| `session_start_inject.py` | SessionStart | INVARIANT·봇 생존·최근 커밋·DONE 원장·헬스체크·**지시문 예산** 주입 |
+| `task_intake_guard.py` | UserPromptSubmit | DONE 원장·메모리·git log·모듈 자동 검색 + 금지 리스트 경고 + **스킬 자동 소환** |
+| `intent_gate.py` | UserPromptSubmit·PreToolUse | 애매한 신규 지시 → 요약 3줄 + 객관식 ≤3개 인터뷰. 답변 전 코드 수정 물리 차단 |
+| `direction_guard.py` | PreToolUse | 폐기 흐름 수정 차단 + 신규 소싱처 생성 차단. 해제 = `KREAM_LEGACY_EDIT_GO` / `KREAM_NEW_SOURCE_GO` |
+| `kream_live_call_guard.py` | PreToolUse | 실계정 크림 호출 차단. 해제 = `KREAM_LIVE_BATCH_GO=1` |
+| `orchestration_gate.py` | PreToolUse | Fable 모드 ON 시 메인 직접수정 턴당 5파일 제한 |
+| `claim_evidence_guard.py` | Stop | 증거 없는 "완료·안 된다·N건이다" 차단 |
+| `tests/conftest.py` | pytest 전역 | 실 네트워크·운영 DB 차단 + tmp DB 격리 |
 
-- 전부 **fail-open**(훅 버그가 세션을 막지 않는다). 판정 로직은 `tests/test_hooks_guards.py` 로 고정.
-- **재실행 금지 원장 = `docs/DONE_REGISTRY.md`.** 작업이 끝나 다시 할 이유가 없어지면 한 줄 추가한다.
-- 차단 메시지를 받으면 **우회하지 말고** 그 지시대로 하거나 사장에게 보고한다.
+전부 **fail-open**. 판정 로직은 `tests/test_hooks_guards.py` 로 고정.
+차단 메시지를 받으면 **우회하지 말고** 그 지시대로 하거나 사장에게 보고한다.
+재실행 금지 원장 = `docs/DONE_REGISTRY.md` — 끝난 일은 한 줄 추가.
 
 @.claude/orchestration/active.md
 
-### 메인 아키텍처
-- `src/adapters/*_adapter.py` (22곳) → `src/core/event_bus` → `src/core/orchestrator` → `kream_collect_queue` → 알림
-- 축 ② 보조: `tier2_monitor.py` 역방향 hot 130건 60초 폴링 (폐기 X, 재포지셔닝)
-- 아래 "v2 Architecture" 섹션은 **참조용 구조 설명**이지 현행 메인 아님.
+## 아키텍처 (푸시 단일 트랙)
+
+```
+22 소싱처 어댑터 (src/adapters/*) → 카탈로그 덤프
+  → matcher (크림 DB 로컬 교집합) → collect_queue
+  → kream_delta_watcher + orchestrator (sell_now 조회)
+  → profit_calculator → Discord 알림
+```
+- 축 ② 보조: `tier2_monitor.py` 역방향 hot 폴링 (폐기 X, 재포지셔닝)
+- 모듈 지도·폐기 흐름 상세 → `.claude/rules/core-modules.md`
 
 ### UI 봇 트랙 (2026-04-26 시작, 22 소싱처 안정화와 병행)
-- **목표**: 현 크림봇 → Electron 데스크톱 UI 봇 전환 (시작/중지 + 모드 + 보관판매 + 자동경쟁)
-- **Phase A** (UI 골격) → **Phase B** (보관판매 등록, 벌크 계정 한정 — POST 예외) → **Phase C** (자동경쟁)
-- 상세: 메모리 `project_ui_bot_track.md` / `project_phase_b_storage_sale.md` / `project_phase_c_auto_compete.md` / `feedback_ui_bot_triggers.md`
-- UI는 봇 코어 안 건드림 → 트랙 1 (소싱처 안정화) 과 병행 가능
+Electron 데스크톱 전환. **Phase A**(UI 골격) → **Phase B**(보관판매 등록, 벌크 계정 한정 POST 예외) → **Phase C**(자동경쟁).
+상세: 메모리 `project_ui_bot_track.md` · `project_phase_b_storage_sale.md` · `project_phase_c_auto_compete.md` · `feedback_ui_bot_triggers.md`.
+UI는 봇 코어를 안 건드리므로 트랙 1과 병행 가능.
+
+## 수수료 · 시그널 (돈 계산 — 매 세션 필요)
+
+```
+정산가 = 판매가 - (기본료 2,500 + 판매가 × 6%) × 1.1(VAT) - 검수비 2,500 - 배송비 3,000
+검수비 2,500원 (실 정산서 확인 — 2026-05-02, 재추정 금지)
+```
+
+- **STRONG_BUY**: 순수익 ≥ 30,000 AND 7일 거래량 ≥ 1
+- **BUY**: 순수익 ≥ 15,000 AND 7일 거래량 ≥ 1
+- **WATCH**: 순수익 ≥ 5,000 AND 7일 거래량 ≥ 1
+- **NOT_RECOMMENDED**: 그 외 (거래량 0 = 대기 매수자 없음 → 판매 불가)
+- **알림 하드 플로어**: 순수익 ≥ 10,000₩ AND ROI ≥ 5% AND 거래량 ≥ 1
+
+**거래량 게이트 1 고정.** 저거래(숨은 보석)가 핵심 차별화 — 낮추자/올리자 재제안 금지.
+`profit_calculator.py`·수수료·시그널 변경 시 **`profit-analyzer` 의무 + Codex S 등급**.
 
 ## Commands
 
 ```bash
-pip install -e ".[dev]"          # 설치
-python main.py                   # 봇 실행
-pytest tests/ -v                 # 전체 테스트
-PYTHONPATH=. python scripts/verify.py  # 파이프라인 검증
-ruff check src/ tests/           # 린트
-ruff format src/ tests/          # 포맷
+pip install -e ".[dev]"                 # 설치
+python main.py                          # 봇 실행 (사장 명시 지시 or UI 버튼만)
+pytest tests/ -v                        # 전체 테스트
+PYTHONPATH=. python scripts/verify.py   # 파이프라인 검증
+ruff check src/ tests/                  # 린트
+bash scripts/fable.sh on|off|status     # 오케스트레이션 토글
+python scripts/codex_collab.py plan     # Codex 등급 판정 (호출 0)
 ```
 
-## 현행 아키텍처 (푸시 단일 트랙)
+슬래시 명령: `/status` `/health` `/verify` `/queue` `/catalog` `/coverage` `/trace` `/commit` `/add-source`
+— 정의는 `.claude/commands/*.md`.
 
-```
-22 소싱처 어댑터 (src/adapters/*) → 카탈로그 덤프
-  → matcher (크림 DB 로컬 교집합)
-  → collect_queue (크림 후보)
-  → kream_delta_watcher + orchestrator (sell_now 조회)
-  → profit_calculator
-  → Discord 알림
-```
+## 에이전트 — 의무 투입 트리거
 
-**축 ② 보조**: `tier2_monitor.py` — 크림 hot 거래량 ≥5 상품 60초 폴링. 유지 (폐기 X).
+| 트리거 | 에이전트 |
+|---|---|
+| 새 소싱처 추가 | `crawler-builder` (선행: `api-prober` → `source-analyzer`) |
+| 수수료·시그널·하드플로어 변경 | `profit-analyzer` |
+| 코어 모듈 수정 후 (kream.py·profit_calculator.py·orchestrator.py) | `code-reviewer` |
+| "왜 안 잡혀? 왜 알림 안 와?" | `scan-debugger` |
+| 크롤러·어댑터 수정 후 실동작 검증 | `live-tester` |
 
-> **과거 v2 (Tier 0/1, hot/warm/cold 순환, 역방향 주력) 는 폐기 흐름**.
-> `continuous_scanner.py` · `tier1_scanner.py` · hot/warm/cold 큐 컬럼 · `next_scan_at` / `scan_priority` 는 **현행 아키텍처와 무관**.
-> 상세 v2 구조 필요 시 `project_history_archive.md` 참조 — 리팩터링/개선/재활용 제안 금지.
+Fable 모드 ON 시 일반 노동은 `kream-executor`(구현) / `kream-explorer`(탐색).
+**도메인 의무 트리거가 오케스트레이션보다 우선.**
+읽기전용 조사는 자율 병렬 투입 허용(한 줄 고지). 상태 변경 동반 작업은 사전 확인.
 
-## Key Modules
+## 스킬 (설명은 각 SKILL.md — 훅이 자동 소환한다)
 
-### 스캐너 (현행)
-- `src/tier2_monitor.py` — **축 ② 유지**. watchlist 실시간 크림 시세 폴링. sell_now_price(즉시판매가) 기준 수익 계산, 5배 안전망(오매칭 방어)
+- `kream-search-in-search` — 소싱처 403/202/빈 결과. **"차단됐다" 판단하기 전에 필수**
+- `kream-codex-collab` — 사장이 "코덱스 검증/의논/협업해" 할 때만 (Plus 한도 구매대행과 공유 → 수동 전용)
+- `ponytail` (+`-review` `-audit` `-debt`) — 과잉설계 차단. **세션 시작 시 상시 ON**, 단 의무 에이전트·TDD·검증보다 **아래**
+- `kream-youtube-transcript` · `kream-youtube-channel` · `kream-instagram-extract` — 외부 자료 추출
 
-### 🗑 폐기 흐름 스캐너 (참조용, 손대지 말 것)
-- `src/reverse_scanner.py` · `src/scanner.py` · `src/tier1_scanner.py` · `src/continuous_scanner.py` — v2 시절 역방향/Tier 구조. 현행 푸시 트랙과 무관. 리팩터링·버그픽스·재활용 제안 금지.
+## 개발 방식
 
-### 크롤러 (2026-04-19 기준 — Worksout/Carhartt 폐기, On Running 추가. 매칭 판정 대기)
-- `src/crawlers/musinsa_httpx.py` — 무신사. API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
-- `src/crawlers/twentynine_cm.py` — 29CM. 검색 API v4/products + HTML 파싱
-- `src/crawlers/nike.py` — 나이키 공식몰. `__NEXT_DATA__` JSON 파싱 (selectedProduct 구조). LAUNCH 상품 자동 스킵
-- `src/crawlers/adidas.py` — 아디다스 공식몰. taxonomy API (Akamai WAF, Referer 필수)
-- `src/crawlers/kasina.py` — 카시나. NHN shopby API. Nike/adidas EXACT(`productManagementCd`), NB는 브랜드 덤프+regex. 사이즈별 재고(`saleType`+`forcedSoldOut`) 직접 노출
-- `src/crawlers/abcmart.py` — 그랜드스테이지/온더스팟. a-rt.com 멀티채널 API, prefix 검색 + 상세 API 모델번호 보강
-- `src/crawlers/tune.py` — 튠. Shopify Storefront GraphQL API (GET), variant title에서 모델번호/사이즈 파싱
-- `src/crawlers/eql.py` — EQL. 한섬 편집숍. HTML 파싱 (검색 godNm 속성 + 상세 sizeItmNm/onlineUsefulInvQty)
-- `src/crawlers/nbkorea.py` — 뉴발란스 공식몰. 카테고리 SSR 매핑 + getOtherColorOptInfo GET API
-- `src/crawlers/salomon.py` — 살로몬 공식몰. Shopify products.json REST API. SKU=크림 모델번호(L+8자리), handle 직접 조회
-- `src/crawlers/arcteryx.py` — 아크테릭스 코리아. api.arcteryx.co.kr Laravel REST API. 검색+옵션(사이즈/재고) 조합
-- `src/crawlers/vans.py` — 반스 공식몰. Topick Commerce 플랫폼. 검색 JSON API + HTML data-sku-data 사이즈별 재고 파싱
-- `src/crawlers/wconcept.py` — W컨셉. POST 검색 API (gw-front, DISPLAY-API-KEY) + GET 상세 HTML 파싱 (brazeJson/skuqty)
-- `src/crawlers/on_running.py` — On Running 한국 공식몰. sitemap(/ko-kr/products.xml) 덤프 + JSON-LD SSR 파싱. 신형 11자(3MF10071043) + 구형 dot(61.99025) 이중 SKU. **2026-04-20 전수 검증: 즉시 매칭 150건 + collect 후보 742건. 어댑터 활성 유지** (크림 PDP Pinia store에서 model_number 정상 제공)
-- `src/adapters/stussy_adapter.py` — Stussy 한국 공식몰 (kr.stussy.com, Shopify). `/products.json` 페이지네이션. variant.sku digit prefix → 크림 prefix 인덱스 매칭. 다중 후보 시 영문→한글 색상 사전으로 disambiguation. 크림 Stussy 2,389행 풀 활성화 (2026-04-14 추가)
-- `src/adapters/{patagonia,beaker,thehandsome,puma,asics,nike,adidas,thenorthface}_adapter.py` — Phase 3 배치 어댑터들 (직접 httpx/Shopify 기반 푸시 어댑터, crawler 레이어 없이 어댑터에 통합)
-- `src/crawlers/registry.py` — 레지스트리 + 서킷브레이커 (3회 실패 → 30분 비활성화)
-
-### 크림 데이터
-- `src/crawlers/kream.py` — curl_cffi Safari 핑거프린트 + Nuxt `__NUXT_DATA__` 파싱 (sizes, prices, trade volume)
-- `src/kream_realtime/collector.py` — 신규 상품 자동 수집 (6시간 주기)
-- `src/kream_realtime/price_refresher.py` — hot 전용 시세 갱신 (30분 주기). 3회 연속 실패 → cold 강등 (refresh_fail_count)
-- `src/kream_realtime/volume_spike_detector.py` — 거래량 급등 감지 (2배 이상 → hot 승격). 체크 시 volume_7d+refresh_tier+scan_priority 모두 갱신
-
-### 매칭/수익
-- `src/matcher.py` — 모델번호 정규화 + exact match. fuzzy 없음. 콜라보 키워드 감지 + 서브타입(PRM/QS/SE 등) 필터
-- `src/profit_calculator.py` — 크림 수수료 차감 후 수익/ROI/시그널 판정
-- `src/scan_cache.py` — 모델번호 중복 스캔 방지 (일반 24h, 역방향 2h, 수익 6h TTL)
-
-### 인프라
-- `src/scheduler.py` — discord.ext.tasks 루프 6개 (Tier1/Tier2/일일리포트/수집/갱신/급등)
-- `src/watchlist.py` — watchlist.json 기반 모니터링 대상
-- `src/models/database.py` — Async SQLite (aiosqlite)
-- `src/config.py` — Pydantic BaseSettings, `.env` 로드
-- `src/discord_bot/bot.py` — 슬래시 명령, embed 알림, 6시간 중복 알림 방지 (시그널 업그레이드/수익 20%↑ 시 재전송)
-
-## 크림 API (GET 전용)
-
-```
-/api/p/e/search/products       — 키워드 검색 (sort=date, page, per_page)
-/api/p/e/products/{id}         — 상품 상세
-/api/p/options/display?product_id={id}  — 사이즈별 시세
-/api/p/e/products/{id}/sales   — 거래 내역
-```
-
-## 소싱처 Rate Limit
-
-| 소싱처 | max_concurrent | min_interval | 시간당 안전 처리량 |
-|--------|:-:|:-:|:-:|
-| 무신사 | 5 | 1.0초 | ~3,600건 |
-| 29CM | 2 | 2.5초 | ~1,440건 |
-| 나이키 | 2 | 3.0초 | ~1,200건 |
-| 아디다스 | 2 | 5.0초 | ~720건 |
-| 카시나 | 2 | 1.5초 | ~2,400건 |
-| 그랜드스테이지 | 3 | 2.0초 | ~1,800건 |
-| 온더스팟 | 3 | 2.0초 | ~1,800건 |
-| 튠 | 2 | 1.0초 | ~3,600건 |
-| EQL | 2 | 1.5초 | ~2,400건 |
-| 뉴발란스 | 2 | 2.0초 | ~1,800건 |
-| 살로몬 | 2 | 1.0초 | ~3,600건 |
-| 아크테릭스 | 2 | 2.0초 | ~1,800건 |
-| 반스 | 2 | 1.5초 | ~2,400건 |
-| W컨셉 | 2 | 2.0초 | ~1,800건 |
-| 온러닝 | 2 | 1.5초 | ~2,400건 |
-
-## 수수료 계산
-
-```
-정산가 = 판매가 - (기본료 2,500 + 판매가 × 6%) × 1.1(VAT) - 검수비 2,500 - 배송비 3,000
-검수비 2,500원 (실 정산서 확인 — 2026-05-02)
-```
-
-### 시그널 기준 (2026-04-15 숨은 보석 정책)
-- STRONG_BUY: 순수익 ≥ 30,000 AND 7일 거래량 ≥ **1**
-- BUY: 순수익 ≥ 15,000 AND 7일 거래량 ≥ **1**
-- WATCH: 순수익 ≥ 5,000 AND 7일 거래량 ≥ **1**
-- NOT_RECOMMENDED: 그 외 (거래량 0 = 대기 매수자 없음 → 판매 불가)
-
-**거래량 게이트 1 고정**. 저거래 상품(숨은 보석)이 핵심 차별화 — 낮추자 제안 금지. 거짓 알림 방어는 순수익/ROI 하드 플로어 담당.
-
-### 알림 하드 플로어
-- 순수익 ≥ 10,000₩ AND ROI ≥ 5% AND 거래량 ≥ 1
-
-## 개발 자동화
-
-### 서브에이전트 (`.claude/agents/`) — 의무 투입 규칙
-
-**원칙**:
-1. 아래 도메인 트리거 충족 시 → **의무** 투입 (필수).
-2. 그 외 상황에서 유저가 매번 "필요시 투입해죠"를 말하지 않아도, 다음 조건이면 **자율** 투입 허용:
-   - 읽기 전용 코드베이스 탐색·진단 (Glob/Grep/Read 다회 필요, 결과 합성 필요)
-   - 상호 독립적 다중 조사 → **병렬**로 돌릴 수 있는 작업
-   - 메인 컨텍스트에 대용량 로그/결과물이 쏟아질 우려가 있는 탐색
-3. **자율 투입 금지 상황** (항상 사전 확인):
-   - 실제 코드 수정·커밋·푸시·DB 스키마 변경 등 상태 변경 동반 작업
-   - 도메인 의무 트리거(아래 표)와 겹치는 작업은 도메인 에이전트 우선
-   - 파일 1~2개만 보면 되는 단건 조사는 직접 실행이 더 빠름 — 굳이 투입 금지
-4. 자율 투입 시 **무엇을/왜 띄웠는지 한 줄 고지** (user 가 cancel 판단 가능하도록).
-
-| 에이전트 | 역할 | 의무 투입 트리거 |
-|---------|------|-----------------|
-| `crawler-builder` | 소싱처 크롤러 풀사이클 구현 | 새 소싱처 추가 시 **필수** |
-| `code-reviewer` | 보안/성능/품질 코드 리뷰 | 코어 모듈 수정 완료 시 (kream.py, runtime.py, profit_calculator.py, orchestrator.py) |
-| `scan-debugger` | 상품별 파이프라인 전 구간 추적 | "왜 안 잡혀?", "왜 알림 안 와?" 류 디버깅 |
-| `live-tester` | 크롤러 실서버 e2e 검증 | 크롤러/어댑터 수정 후 실동작 검증 |
-| `profit-analyzer` | 수익 계산/수수료 검증 | 수수료·시그널·하드플로어 변경 시 **필수** |
-
-**JIT 대기 (트리거 시 활성화)**:
-| 에이전트 | 활성 트리거 |
-|---------|------|
-| `api-prober` | (1) 소싱처 신규 추가 진입 시 / (2) **UI 봇 Phase B0 진입 시 (크림 보관판매 endpoint 탐색) — 의무** / (3) Phase C 가격 갱신 endpoint 탐색 시 |
-| `source-analyzer` | 소싱처 종합 분석 — 덤프/재고/매칭 방식 판별 (api-prober 후속) |
-
-**Fable 오케스트레이션 워커 (모드 ON 일 때만)**:
-| 에이전트 | 모델 | 역할 |
-|---------|------|------|
-| `kream-executor` | Opus 5 | 무거운 구현 노동 — 코드 작성·수정·리팩터·테스트·버그 봉합. 설계·방향 결정은 안 함 |
-| `kream-explorer` | Haiku 4.5 | read-only 탐색·조사 — 파일/심볼 검색, DB SELECT 조회, 로그 요약. 판단 안 함 |
-
-> 위 **도메인 의무 트리거가 우선**한다 — 수수료 변경은 `profit-analyzer`, 새 소싱처는
-> `crawler-builder`. executor/explorer 는 그 트리거에 안 걸리는 일반 노동을 받는다.
-> 토글: `bash scripts/fable.sh on|off|status` (기본 OFF).
-
-### 스킬 (`.claude/skills/`)
-
-| 스킬 | 언제 |
-|------|------|
-| `kream-search-in-search` | 소싱처가 403/202/빈 결과 — "차단됐다" 판단하기 **전에**. TLS 지문 로테이션·세션 워밍·내장 JSON 추출·4단계 escalation |
-| `kream-codex-collab` | 사장이 "코덱스 검증/의논/협업해" 라고 할 때만 (수동 트리거) |
-| `kream-instagram-extract` | 사장이 인스타 릴/포스트 링크를 주며 분석·정리 요청 |
-| `kream-youtube-transcript` | 사장이 유튜브 링크를 주며 자막·내용 정리 요청 |
-
-### Codex 협업 (수동 트리거 전용)
-
-**ChatGPT Plus 계정이 하나라 구매대행 프로젝트와 한도를 공유한다.** 크림봇은 Stop 훅 자동
-큐잉을 **배선하지 않았다** — 사장이 부를 때만 쓴다. 등급(모델·effort)은 자동 판정.
-
-```bash
-python scripts/codex_collab.py plan      # ★ 판정만. Codex 호출 0 · 한도 0 — 항상 먼저
-python scripts/codex_collab.py verify    # 적대검증  |  consult "…"  |  collab "…"
-python scripts/codex_collab.py status    # 큐 현황   |  drain        # 밀린 것 1건
-```
-
-| 등급 | 모델·effort | 트리거 |
-|:-:|---|---|
-| S | `sol`/xhigh | `storage_sale/`·`profit_calculator.py`·`config.py`·`.env`·`.claude/hooks/` · 보관판매·수수료·정산·검수비·자격증명·호출캡 |
-| A | `sol`/high | `src/models/` 스키마·마이그레이션 · 아키텍처/설계/선택지 · **의논·협업은 최소 A** |
-| B | `terra`/high | **기본값** — `.py`/`.sh` 변경 또는 코드파일 3개+ |
-| C | `luna`/high | 전수·열거·커버리지 훑기 (코드 변경 없을 때). 최종 판단 위임 금지 |
-| N | 호출 없음 | 문서 · `probe_*`/`diag_*`/`repro_*` 일회용 |
-
-- 기존 의무 에이전트를 **대체하지 않는다** — `profit-analyzer` + Codex S 처럼 병존.
-- 수렴 규칙(무한 반복 금지)·호출 위생 = `docs/ops/codex-collaboration-policy.md`.
-- 판정 로직 `src/ops/codex_gate.py` · 고정 테스트 `tests/test_codex_gate.py`.
-
-**폐기 (2026-04-16)**: security-guard, catalog-dumper, delta-engine-builder, pipeline-builder, runtime-sentinel, verify-agent, kream-monitor, coverage-analyzer, queue-inspector — 직접 실행이 더 빠른 단순 작업이거나 사용 단계 미도달.
-
-### 슬래시 명령 (`.claude/commands/`)
-
-| 명령 | 역할 |
-|------|------|
-| `/commit` | git add + 메시지 생성 + commit + push |
-| `/verify` | verify.py + pytest + AST 문법 검증 |
-| `/status` | DB 현황 + 워치리스트 + 최근 알림 |
-| `/queue` | 스캔 큐 현황 — priority별 분포, 적체, ETA |
-| `/trace` | 특정 모델번호 스캔 파이프라인 추적 |
-| `/health` | 소싱처 22곳 헬스체크 — 응답시간, 서킷브레이커, 기법별 상태 |
-| `/add-source` | URL 하나로 소싱처 추가 (분석→구현→테스트→커밋) |
-| `/catalog` | 소싱처별 카탈로그 현황 — 덤프 시각, 상품 수, 매칭율 |
-| `/coverage` | 크림 DB 대비 소싱처 커버율 — 브랜드별 갭, 추가 제안 |
-
-### PostToolUse 훅
-- Edit/Write 후 자동 pytest 실행 → 실패 시 즉시 수정 루프
-
-## Discord 명령어
-
-- `!역방향스캔` — hot 상품 역방향 스캔 (테스트: 5개, 전체: `!역방향스캔 전체`)
-- `!카테고리스캔 [카테고리] [페이지]` — 무신사 카테고리 전수 대조
-- `!자동스캔` / `!강제스캔` — Tier1+Tier2 자동/즉시 실행
-- `!배치스캔` — 크림 DB 순회 스캔
-- `!상태` — 봇 상태 + 서킷브레이커 + 캐시/알림 통계
-- `!워치리스트` — 워치리스트 상위 10건
-
-## Configuration
-
-`.env` 주요 변수:
-- `DISCORD_TOKEN`, `CHANNEL_PROGRESS`, `CHANNEL_PROFIT_ALERT`, `CHANNEL_LOG`
-- `MUSINSA_EMAIL/PASSWORD` — 등급할인가 수집용
-- `TIER1_INTERVAL_MINUTES=30`, `TIER2_INTERVAL_SECONDS=60`, `HTTPX_CONCURRENCY=10`
-
-## Project Rules
-
-### 읽기 전용(Read-Only) 원칙
-- **핵심 원칙**: 읽기 전용이면 수단 제한 없음. 상태 변경만 금지
-- **소싱처별 최적 기법 선택**: 분석 후 가장 적합한 방법을 바로 적용
-  - `httpx`: 공개 API, 차단 없는 사이트
-  - `curl_cffi`: TLS fingerprint 차단 사이트 (크림에서 검증 완료)
-  - `Playwright`: JS 렌더링 필수, NetFunnel 큐 등 브라우저 필수 사이트
-  - `모바일 API`: 웹 차단이지만 앱 API 열린 사이트
-- **GET 허용**: 검색, 상세, 재고 등 모든 읽기 요청
-- **POST 허용**: 검색/필터/GraphQL 쿼리 등 읽기 목적 요청만
-- **POST 금지**: 주문/결제/로그인/장바구니/위시리스트 등 상태 변경
-- **POST 금지 예외 (2026-04-26 추가)**: UI 봇 Phase B 보관판매 등록 + Phase C 가격 자동 갱신 — **벌크 계정 한정**, **본인 거래 자동화 한정**, 안전장치 8종 (`project_phase_b_storage_sale.md` 참조) 필수. 메인 계정/외부 사용자 영향 0건. 위반 시 BAN/손해 직결 → `code-reviewer` + `profit-analyzer` 의무 검증.
-- PUT/DELETE 요청 금지 (Phase C 가격 갱신 PATCH는 위 예외에 포함)
-- API 호출 간 최소 1~2초 딜레이
-
-### 크롤링 안전
-- 크림: Hidden API, 429 → 30초 대기 재시도. 500 에러 시 서버 장애 → 재시도 후 포기
-- 크림 API 호출 최소화: NUXT 우선 → API 1회 fallback, cold는 경량 options/display API만 사용
-- 무신사: API 검색 (`caller=SEARCH`), 세션 쿠키 등급할인가
-- 47k 전체 시세 갱신 절대 금지 — hot tier만 price_refresher, cold는 연속 스캔 시 즉석 조회
-
-### 데이터 처리
-- 사이즈 파싱: `isinstance(data, dict)` 체크 필수
-- 모델번호: 무신사 SKU가 아닌 상품명에서 실제 품번 추출
-- `sqlite3.Row`는 `.get()` 불가 — `dict()`로 변환
-- 크림 API 404는 에러 아님 (거래량 0 신규 상품)
-
-### 필터링
-- 브랜드 필터: **블랙리스트 방식** — 크림에 절대 없는 브랜드만 스킵
-- 오프라인전용: "오프라인 전용 상품" 정확 문구 + 구매버튼 없을 때만 스킵
-- 발매예정: "판매예정" 또는 "출시예정" → 스킵
-
-### 필수 에이전트 투입 규칙
-- 새 소싱처 추가 → `crawler-builder` 에이전트 투입 필수 (API 탐색 → 구현 → 테스트 풀사이클)
-- 수익 계산 로직 변경 (`profit_calculator.py`, 수수료, 시그널 기준) → `profit-analyzer` 검증 필수
-- DB 스키마 변경 → `kream-monitor`로 마이그레이션 전후 데이터 무결성 확인
-
-### 개발 방식
-- Plan 모드: 큰 작업은 설계 먼저, 승인 후 실행
-- 커밋: 작업 완료 시 git commit + 디스코드 웹훅 알림
-- 웹훅 URL: `.env`의 `DISCORD_NOTIFY_WEBHOOK` 사용 (docs/security/incident-2026-04-13.md 참조)
-
-### 버그 수정 원칙
-- 3회 실패 시 방법 지정 금지 — 문제+제약+실패이력만 제공, Claude Code가 탐색
-- 단위 테스트만으로 검증 금지 — 해당 버그 재현 테스트가 통과해야 검증
-- 검증 실패 시 사람 개입 없이 재수정→재검증
-
-### 테스트 격리 (2026-07-25 실계정 311콜 사고 이후 — 기계가 강제)
-- `main()`·배치 진입점을 부르는 테스트는 **tmp DB + 네트워크 mock** 필수.
-  `tests/conftest.py` 가 기본값을 tmp 로 돌리고 실 송신을 막지만, 그건 마지막 방어선이다.
-- **가드에 안전을 의존하지 말 것** — 가드 판별력을 변이(mutation) 검증으로 확인할 때
-  그 가드를 끄는 순간이 곧 사고다. 변이 전에 "이 변이가 실호출 경로를 여는가" 를 먼저 묻는다.
-- 안전망 해제(`KREAM_TEST_ALLOW_NETWORK` / `KREAM_TEST_ALLOW_REAL_DB`)는 사장 GO 사안.
-
-### 자동 검증 루프
-1. `PYTHONPATH=. python scripts/verify.py` — 파이프라인 검증
-2. `pytest tests/ -v` — 전체 테스트
-3. `python3 -c "import ast; ast.parse(open('<파일>').read())"` — 문법 검증
-4. 검증 성공 시에만 git commit
-
-### 회귀 테스트
-- `tests/fixtures/false_positives.json`에 케이스 추가
-- `status: "known_bug"` → 수정 후 `"fixed"`
-
-### 장애 격리 (서킷브레이커)
-- `registry.py`: 연속 3회 실패 → 30분 비활성화, 자동 재활성화
-- 소싱처별: 무신사(안정), 29CM(안정), 나이키(안정), 아디다스(WAF 주의), 카시나(안정), 그랜드스테이지(안정), 온더스팟(안정), 튠(안정), EQL(안정), 뉴발란스(안정), 살로몬(안정), 아크테릭스(안정), 반스(안정), W컨셉(안정), 온러닝(안정·매칭 150건 확정)
-
-## Dev Environment
-
-WSL2 + Windows. 무신사 세션 쿠키: `data/musinsa_session.json`.
-
-### Code Style
-- Ruff: line-length 100, rules E/F/I/N/W, target Python 3.13
-- pytest: `asyncio_mode = "auto"`
-- All I/O async (aiosqlite, aiohttp, httpx)
-- 한국어: 사용자 메시지, Discord, 문서 / 영어: 코드 식별자
-
-### Known Issues
-- MFS(다중재고) 품절 필터 한계 — inventory API 근본 미작동 (MT410CK5 등)
-- 크림 거래량 5건 캡 — pinia/screens 모두 최대 5건 반환, ×3 추정치로 보충
+- **플랜 모드**: 파일 3개+ 또는 아키텍처 변경 시 **의무 진입**. 그 외는 바로 실행.
+- **커밋**: 검증 3종(verify.py + pytest + AST) 통과 후에만. 완료 시 Discord 웹훅(`DISCORD_NOTIFY_WEBHOOK`) 알림.
+- **봇 가동/중지**: UI 봇 STOP/START 또는 사장 명시 지시만. 자동 시작 영구 금지.
+- **막히면 해결, 우회 X** — 원래 방법의 해결책을 N개 시도한 뒤에만 우회를 논한다.
+- 환경: WSL2 + Windows. `.env` 키 정의는 `src/config.py`. 무신사 세션 쿠키 `data/musinsa_session.json`.

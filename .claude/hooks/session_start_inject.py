@@ -82,6 +82,50 @@ def _done_registry(root: Path, limit: int = 6) -> list[str]:
     return out
 
 
+_CLAUDE_MD_LIMIT = 200  # 공식 권장: code.claude.com/docs/en/memory "target under 200 lines"
+
+
+def _instruction_budget(root: Path) -> list[str]:
+    """지시문 예산 계측 — 라우팅 규칙을 **기계가 지키게** 한다(2026-09-04).
+
+    CLAUDE.md 가 404줄까지 불었던 건 갈 곳이 두 곳(CLAUDE.md·메모리)뿐이었기 때문이다.
+    잘라놓기만 하면 6개월 뒤 또 분다. 매 세션 눈에 보이면 안 넘긴다.
+    """
+    md = root / "CLAUDE.md"
+    if not md.is_file():
+        return []
+    try:
+        n = len(md.read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        return []
+
+    scoped = 0
+    files = 0
+    rules_dir = root / ".claude" / "rules"
+    if rules_dir.is_dir():
+        for f in sorted(rules_dir.glob("*.md")):
+            try:
+                scoped += len(f.read_text(encoding="utf-8", errors="replace").splitlines())
+                files += 1
+            except OSError:
+                continue
+
+    out = ["", "## 📏 지시문 예산"]
+    if n > _CLAUDE_MD_LIMIT:
+        out.append(
+            f"  · 🔴 **CLAUDE.md {n}줄 / 상한 {_CLAUDE_MD_LIMIT} — {n - _CLAUDE_MD_LIMIT}줄 초과.** "
+            "길수록 규칙이 묻혀 **안 지켜진다**(공식). 새 규칙 추가 전에 먼저 덜어내라."
+        )
+    else:
+        out.append(f"  · CLAUDE.md {n}줄 / 상한 {_CLAUDE_MD_LIMIT} (여유 {_CLAUDE_MD_LIMIT - n})")
+    out.append(f"  · `.claude/rules/` {files}파일 {scoped}줄 — **상시 로드 0줄**(paths 스코프, 해당 파일 열 때만)")
+    out.append(
+        "  · 새 지식 라우팅: 어기면 사고 → **훅** / 매 세션 필요 → CLAUDE.md / "
+        "특정 파일만 → **rules+paths** / 절차 → **스킬** / 사실·이력 → 메모리·DONE 원장"
+    )
+    return out
+
+
 def build_session_start_context(root: Path) -> str:
     commits = [ln for ln in _run(["git", "log", "--oneline", "-6"], root).splitlines() if ln]
     dirty = [ln for ln in _run(["git", "status", "--porcelain"], root).splitlines() if ln]
@@ -105,6 +149,8 @@ def build_session_start_context(root: Path) -> str:
         out += ["", "## 최근 커밋 (여기까지 했다 — 또 하지 마라)"] + [f"  · {c}" for c in commits]
     if done:
         out += ["", "## DONE 원장 · Active Lock (재실행 금지)"] + [f"  · {d}" for d in done]
+
+    out += _instruction_budget(root)
 
     out += [
         "",
