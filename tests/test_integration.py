@@ -375,8 +375,8 @@ async def test_tier2_watch_no_alert():
 @pytest.mark.asyncio
 async def test_tier2_buy_sends_alert():
     """순수익 >= 15,000원 → BUY 시그널 → 알림 발송."""
-    # kream=108000 → profit=15122 (>= 15k buy_profit)
-    result, alert_cb = await _run_tier2_with_kream_price(108000)
+    # kream=110600 → profit=15050 (>= 15k buy_profit, < 30k strong_buy)
+    result, alert_cb = await _run_tier2_with_kream_price(110600)
     assert result.checked == 1
     assert alert_cb.called
     assert result.alerts_sent == 1

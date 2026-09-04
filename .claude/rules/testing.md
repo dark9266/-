@@ -35,14 +35,14 @@ pytest 는 `N passed` 출력이 있어야 하고, 그 실행이 **변경 이후*
 - `tests/fixtures/false_positives.json` 에 케이스 추가
 - `status: "known_bug"` → 수정 후 `"fixed"`
 
-## 알려진 기존 실패 (2026-09-04 확인, 이번 변경과 무관)
-아래 3건은 **검수비 2,500원 확정(2026-05-02) 이전의 기대값**이 남아 있어 나는 거짓 실패다.
-코드는 맞고 기대값이 낡았다. 수정은 `profit-analyzer` 의무 투입 건.
+## 검수비 2,500원 기대값 정정 (2026-09-04 완료)
+`검수비 2,500원 확정(2026-05-02, 커밋 6f57c14)` 당시 `tests/test_profit_calculator.py` 만
+갱신되고 아래 4곳의 기대값이 낡은 채 남아 4개월간 거짓 실패를 냈다. **정정 완료 — 재조사 금지.**
 ```
-tests/test_filters.py::TestFeeBoundary::test_zero_price_fee
-tests/test_integration.py::test_tier2_buy_sends_alert
-tests/test_pipeline.py::TestPipelineProfitCalculation::test_exact_profit_calculation
-scripts/verify.py:242  "검수비 = 0원"
+tests/test_filters.py::TestFeeBoundary::test_zero_price_fee        총수수료 +2,500
+tests/test_pipeline.py::TestPipelineProfitCalculation::…            54,350 → 51,850
+tests/test_integration.py::test_tier2_buy_sends_alert               kream 108,000 → 110,600
+scripts/verify.py                                                   "검수비 = 0원" → 2,500원
 ```
-계산 근거: `167,000 − (2,500 + 167,000×6%)×1.1 − 2,500(검수비) − 3,000 = 147,728` (코드값)
-vs 기대값 `150,228` — 차이가 정확히 검수비 2,500원.
+코드(`src/config.py` `inspection_fee=2500`)가 실 정산서 기준으로 맞다. **공식 재추정 금지.**
+남은 verify.py 실패 1건(`inventory_data=None → isDeleted 폴백`)은 MFS 다중재고 알려진 한계로 별건.

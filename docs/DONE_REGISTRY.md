@@ -80,3 +80,6 @@
 - **구매대행 솔루션 신규 저장소** — 크림봇 완주 후. 크림봇과 연결 제안 금지
   (`project_future_proxy_buying`).
 - **Camoufox 도입** — `kream-search-in-search` 3단계까지 다 해보고도 막혔을 때만 제안.
+- [2026-09-04] **검수비 2,500 기대값 잔재 4곳 정정** — `verify.py` + `test_filters`/`test_pipeline`/`test_integration`.
+  커밋 `6f57c14`(2026-05-02 검수비 확정)가 `test_profit_calculator.py` 만 갱신하고 나머지를 빠뜨려 4개월간 거짓 실패.
+  계산 로직 0줄 변경 — 기대값만. verify 5/63→1/63, pytest 1,649 passed. **재조사 금지.**

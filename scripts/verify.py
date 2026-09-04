@@ -239,8 +239,8 @@ def verify_fee_calculation():
     )
 
     check(
-        "검수비 = 0원",
-        fees["inspection_fee"] == 0,
+        "검수비 = 2,500원",
+        fees["inspection_fee"] == 2500,
         f"got {fees['inspection_fee']}",
     )
 
@@ -252,7 +252,8 @@ def verify_fee_calculation():
 
     # 정산금 = 판매가 - 총수수료
     settlement = 167000 - fees["total_fees"]
-    expected_settlement = 167000 - (expected_sell_fee + 0 + 0 + 3000)
+    # 정산 = 판매가 - (판매수수료 + 검수비 2,500 + 크림배송비 0 + 판매자배송비 3,000)
+    expected_settlement = 167000 - (expected_sell_fee + 2500 + 0 + 3000)
     check(
         f"판매가 167,000원 → 정산 {expected_settlement:,}원",
         settlement == expected_settlement,

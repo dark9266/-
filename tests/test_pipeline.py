@@ -107,9 +107,9 @@ class TestPipelineProfitCalculation:
     def test_exact_profit_calculation(self):
         """수수료 계산 후 순수익이 정확한지 검증.
 
-        크림 판매가 150,000 → 수수료 = ceil((2500 + 9000) * 1.1) = 12,650
-        총수수료 = 12,650 + 3,000 = 15,650
-        순수익 = 150,000 - 80,000 - 15,650 = 54,350
+        크림 판매가 150,000 → 판매수수료 = round((2500 + 9000) * 1.1) = 12,650
+        총수수료 = 12,650 + 검수비 2,500 + 판매자배송비 3,000 = 18,150
+        순수익 = 150,000 - 80,000 - 18,150 = 51,850
         """
         kream = _make_kream("K4", "TEST-001", 150_000, volume_7d=10)
         musinsa_sizes = {"270": (80_000, True)}
@@ -122,7 +122,7 @@ class TestPipelineProfitCalculation:
         )
 
         assert opp is not None
-        assert opp.best_confirmed_profit == 54_350
+        assert opp.best_confirmed_profit == 51_850
 
     def test_negative_profit_still_returns_opportunity(self):
         """마이너스 수익도 opportunity 객체는 반환됨 (필터링은 호출자 책임)."""

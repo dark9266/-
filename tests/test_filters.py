@@ -97,8 +97,9 @@ class TestFeeBoundary:
     def test_zero_price_fee(self):
         """0원 판매 → 기본료만 적용."""
         result = calculate_kream_fees(0)
-        assert result["sell_fee"] == 2_750  # ceil(2500 * 1.1)
-        assert result["total_fees"] == 2_750 + 3_000
+        assert result["sell_fee"] == 2_750  # round(2500 * 1.1)
+        # 총수수료 = 판매수수료 2,750 + 검수비 2,500 + 판매자배송비 3,000
+        assert result["total_fees"] == 2_750 + 2_500 + 3_000
 
     def test_1won_price(self):
         """1원 판매 → 거의 기본료."""
