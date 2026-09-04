@@ -194,6 +194,31 @@ def _existing_modules(tokens: list[str], limit: int) -> list[str]:
     return hits
 
 
+_BLOCK_SCALARS = (">", "|", ">-", "|-", ">+", "|+", "")
+
+
+def _front_matter_description(body: str) -> str:
+    """SKILL.md frontmatter 의 `description` — YAML 블록 스칼라(`>` `|`)까지 이어 읽는다.
+
+    첫 줄만 읽으면 `description: >` 형태 스킬(ponytail 6개)이 빈 문자열이 되어
+    **자동 소환에서 통째로 증발**한다. 2026-09-04 실측으로 잡힌 결함.
+    """
+    lines = body.splitlines()
+    for i, ln in enumerate(lines):
+        if not ln.startswith("description:"):
+            continue
+        head = ln[len("description:"):].strip()
+        if head not in _BLOCK_SCALARS:
+            return head
+        parts: list[str] = []
+        for nxt in lines[i + 1:]:
+            if nxt.strip() and not nxt.startswith((" ", "\t")):
+                break  # 들여쓰기가 끝나면 다음 키 — 블록 종료
+            parts.append(nxt.strip())
+        return " ".join(p for p in parts if p)
+    return ""
+
+
 def _relevant_skills(tokens: list[str], prompt: str, limit: int = 3) -> list[str]:
     """★ **스킬 자동 소환** — 있는데 안 부르는 게 병이다.
 
@@ -226,11 +251,7 @@ def _relevant_skills(tokens: list[str], prompt: str, limit: int = 3) -> list[str
             body = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        desc = ""
-        for ln in body.splitlines():
-            if ln.startswith("description:"):
-                desc = ln[len("description:"):].strip()
-                break
+        desc = _front_matter_description(body)
 
         # 점수 = **어디에서 맞았는가**로 가중(오탐이 섞이면 아무도 안 읽는다).
         # description 앞부분(정체) > 뒷부분(트리거 존)·"언제" 절 > 본문.

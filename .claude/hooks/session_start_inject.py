@@ -108,6 +108,16 @@ def build_session_start_context(root: Path) -> str:
 
     out += [
         "",
+        "## 🎀 ponytail 상시 ON (사장 지시 2026-09-04 — 매번 부를 수 없다)",
+        "  · **모든 코딩 작업에 ponytail `full` 을 적용한다.** 사장이 `/ponytail` 을 치지 않아도 켜져 있다.",
+        "    사다리: 애초에 필요한가(YAGNI) → 이 레포에 이미 있나 → 표준 라이브러리 → 플랫폼 기본 기능",
+        "    → 이미 깔린 의존성 → 한 줄 → 그제야 최소 코드. 요청 안 한 추상화·보일러플레이트 금지.",
+        "  · **끄기**: 사장이 \"stop ponytail\" / \"normal mode\". 강도: `/ponytail lite|ultra`.",
+        "  · 🔴 **양보하지 않는 것** — ponytail 은 이것들보다 **아래**다:",
+        "    도메인 의무 에이전트(code-reviewer·profit-analyzer·crawler-builder·scan-debugger·live-tester)",
+        "    · TDD · verification-before-completion · 가드 훅 4종 · 사이즈별 실재고 정확성.",
+        "    \"게으르게\"는 **덜 쓰라**는 뜻이지 **덜 검증하라**는 뜻이 아니다. 수수료·보관판매·크림 호출 인접은 예외 없이 풀검증.",
+        "",
         "## 헬스체크 4종 — 생략 금지 (1개라도 FAIL 이면 매칭/신규 작업 착수 금지)",
         "  1. 봇 프로세스 (위 참조)",
         "  2. 마지막 알림 24h 내 — `alert_sent.fired_at > strftime('%s','now')-86400`",
